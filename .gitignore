@@ -7,7 +7,8 @@ __pycache__/
 *$py.class
 pips.txt
 webtorq.py
-
+*.csv
+*.txt
 # C extensions
 *.so
 

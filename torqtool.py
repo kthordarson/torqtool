@@ -11,7 +11,7 @@ from PyQt5.QtWidgets import QApplication
 from utils import Torqfile, database_init, get_csv_files
 from utils import TorqForm
 from utils import check_db
-
+from tweb import start_web
 TORQDBHOST = os.getenv('TORQDBHOST')
 TORQDBUSER = os.getenv('TORQDBUSER')
 TORQDBPASS = os.getenv('TORQDBPASS')
@@ -87,8 +87,11 @@ if __name__ == '__main__':
 	parser.add_argument("--file", nargs="?", default=".", help="path to single csv file", action="store")
 	parser.add_argument("--gui", default=False, help="Run gui", action="store_true", dest='gui')
 	parser.add_argument("--check-db", default=False, help="check database", action="store_true", dest='check_db')
+	parser.add_argument("--webstart", default=False, help="start web listener", action="store_true", dest='web')
 	args = parser.parse_args()
 	print(f'[torqtool] {args}')
+	if args.web:
+		start_web(engine=engine)
 	if args.check_db:
 		check_db(engine=engine)
 	if args.gui:
