@@ -13,6 +13,7 @@ webtorq.py
 None
 *.toml
 *.json
+asdf
 # C extensions
 *.so
 mo53torq/
