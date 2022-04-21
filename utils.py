@@ -24,17 +24,6 @@ from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_compl
 
 Base = declarative_base()
 
-def SendDataError(errordata):
-	# logger.debug(f'[SendDataError] {type(errordata.orig.args)}')
-	errstrdata = str(errordata.orig)
-	errline = errstrdata.split(',')[1]
-	rownum = re.findall('(row\s)(\d.+)\"', errline)[0][1]
-	logger.debug(f'[SendDataError] {rownum} {errstrdata} {len(errordata.statement)}')
-	# logger.debug(f'[SendDataError] {type(errordata.orig)}')
-	# logger.debug(f'[SendDataError] {len(errordata.orig)}')
-	# logger.debug(dir(errordata))
-	os._exit(-3)
-
 def get_csv_files(searchpath:Path, recursive=True):
 	# todo fix globbing....
 	# csvlist = searchpath.glob('tracklog*.csv')
@@ -44,7 +33,8 @@ def get_csv_files(searchpath:Path, recursive=True):
 		logger.debug(f'[getcsv] err: searchpath {searchpath} is {type(searchpath)} need Path object')
 		return []
 	else:
-		return [k for k in searchpath.glob("**/trackLog.csv")]
+		torqcsvfiles = [k for k in searchpath.glob("**/trackLog.csv")]
+		return torqcsvfiles
 
 class DataSender(Thread):
 	def __init__(self, thread_id, torqfiles):
@@ -53,7 +43,7 @@ class DataSender(Thread):
 		self.thread_id = thread_id
 		self.totalfiles = len(torqfiles)
 		self.sent_files = 0
-		self.current_file = ''
+		self.current_file = None
 		self.kill = False
 		self.finished = False
 		logger.debug(f'[datasender:{self.thread_id}] totalfiles: {self.totalfiles}')
@@ -64,18 +54,19 @@ class DataSender(Thread):
 		#self._stop()
 
 	def get_status(self):
-		if self.current_file != '':
-			logger.debug(f'[datasender:{self.thread_id}] cf: {self.current_file.name} timer: {(datetime.now() - self.current_file.send_time_start).total_seconds()}  status s:{self.sent_files} t:{self.totalfiles} k:{self.kill} f:{self.finished}')
+		if self.current_file:
+			logger.debug(f'[datasender:{self.thread_id}] cf: {self.current_file.name} timer: {(datetime.now() - self.current_file.send_time_start).total_seconds()}  status s:{self.sent_files} t:{self.totalfiles} k:{self.kill} f:{self.finished} remaining: {self.totalfiles - self.sent_files}')
+		else:
+			logger.error(f'[datasender:{self.thread_id}] no current file')
 
 	def run(self):
-		thread_cnt = 0
 		while True:
 			if self.kill:
-				logger.debug(f'[datasender:{self.thread_id}] kill signal')
+				logger.info(f'[datasender:{self.thread_id}] kill signal')
 				# self.join(timeout=1)
 				return
 			if self.totalfiles == self.sent_files:
-				logger.debug(f'[datasender:{self.thread_id}] stopping s:{self.sent_files} t:{self.totalfiles}')
+				logger.info(f'[datasender:{self.thread_id}] finished s:{self.sent_files} t:{self.totalfiles} self.torqfiles:{len(self.torqfiles)}')
 				self.finished = True
 				self.kill = True
 				return
@@ -84,19 +75,18 @@ class DataSender(Thread):
 					return
 				# logger.debug(f'[datasender:{self.thread_id}] status  s:{self.sent_files} t:{self.totalfiles}')
 				if not torqfile.send_done:
-					thread_cnt += 1
 					# logger.debug(f'[datasender:{self.thread_id}] id:{self.thread_id} sending:{torqfile.name} done_send: {torqfile.send_done} s:{self.sent_files} t:{self.totalfiles}')
-					self.current_file = torqfile # f'[{thread_cnt}] {torqfile.name}'
+					self.current_file = torqfile
 					send_res = torqfile.send_data()
 					if send_res == 0:
-						self.finished = True
-						logger.debug(f'[datasender:{self.thread_id}][{thread_cnt}] res: {send_res} {torqfile.name} done_send: {torqfile.send_done} s:{self.sent_files} t:{self.totalfiles}')
-					# torqfile.send_done = True
+						# self.finished = True
 						self.sent_files += 1
+						logger.debug(f'[datasender:{self.thread_id}] res: {send_res} {torqfile.name} torqfile.send_done: {torqfile.send_done} sent:{self.sent_files} total:{self.totalfiles} remaining: {self.totalfiles - self.sent_files}')
+					# torqfile.send_done = True
 				else:
 					logger.debug(f'[datasender:{self.thread_id}] skipping:{torqfile.name} done_send: {torqfile.send_done} s:{self.sent_files} t:{self.totalfiles}')
-					# self.torqfiles.remove(torqfile)
-					# self.totalfiles = len(self.torqfiles)
+					self.torqfiles.remove(torqfile)
+					self.totalfiles = len(self.torqfiles)
 
 
 class Torqfile(Base):
@@ -106,9 +96,11 @@ class Torqfile(Base):
 	hash = Column(String(255))
 	tripid =  Column(String(255))
 
+	def __str__(self):
+		return(f'Torqfile: {self.name} hash: {self.hash}')
 
-#	def __str__(self):
-#		return(f'{self.name} {self.hash}')
+	def __repr__(self):
+		return(f'{self.name}')
 
 	def __init__(self, filename:Path, engine):
 		if not os.path.exists(filename):
@@ -127,7 +119,7 @@ class Torqfile(Base):
 		self.init_time = datetime.now()
 		self.send_time_start = datetime.now()
 		self.send_time_end = datetime.now()
-		logger.debug(f'[torqfile] {self.name} init lines:{self.num_lines} ')
+		# logger.debug(f'[torqfile] {self.name} init lines:{self.num_lines} ')
 		# self.id = Column(Integer, primary_key=True)
 
 	def get_columns(self):
@@ -147,63 +139,42 @@ class Torqfile(Base):
 
 	def send_data(self): # send own csv data to database ...
 		self.send_time_start = datetime.now()
+		send_result = -99
 		if not self.send_done:
-			self.send_done = True
 			t0 = datetime.now()
 			self.buffer = self.read_csv_data()  # (filepath_or_buffer=self.name, delimiter=',', low_memory=False, encoding='cp1252')			
+			readtime = (datetime.now() - t0).total_seconds()
 			if self.buffer is None:
 				logger.error(f'[Torqfile] read from {self.name} returned {type(self.buffer)} h:{self.hash} tripid:{self.tripid}')
-				return
+				return send_result
 			else:
-				logger.debug(f'[readtime] {(datetime.now() - t0).total_seconds()} h:{self.hash} tripid:{self.tripid}')
+				# logger.debug(f'[readtime] {(datetime.now() - t0).total_seconds()} h:{self.hash} tripid:{self.tripid}')
 				self.buffer['hash'] = self.hash
 				self.buffer['tripid'] = self.tripid
-				# self.buffer['EngineLoad']
-				# self.buffer = buffer
-				# logger.debug(f'[Torqfile] [send_data] {self.tripid} to sql size: {len(self.buffer)}')
+				t1 = datetime.now()
+				self.send_done = True
 				try:
-					# todo fix
-					if self.buffer is not None:
-						t1 = datetime.now()
-						logger.debug(f'[Torqfile] {self.send_time_start} trid: {self.tripid} to sql size: {len(self.buffer)}')
-						self.buffer.to_sql(con=self.engine, name='torqlogs', if_exists='append', index=True, chunksize=5000, method='multi')
-						# self.send_done = True
-						self.send_time_end = datetime.now()
-						logger.debug(f'[Torqfile] send {self.name} done time: {(datetime.now() - t1).total_seconds()} {(datetime.now() - self.send_time_start).total_seconds()} {(datetime.now() - self.init_time).total_seconds()}')
-						return 0
+					# logger.debug(f'[Torqfile] {self.send_time_start} trid: {self.tripid} to sql size: {len(self.buffer)}')
+					self.buffer.to_sql(con=self.engine, name='torqlogs', if_exists='append', index=True, chunksize=5000, method='multi')			
+					self.send_time_end = datetime.now()
+					logger.debug(f'[Torqfile] send done {self.name} done time: {(datetime.now() - t1).total_seconds()} tsendstart: {(datetime.now() - self.send_time_start).total_seconds()} tinit: {(datetime.now() - self.init_time).total_seconds()} trid: {self.tripid} bufflen: {len(self.buffer)} readtime: {readtime}')
+					send_result = 0
 				except pymysql.err.OperationalError as e:
 					logger.error(f'[Torqfile] [send_data] sending failed: OPERR ')
-					return -1
+					send_result = -1
 				except (DataError, pymysql.err.DataError) as e:
-					logger.error(f'[Torqfile] [send_data] sending failed: DATAERR {self.name} {type(e)} ')
-					return -2
-					# errordata = e
-					# errstrdata = str(errordata.orig)
-					# errline = errstrdata.split(',')[1]
-					# try:
-					# 	rownum = int(re.findall('(row\s)(\d.+)\"', errline)[0][1])
-					# except IndexError as e:
-					# 	logger.debug(f'[SendDataError] rowerr {e} errline: {errline}')
-					# 	logger.debug(f'[SendDataError] errstrdata: {errstrdata}')
-					# 	return
-					# rowdata = self.buffer.iloc[rownum]
-					# rowdatal = self.buffer.loc[rownum]
-					# rowname = errstrdata.split("'")[1]
-					# logger.debug(f'[SendDataError] rn: {rownum} err: {errstrdata} len: {len(errordata.statement)}')
-					# logger.debug(f'[SendDataError] rdata: {rowdata} ')
-					# rowdata2 = rowdatal[rowname]
-					# logger.debug(f'[SendDataError] row: {rowname} type: {type(rowdata2)} val: {rowdata2} str: {str(rowdata2)} len: {len(str(rowdata2))} ')
-					# self.buffer.loc[rownum] = 0
-					# self.buffer.to_sql(con=self.engine, name='torqlogs', if_exists='append', index=True, chunksize=5000, method='multi')
+					logger.error(f'[Torqfile] [send_data] sending failed: DATAERR {self.name} {type(e)} {e.args[0]}')
+					send_result = -2
 				except OperationalError as e:
 					logger.error(f'[Torqfile] [send_data] sending failed: sqlalchemy operr ')
-					return -3
+					send_result = -3
 				except AttributeError as e:
 					logger.error(f'[Torqfile] [send_data] sending failed: AttributeError ')
-					return -4
+					send_result = -4
 		else:
-			logger.debug(f'[torqfile] send_data called but self.send_done: {self.send_done}')
-			return -5
+			logger.error(f'[torqfile] send_data called but self.send_done: {self.send_done}')
+			send_result = -5
+		return send_result
 
 	def parse_data(self): # ...
 		pass
@@ -243,13 +214,20 @@ class Torqfile(Base):
 				buffer[f].replace('612508207723425231880386882817669201920', '0', inplace=True)
 				buffer[f].replace(612508207723425231880386882817669201920.0, '0', inplace=True)
 				buffer[f].replace('340282346638528860000000000000000000000', '0', inplace=True)
+				buffer[f].replace('-3.4028236187100775e+36', '0', inplace=True)
+				buffer[f].replace(-3.4028236187100775e+36, '0', inplace=True)
+
+				buffer[f].replace('-3.402823618710077e+36', '0', inplace=True)
+				buffer[f].replace(-3.402823618710077e+36, '0', inplace=True)
+
 				buffer[f].replace(3.402823466385289e+38, '0', inplace=True)
+				
 				buffer[f].replace('-', '0', inplace=True)
 
 			#buffer['Actualenginetorque'].replace('340282346638528860000000000000000000000', 0, inplace=True)
 			#buffer['EngineRPMrpm'].replace('340282346638528860000000000000000000000', 0, inplace=True)
 		except KeyError as e:
-			pass
+			logger.error(f'[colfixer] {e}')
 			# sys.exit(-1)
 		#buffer = buffer
 		# logger.debug(f'[Torqfile] readcsvdata buffersize: {len(buffer)} time: {(datetime.now() - t1).total_seconds()}')
@@ -350,7 +328,7 @@ def column_fixer(inputline):
 	columns = [sub('Ã¢', '', col) for col in columns] # symbol cleanup
 	columns = [sub('Ã‚', '', col) for col in columns] # symbol cleanup
 	columns = [sub('CO,‚', 'CO', col) for col in columns] # symbol cleanup
-	columns = [sub('^\s', '', k) for k in columns] # remove extra spaces from start of col name
+	columns = [sub(r'^\s', '', k) for k in columns] # remove extra spaces from start of col name
 	columns = ''.join([str(k)+',' for k in columns])
 	columns = columns.rstrip(',')
 	return columns
@@ -359,27 +337,6 @@ def read_csv_columns_raw(csv_filename):
 	with open(csv_filename) as f:
 		lineone = f.readline()
 	return column_fixer(lineone)
-
-# def fix_csv_column_header(csv_filename):
-# 	with open(csv_filename) as f:
-# 		lines = f.readlines()
-# 	try:
-# 		lineone = lines[0]
-# 	except IndexError as e:
-# 		logger.debug(f'[fix] err {e}')
-# 		return
-# #	backup_file = str(csv_filename) + '.bak' # create backup
-# #	with open(backup_file, 'w') as f:
-# #		f.writelines(lines)
-
-# 	columns = column_fixer(lineone)
-# 	lines[0] = columns # replace column header
-
-# 	with open(csv_filename, 'w') as f: # save modified csv
-# 		f.writelines(lines)
-
-# def fix_csv_column(csvfile):
-# 	pass
 
 def init_db(engine):
 	database_init(engine)
