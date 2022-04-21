@@ -9,9 +9,13 @@ pips.txt
 webtorq.py
 *.csv
 *.txt
+*.png
+None
+*.toml
+*.json
 # C extensions
 *.so
-
+mo53torq/
 # Distribution / packaging
 .Python
 build/
