@@ -33,7 +33,7 @@ def get_csv_files(searchpath:Path, recursive=True):
 		logger.debug(f'[getcsv] err: searchpath {searchpath} is {type(searchpath)} need Path object')
 		return []
 	else:
-		torqcsvfiles = [k for k in searchpath.glob("**/trackLog.csv")]
+		torqcsvfiles = [k for k in searchpath.glob("**/trackLog.csv") if k.stat().st_size >= 4096]
 		return torqcsvfiles
 
 class DataSender(Thread):
@@ -118,7 +118,7 @@ class Torqfile(Base):
 		self.buffer_parsed = False
 		self.hash = self.gen_md5hash()
 		self.exists_in_db = False
-		self.num_lines = sum(1 for line in open(self.name)) # how many lines in csv file
+		# self.num_lines = sum(1 for line in open(self.name)) # how many lines in csv file
 		self.send_done = False
 		self.init_time = datetime.now()
 		self.send_time_start = datetime.now()
@@ -433,7 +433,7 @@ def mainfile(args, engine):
 		found_cols = tfile.get_columns()
 		column_list.append(found_cols)
 		session.add(tfile)
-		logger.debug(f'[csvfile] {args.file} cols: {len(found_cols)} / {len(column_list)} torqentries: {tfile.num_lines}')
+		logger.debug(f'[csvfile] {args.file} cols: {len(found_cols)} / {len(column_list)} ')
 		session.commit()
 		maincolumn_list = make_column_list(column_list) # maincolum_list = master list of columns
 		tfile.update_columns(engine=engine, cols=maincolumn_list)
