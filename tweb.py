@@ -11,7 +11,7 @@ from functools import partial
 
 
 class TorqServer():
-	def __init__(self, host_address='127.0.0.1', host_port=8888, filename=None, *args, **kwargs):
+	def __init__(self, host_address, host_port, filename):
 		self.filename = open(filename, 'a', newline='')
 		self.writer = writer(self.filename)
 		self.handler = TorqWebHandler  # (filename=self.filename, writer=self.writer, *args, **kwargs)

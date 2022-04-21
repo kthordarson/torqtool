@@ -149,3 +149,10 @@ dmypy.json
 
 # Cython debug symbols
 cython_debug/
+fieldmapper.py
+fieldmaps.py
+gdrivetest01.py
+torq_torqlogs.sql
+torq_torqlogs2.sql
+torqform.py
+prof.html
