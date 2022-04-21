@@ -53,11 +53,14 @@ class DataSender(Thread):
 		self.kill = True
 		#self._stop()
 
+	def get_remaining(self):
+		return self.totalfiles - self.sent_files
+
 	def get_status(self):
 		if self.current_file:
-			logger.debug(f'[datasender:{self.thread_id}] cf: {self.current_file.name} timer: {(datetime.now() - self.current_file.send_time_start).total_seconds()}  status s:{self.sent_files} t:{self.totalfiles} k:{self.kill} f:{self.finished} remaining: {self.totalfiles - self.sent_files}')
+			return f'[datasender:{self.thread_id}] cf: {self.current_file.name} timer: {(datetime.now() - self.current_file.send_time_start).total_seconds()}  status s:{self.sent_files} t:{self.totalfiles} k:{self.kill} f:{self.finished} remaining: {self.totalfiles - self.sent_files}'
 		else:
-			logger.error(f'[datasender:{self.thread_id}] no current file')
+			return f'[datasender:{self.thread_id}] no current file'
 
 	def run(self):
 		while True:
@@ -85,6 +88,7 @@ class DataSender(Thread):
 					# torqfile.send_done = True
 				else:
 					logger.debug(f'[datasender:{self.thread_id}] skipping:{torqfile.name} done_send: {torqfile.send_done} s:{self.sent_files} t:{self.totalfiles}')
+					self.sent_files += 1
 					self.torqfiles.remove(torqfile)
 					self.totalfiles = len(self.torqfiles)
 
@@ -219,6 +223,10 @@ class Torqfile(Base):
 
 				buffer[f].replace('-3.402823618710077e+36', '0', inplace=True)
 				buffer[f].replace(-3.402823618710077e+36, '0', inplace=True)
+
+				# -3402823618710077500000000000000000000
+				buffer[f].replace('-3402823618710077500000000000000000000', '0', inplace=True)
+				buffer[f].replace(-3402823618710077500000000000000000000, '0', inplace=True)
 
 				buffer[f].replace(3.402823466385289e+38, '0', inplace=True)
 				

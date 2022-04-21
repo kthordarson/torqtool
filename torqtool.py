@@ -11,7 +11,6 @@ from sqlalchemy import create_engine
 
 from utils import Torqfile, database_init, get_csv_files, check_db, init_db, dump_db, DataSender, make_column_list, parse_csvfile
 # from torqform import TorqForm
-# from utils import check_db, init_db, dump_db, DataSender, make_column_list, parse_csvfile
 # from tweb import start_web
 
 from threading import Thread, active_count
@@ -275,9 +274,12 @@ if __name__ == '__main__':
                 paththread.gather_csvfiles()
                 paththread.sendcsvdata()
             if cmd[:1] == 'd':
+                total_remaining = 0
                 logger.debug(f'[d] donethr:{paththread.donethreads} paththr:{len(paththread.torqthreads)} torqfiles:{len(paththread.torqfiles)} hashlist: {len(paththread.hashlist)} dbhash: {len(paththread.dbhashlist)} c: {paththread.csv_count}/{paththread.csv_totalcount}')
                 for t in paththread.torqthreads:
-                    t.get_status()
+                    logger.debug(f'[debug] t:{t} {t.get_status()}')
+                    total_remaining += t.get_remaining()
+                logger.debug(f'[d] total remaining: {total_remaining}')
         except KeyboardInterrupt:
             stop_all_threads(threadlist)
         except Exception as e:
