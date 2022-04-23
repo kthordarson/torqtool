@@ -7,11 +7,12 @@ from pathlib import Path
 from loguru import logger
 import inspect
 from re import search, sub
-from pandas import read_csv, DataFrame
+from pandas import read_csv, DataFrame, to_datetime
 from datetime import datetime
+from dateutil.parser import ParserError
 from sqlalchemy.exc import ProgrammingError
 from hashlib import md5
-from sqlalchemy import create_engine, Table, MetaData, Column, Integer, String, inspect, select, BigInteger, Numeric
+from sqlalchemy import create_engine, Table, MetaData, Column, Integer, String, inspect, select, BigInteger, Numeric, DateTime, text, BIGINT, BigInteger, Float
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.exc import OperationalError, DataError
@@ -22,6 +23,7 @@ from threading import Thread, active_count
 from queue import Queue, Empty
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 
+MIN_FILESIZE = 4096
 Base = declarative_base()
 
 def get_csv_files(searchpath:Path, recursive=True):
@@ -33,7 +35,7 @@ def get_csv_files(searchpath:Path, recursive=True):
 		logger.debug(f'[getcsv] err: searchpath {searchpath} is {type(searchpath)} need Path object')
 		return []
 	else:
-		torqcsvfiles = [k for k in searchpath.glob("**/trackLog.csv") if k.stat().st_size >= 4096]
+		torqcsvfiles = [k for k in searchpath.glob("**/trackLog.csv") if k.stat().st_size >= MIN_FILESIZE]
 		return torqcsvfiles
 
 class DataSender(Thread):
@@ -41,6 +43,7 @@ class DataSender(Thread):
 		Thread.__init__(self)
 		self.torqfiles = torqfiles
 		self.thread_id = thread_id
+		self.name = f'ds-{self.thread_id}'
 		self.totalfiles = len(torqfiles)
 		self.sent_files = 0
 		self.current_file = None
@@ -57,10 +60,10 @@ class DataSender(Thread):
 		return self.totalfiles - self.sent_files
 
 	def get_status(self):
-		if self.current_file:
-			return f'[datasender:{self.thread_id}] cf: {self.current_file.name} timer: {(datetime.now() - self.current_file.send_time_start).total_seconds()}  status s:{self.sent_files} t:{self.totalfiles} k:{self.kill} f:{self.finished} remaining: {self.totalfiles - self.sent_files}'
-		else:
-			return f'[datasender:{self.thread_id}] no current file'
+		if self.current_file and not self.finished:
+			return f'[datasender:{self.thread_id}] cf: {self.current_file.name} fs:{self.current_file.filesize} rd:{self.current_file.read_done} buff:{self.current_file.get_buffersize()} timer: {(datetime.now() - self.current_file.send_time_start).total_seconds()} sent:{self.sent_files} total:{self.totalfiles} k:{self.kill} f:{self.finished} remaining: {self.totalfiles - self.sent_files}'
+		#else:
+		#	return f'[datasender:{self.thread_id}] no current file'
 
 	def run(self):
 		while True:
@@ -68,11 +71,12 @@ class DataSender(Thread):
 				logger.info(f'[datasender:{self.thread_id}] kill signal')
 				# self.join(timeout=1)
 				return
-			if self.totalfiles == self.sent_files:
+			if self.totalfiles == self.sent_files or self.totalfiles == 0:
 				logger.info(f'[datasender:{self.thread_id}] finished s:{self.sent_files} t:{self.totalfiles} self.torqfiles:{len(self.torqfiles)}')
 				self.finished = True
 				self.kill = True
 				return
+			send_res = None
 			for torqfile in self.torqfiles:
 				if self.kill:
 					return
@@ -87,7 +91,7 @@ class DataSender(Thread):
 						logger.debug(f'[datasender:{self.thread_id}] res: {send_res} {torqfile.name} torqfile.send_done: {torqfile.send_done} sent:{self.sent_files} total:{self.totalfiles} remaining: {self.totalfiles - self.sent_files}')
 					# torqfile.send_done = True
 				else:
-					logger.debug(f'[datasender:{self.thread_id}] skipping:{torqfile.name} done_send: {torqfile.send_done} s:{self.sent_files} t:{self.totalfiles}')
+					logger.debug(f'[datasender:{self.thread_id}] skipping:{torqfile.name} res:{send_res} done_send: {torqfile.send_done} s:{self.sent_files} t:{self.totalfiles}')
 					self.sent_files += 1
 					self.torqfiles.remove(torqfile)
 					self.totalfiles = len(self.torqfiles)
@@ -107,19 +111,18 @@ class Torqfile(Base):
 		return(f'{self.name}')
 
 	def __init__(self, filename:Path, engine):
-		if not os.path.exists(filename):
-			logger.error(f'[Torqfile] err {filename} not found')
-			os._exit(-2)
 		self.name = str(filename)
+		self.filesize = filename.stat().st_size
 		self.engine = engine
 		self.tripid = str(filename.parts[-2])
 		self.columns = []
-		self.buffer = DataFrame
+		self.buffer = None
 		self.buffer_parsed = False
 		self.hash = self.gen_md5hash()
 		self.exists_in_db = False
 		# self.num_lines = sum(1 for line in open(self.name)) # how many lines in csv file
 		self.send_done = False
+		self.read_done = False
 		self.init_time = datetime.now()
 		self.send_time_start = datetime.now()
 		self.send_time_end = datetime.now()
@@ -129,6 +132,16 @@ class Torqfile(Base):
 	def get_columns(self):
 		self.columns = read_csv_columns_raw(self.name)
 		return self.columns
+
+	def get_buffersize(self):
+		if not isinstance(self.buffer, DataFrame):
+			return None
+		result = None
+		try:
+			result = len(self.buffer)
+		except TypeError as e:
+			logger.error(f'[bufsize] {e} b:{type(self.buffer)}')
+		return result
 
 	def get_hash(self): # return own md5 hash
 		if self.hash is None:
@@ -149,34 +162,35 @@ class Torqfile(Base):
 			self.buffer = self.read_csv_data()  # (filepath_or_buffer=self.name, delimiter=',', low_memory=False, encoding='cp1252')			
 			readtime = (datetime.now() - t0).total_seconds()
 			if self.buffer is None:
-				logger.error(f'[Torqfile] read from {self.name} returned {type(self.buffer)} h:{self.hash} tripid:{self.tripid}')
+				logger.error(f'[send_data] read {self.name} returned {type(self.buffer)} h:{self.hash} tripid:{self.tripid}')
 				return send_result
 			else:
-				# logger.debug(f'[readtime] {(datetime.now() - t0).total_seconds()} h:{self.hash} tripid:{self.tripid}')
+				logger.debug(f'[readtime] {(datetime.now() - t0).total_seconds()} h:{self.hash} tripid:{self.tripid}')
 				self.buffer['hash'] = self.hash
 				self.buffer['tripid'] = self.tripid
 				t1 = datetime.now()
-				self.send_done = True
+				
 				try:
 					# logger.debug(f'[Torqfile] {self.send_time_start} trid: {self.tripid} to sql size: {len(self.buffer)}')
 					self.buffer.to_sql(con=self.engine, name='torqlogs', if_exists='append', index=True, chunksize=5000, method='multi')			
 					self.send_time_end = datetime.now()
-					logger.debug(f'[Torqfile] send done {self.name} done time: {(datetime.now() - t1).total_seconds()} tsendstart: {(datetime.now() - self.send_time_start).total_seconds()} tinit: {(datetime.now() - self.init_time).total_seconds()} trid: {self.tripid} bufflen: {len(self.buffer)} readtime: {readtime}')
+					self.send_done = True
+					logger.debug(f'[send_data] done {self.name} done time: {(datetime.now() - t1).total_seconds()} tsendstart: {(datetime.now() - self.send_time_start).total_seconds()} tinit: {(datetime.now() - self.init_time).total_seconds()} trid: {self.tripid} bufflen: {len(self.buffer)} readtime: {readtime}')
 					send_result = 0
 				except pymysql.err.OperationalError as e:
-					logger.error(f'[Torqfile] [send_data] sending failed: OPERR ')
+					logger.error(f'[send_data] {self.name} failed: OPERR ')
 					send_result = -1
 				except (DataError, pymysql.err.DataError) as e:
-					logger.error(f'[Torqfile] [send_data] sending failed: DATAERR {self.name} {type(e)} {e.args[0]}')
+					logger.error(f'[send_data] {self.name} failed: DATAERR {self.name} {type(e)} {e.args[0]}')
 					send_result = -2
 				except OperationalError as e:
-					logger.error(f'[Torqfile] [send_data] sending failed: sqlalchemy operr ')
+					logger.error(f'[send_data] {self.name} failed: sqlalchemy operr {e.code} {e.args[0]}')
 					send_result = -3
 				except AttributeError as e:
-					logger.error(f'[Torqfile] [send_data] sending failed: AttributeError ')
+					logger.error(f'[send_data] {self.name} failed: AttributeError ')
 					send_result = -4
 		else:
-			logger.error(f'[torqfile] send_data called but self.send_done: {self.send_done}')
+			logger.error(f'[send_data] {self.name}  called but self.send_done: {self.send_done}')
 			send_result = -5
 		return send_result
 
@@ -184,16 +198,16 @@ class Torqfile(Base):
 		pass
 
 	def read_csv_data(self) -> DataFrame: # read own data file
-		buffer = DataFrame()
+		buffer = None # DataFrame()
 		if self.name == '...':
 			logger.error(f'[Torqfile] ERR ??? name:{self.name}')
 			return DataFrame()
 		try:
 			t1 = datetime.now()
-			buffer = read_csv(self.name, delimiter=',', low_memory=False, encoding='cp1252')
+			buffer = read_csv(self.name, delimiter=',', low_memory=False, encoding='cp1252', na_values=0)
 			# buffer = buffer.replace('-','0', inplace=True)
-			buffer = buffer.fillna('0')
-			buffer.replace(' ','', inplace=True)
+			# buffer = buffer.fillna('0')
+			# buffer.replace(' ','', inplace=True)
 			buffer.replace('-','0', inplace=True)
 			buffer.replace('âˆž','0', inplace=True)
 			buffer.replace('Ã¢ÂˆÂž','0', inplace=True)
@@ -208,37 +222,48 @@ class Torqfile(Base):
 		buffer.columns = fields
 		try:
 			for f in fields:
-				# buffer[f].replace('', '0', inplace=True)
-				buffer[f].replace('-3402823534620772000000000000000000000', '0', inplace=True)
-				buffer[f].replace('-3.402823534620772e+36', '0', inplace=True)
-				buffer[f].replace(-3.402823534620772e+36, '0', inplace=True)
-				buffer[f].replace('612508207723425200000000000000000000000', '0', inplace=True)
-				buffer[f].replace('612508207723425', '0', inplace=True)
-				buffer[f].replace('612508207723425231880386882817669201920.0', '0', inplace=True)
-				buffer[f].replace('612508207723425231880386882817669201920', '0', inplace=True)
-				buffer[f].replace(612508207723425231880386882817669201920.0, '0', inplace=True)
-				buffer[f].replace('340282346638528860000000000000000000000', '0', inplace=True)
-				buffer[f].replace('-3.4028236187100775e+36', '0', inplace=True)
-				buffer[f].replace(-3.4028236187100775e+36, '0', inplace=True)
+				if f == 'GPSTime' or f == 'DeviceTime':
+					try:
+						buffer[f] = to_datetime(buffer[f])
+					except ParserError as e:
+						logger.error(f'[datetime] {self.name} err {e}')
+					# buffer = fix_timedate_gps(buffer)
+				#elif f == 'DeviceTime':
+				#	buffer = fix_timedate_device(buffer)
+				else:
+					# buffer[f].replace('', '0', inplace=True)
+					buffer[f].replace('-3402823534620772000000000000000000000', '0', inplace=True)
+					buffer[f].replace('-3.402823534620772e+36', '0', inplace=True)
+					buffer[f].replace(-3.402823534620772e+36, '0', inplace=True)
+					buffer[f].replace('612508207723425200000000000000000000000', '0', inplace=True)
+					buffer[f].replace('612508207723425', '0', inplace=True)
+					buffer[f].replace('612508207723425231880386882817669201920.0', '0', inplace=True)
+					buffer[f].replace('612508207723425231880386882817669201920', '0', inplace=True)
+					buffer[f].replace(612508207723425231880386882817669201920.0, '0', inplace=True)
+					buffer[f].replace('340282346638528860000000000000000000000', '0', inplace=True)
+					buffer[f].replace('-3.4028236187100775e+36', '0', inplace=True)
+					buffer[f].replace(-3.4028236187100775e+36, '0', inplace=True)
 
-				buffer[f].replace('-3.402823618710077e+36', '0', inplace=True)
-				buffer[f].replace(-3.402823618710077e+36, '0', inplace=True)
+					buffer[f].replace('-3.402823618710077e+36', '0', inplace=True)
+					buffer[f].replace(-3.402823618710077e+36, '0', inplace=True)
 
-				# -3402823618710077500000000000000000000
-				buffer[f].replace('-3402823618710077500000000000000000000', '0', inplace=True)
-				buffer[f].replace(-3402823618710077500000000000000000000, '0', inplace=True)
+					# # -3402823618710077500000000000000000000
+					buffer[f].replace('-3402823618710077500000000000000000000', '0', inplace=True)
+					buffer[f].replace(-3402823618710077500000000000000000000, '0', inplace=True)
 
-				buffer[f].replace(3.402823466385289e+38, '0', inplace=True)
-				
-				buffer[f].replace('-', '0', inplace=True)
-
-			#buffer['Actualenginetorque'].replace('340282346638528860000000000000000000000', 0, inplace=True)
-			#buffer['EngineRPMrpm'].replace('340282346638528860000000000000000000000', 0, inplace=True)
+					buffer[f].replace(3.402823466385289e+38, '0', inplace=True)
+					
+					# buffer[f].replace('-', '0', inplace=True)
+					# buffer[f].replace('[NULL]', '0', inplace=True)
+					# buffer[f].replace('NULL', '0', inplace=True)
+				#buffer['Actualenginetorque'].replace('340282346638528860000000000000000000000', 0, inplace=True)
+				#buffer['EngineRPMrpm'].replace('340282346638528860000000000000000000000', 0, inplace=True)
 		except KeyError as e:
 			logger.error(f'[colfixer] {e}')
 			# sys.exit(-1)
 		#buffer = buffer
 		# logger.debug(f'[Torqfile] readcsvdata buffersize: {len(buffer)} time: {(datetime.now() - t1).total_seconds()}')
+		self.read_done = True
 		return buffer
 
 	def check_db_status(self, engine=None, session=None):
@@ -273,9 +298,9 @@ class Torqlog(Base):
 	COing = Column(Numeric, default=0)
 	costpermilekminst = Column(Numeric, default=0)
 	costpermilekm = Column(Numeric, default=0)
-	DeviceTime = Column(String(255), default=0)
+	DeviceTime = Column(DateTime, server_default=text('NOW()')) # Column(String(255), default=0)
 	DistancetoemptyEstimatedkm = Column(Numeric, default=0)
-	DistancetravelledwithMIL = Column(String(255), default=0)
+	DistancetravelledwithMIL = Column(Numeric, default=0)
 	EngineCoolantTemperatureF = Column(Numeric, default=0)
 	EnginekWAtthewheelskW = Column(Numeric, default=0)
 	EngineLoad = Column(Numeric, default=0)
@@ -284,7 +309,7 @@ class Torqlog(Base):
 	Fuelflowratelhr = Column(Numeric, default=0)
 	Fuelflowrateccmin = Column(Numeric, default=0)
 	Fuelpressurekpa = Column(Numeric, default=0)
-	FuelRailPressurekpa = Column(String(255), default=0)
+	FuelRailPressurekpa = Column(Numeric, default=0)
 	FuelRemainingCalculatedfromvehicleprofile = Column(Numeric, default=0)
 	Fuelusedtripl = Column(Numeric, default=0)
 	GPSAccuracym = Column(Numeric, default=0)
@@ -294,7 +319,9 @@ class Torqlog(Base):
 	GPSLongitude = Column(Numeric, default=0)
 	GPSSatellites = Column(Numeric, default=0)
 	GPSSpeedkm = Column(Numeric, default=0)
-	GPSTime = Column(String(255), default=0)
+	GPSTime = Column(DateTime, server_default=text('NOW()'))
+	# GPSTime = Column(String(255), default=0)
+	# Column('y', DateTime, server_default=text('NOW()'))
 	GPSvsOBDSpeeddifferencekm = Column(Numeric, default=0)
 	GravityXG = Column(Numeric, default=0)
 	GravityYG = Column(Numeric, default=0)
@@ -302,14 +329,14 @@ class Torqlog(Base):
 	HorizontalDilutionofPrecision = Column(Numeric, default=0)
 	HorsepowerAtthewheelshp = Column(Numeric, default=0)
 	IntakeAirTemperatureF = Column(Numeric, default=0)
-	IntakeManifoldPressurekpa = Column(String(255), default=0)
+	IntakeManifoldPressurekpa = Column(Numeric, default=0)
 	KilometersPerLitreInstantkpl = Column(Numeric, default=0)
 	KilometersPerLitreLongTermAveragekpl = Column(Numeric, default=0)
 	Latitude = Column(Numeric, default=0)
 	LitresPer100KilometerInstantl = Column(Numeric, default=0)
 	LitresPer100KilometerLongTermAveragel = Column(Numeric, default=0)
 	Longitude = Column(Numeric, default=0)
-	MassAirFlowRateg = Column(String(255), default=0)
+	MassAirFlowRateg = Column(Numeric, default=0)
 	MilesPerGallonInstantmpg = Column(Numeric, default=0)
 	MilesPerGallonLongTermAveragempg = Column(Numeric, default=0)
 	SpeedOBDkm = Column(Numeric, default=0)
@@ -560,3 +587,10 @@ def parse_csvfile(csv_filename):
 	# logger.debug(datetime.utcfromtimestamp(16294475123))
 	return f'{dateguess}'
 
+def fix_timedate_gps(buffer):
+	# fix timedate formatting
+	return buffer
+
+def fix_timedate_device(buffer):
+	# fix timedate formatting
+	return buffer	
