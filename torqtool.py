@@ -2,22 +2,26 @@
 import os, sys, struct
 from pathlib import Path
 import argparse
-from loguru import logger
+from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy import create_engine
 # from PyQt5.QtWidgets import QApplication
 
-from utils import Torqfile, database_init, get_csv_files, check_db, init_db, dump_db, DataSender, make_column_list, parse_csvfile
+from utils import get_torqlog_table,Torqfile, database_init, get_csv_files, check_db, init_db, dump_db, DataSender, make_column_list, parse_csvfile
 # from torqform import TorqForm
 # from tweb import start_web
 
 from threading import Thread, active_count
 
+from loguru import logger
+logger.add('tool.log')
 
 MIN_READINGS = 3
-MAX_CHUNK_THREADS = 7
+MAX_THREADS = 7
+CHUNK_SIZE = 3
+SQLCHUNKSIZE = 1000
 
 def check_threads(threads):
     return True in [t.is_alive() for t in threads]
@@ -27,7 +31,7 @@ def stop_all_threads(threads):
         logger.debug(f'[stop_all_threads] stopping {t}')
         t.do_kill()
         t.kill = True
-        t.join(timeout=3)
+        t.join(timeout=1)
 
 
 def chunks(l, n):
@@ -47,149 +51,100 @@ class MainPath(Thread):
         self.found_cols = []
         self.torqfiles = []
         self.hashlist = []
-        self.csv_count = 0
         self.csv_totalcount = -1
         self.Session = sessionmaker(bind=self.engine)
         self.session = self.Session()
         self.session.expire_on_commit = False
         self.conn = self.engine.connect()
-        self.initsession = False
         self.s_path = Path(self.args.path)
         self.kill = False
         self.torqthreads = []
-        self.donethreads = 0
         self.csv_file_list = get_csv_files(searchpath=self.s_path)
         self.csv_totalcount = len(self.csv_file_list)
         self.started = False
-        if self.args.init_db:
-            logger.debug(f'[mainpath] Calling init_db ')
-            init_db(self.engine)
-            self.initsession = True
-        logger.debug(f'[mainpath] thread init self.csv_totalcount: {self.csv_totalcount}')
+        if self.args.chunks:
+            self._chunks = int(self.args.chunks)
+        else:
+            self._chunks = CHUNK_SIZE
+        if self.args.max_workers:
+            self.max_workers = int(int(self.args.max_workers) / self._chunks)
+        else:
+            self.max_workers = MAX_THREADS
+        
 
     def do_kill(self):
-        logger.info(f'[mainpath] do_kill')
+        # logger.info(f'[mainpath] do_kill')
         self.kill = True
         for t in self.torqthreads:
             logger.info(f'[mainpath] do_kill t:{t}')
             t.do_kill()
-        logger.info(f'[mainpath] do_kill done')
+        # logger.info(f'[mainpath] do_kill done')
 
     def run(self):
         time_start = datetime.now()
         logger.debug(f'[mainpath] thread started')
         while True:
             if self.kill:
-                logger.info(f'[mainpath] kill signal ')
+                logger.info(f'[mainpath] self.kill:{self.kill} ')
                 for t in self.torqthreads:
-                    logger.info(f'[mainpath] stopping {t}')
+                    logger.info(f'[mainpath] stopping {t} tk:{t.kill} ')
                     t.do_kill()
                     t.kill = True
                     t.join(timeout=1)
                 return
 
     def process(self):
-        #self.started = True
-        if not self.initsession:
-            try:
-                logger.debug(f'[process] getting file hashlist')
-                self.hashlist = [k[0] for k in self.conn.execute('select hash from torqfiles')]
-                # logger.debug(f'[process] getting log hashlist')
-                # self.dbhashlist = [k[0] for k in self.conn.execute('select hash from torqlogs')]
-                logger.debug(f'[process] hashlist {len(self.hashlist)}')
-            except ProgrammingError as e:
-                logger.error(f'[process] err {e.code} {e.orig}')
-                database_init(self.engine)
-                self.hashlist = []
+        self.hashlist = [k[0] for k in self.conn.execute('select hash from torqfiles')]
 
     def gather_csvfiles(self):
-        skipped_files = 0
-        file_count = 0
+        csv_counter = 0
+        if self.args.sqlchunksize:
+            sql_chunk = int(self.args.sqlchunksize)
+        else:
+            sql_chunk = SQLCHUNKSIZE
         for csvfile in self.csv_file_list: # get_csv_files(searchpath=self.s_path):
-            logger.debug(f'[mainpath] parsing {csvfile}')
-            tfile = Torqfile(filename=csvfile, engine=self.engine, fixer=self.args.fixcsv)
-            file_count += 1
+            tfile = Torqfile(filename=csvfile, engine=self.engine, sqlchunksize=sql_chunk)
             if tfile.hash in self.hashlist: # and tfile.hash in self.dbhashlist:  # already have file in database, skip
-                logger.debug(f'[torqtool] {tfile.name} already exists in database, skipping s:{skipped_files} r:{self.csv_totalcount - file_count}')
-                skipped_files += 1
+                logger.warning(f'[torqtool] {tfile.name} already exists in database, skipping ')
             else:
-                self.csv_count += 1
-                t1 = datetime.now()
+                csv_counter += 1
                 self.torqfiles.append(tfile)
                 self.found_cols = tfile.get_columns()
                 self.column_list.append(self.found_cols)
                 tfile.name = str(tfile.name)
                 tfile.engine = self.engine
                 self.session.add(tfile)
-                logger.debug(f'[csvfile {self.csv_count}/{self.csv_totalcount}] [{(datetime.now() - t1).total_seconds()}] {csvfile.parent.name}/{csvfile.name} csvread: {parse_csvfile(csvfile)} cols: {len(self.found_cols)} / {len(self.column_list)} ')
-        # self.session.commit()
+                # logger.debug(f'[csvfile {csv_counter}/{self.csv_totalcount}] {csvfile.name} csvread: {parse_csvfile(csvfile)} cols: {len(self.found_cols)} / {len(self.column_list)} ')
+        logger.debug(f'[csv] total: {self.csv_totalcount}')
+        self.session.commit()
         self.maincolumn_list = make_column_list(self.column_list)  # maincolum_list = master list of columns
-        logger.debug(f'[csv] file gathering done')
+        # logger.debug(f'[csv] file gathering done')
 
-    def start_sender_threads(self):
-        t1 = datetime.now()
-        chunk_size = MAX_CHUNK_THREADS
+    def get_chunked_list(self):
         for torqfile in self.torqfiles:
             torqfile.maincolumn_list = self.maincolumn_list
-        self.chunkedlist = [k for k in chunks(self.torqfiles, chunk_size)]
-        logger.debug(f'[m] starting data sender threads max:{MAX_CHUNK_THREADS} chunklist:{len(self.chunkedlist)}')
-        for thread in range(chunk_size):
-            t_thread = DataSender(thread, self.chunkedlist[thread])
+        self.chunkedlist = [k for k in chunks(self.torqfiles, self._chunks)]
+        return self.chunkedlist
+
+
+    def get_sender_threads(self):
+        chunklist = self.get_chunked_list()
+        for thread in range(len(chunklist)):
+            t_thread = DataSender(thread_id=thread, torqfiles=self.chunkedlist[thread], max_workers=self.max_workers)
             self.torqthreads.append(t_thread)
-            logger.debug(f'[mainpath] starting thread {thread} {t_thread} torqthreads: {len(self.torqthreads)}')
-            t_thread.daemon = True
-            t_thread.start()
         self.started = True
+        logger.debug(f'[senders] total: {len(self.torqthreads)} cl: {len(chunklist)}')
         return self.torqthreads
 
-def check_file(args, engine):
-    # check if file is accisble and contains valid data
-    # logger.debug out info about file or existing database entry for file
-    logger.debug(f'[check_file] Checking {args.file}')
-    tfile = Torqfile(filename=args.file, engine=engine)
-    logger.debug(f'[check_file] tfile {tfile}')
-    Session = sessionmaker(bind=engine)
-    session = Session()
-    try:
-        conn = engine.connect()
-    except OperationalError as e:
-        logger.debug(f'[check_file] err {e}')
-        sys.exit(-1)
-    hashlist = [k[0] for k in conn.execute('select hash from torqfiles')]
-    if tfile.hash in hashlist:  # already have file in database, skip
-        # todo logger.debug info about database entry for existing file
-        res = [k for k in conn.execute(f'select DeviceTime from torqlogs where hash = "{tfile.hash}"')]
-        logger.debug(f'[check_file] {tfile.name} already exists in database. date0: {res[0]} datex: {res[-1]}')
-    else:
-        # continue checking file
-        tfile.buffer = tfile.read_csv_data()
-        logger.info(f'[check_file] buffer {len(tfile.buffer)}')
-    os._exit(1)
-
-
-# def main_gui(args, engine):
-#     logger.debug(f'[maingui] {args}')
-#     app = QApplication([])
-#     form = TorqForm(ui_file='untitled.ui', engine=engine, s_path=args.path)
-#     sys.exit(app.exec_())
 
 
 if __name__ == '__main__':
-    time_start = datetime.now()
+    timestart = datetime.now()
     TORQDBHOST = 'elitedesk'  # os.getenv('TORQDBHOST')
     TORQDBUSER = 'torq'  # os.getenv('TORQDBUSER')
     TORQDBPASS = 'dzt3f5jCvMlbUvRG'  # os.getenv('TORQDBPASS')
     TORQDATABASE = 'torqdev'
-    if TORQDBHOST is None or TORQDBUSER is None or TORQDBPASS is None:
-        logger.error(f'[err] check sql config')
-        os._exit(-1)
-    else:
-        try:
-            engine = create_engine(f"mysql+pymysql://{TORQDBUSER}:{TORQDBPASS}@{TORQDBHOST}/{TORQDATABASE}?charset=utf8mb4")# , isolation_level='AUTOCOMMIT')
-            # engine = create_engine(f"postgresql://postgres:foobar9999@elitedesk/torq")
-        except OperationalError as e:
-            logger.error(f'[sql] ERR {e}')
-            os._exit(-1)
+    engine = create_engine(f"mysql+pymysql://{TORQDBUSER}:{TORQDBPASS}@{TORQDBHOST}/{TORQDATABASE}?charset=utf8mb4")# , isolation_level='AUTOCOMMIT')
     parser = argparse.ArgumentParser(description="torqtool")
     parser.add_argument("--path", nargs="?", default=".", help="path to csv files", action="store")
     parser.add_argument("--file", nargs="?", default=".", help="path to single csv file", action="store")
@@ -200,77 +155,72 @@ if __name__ == '__main__':
     parser.add_argument("--dump-db", nargs="?", default=None, help="dump database to file", action="store")
     parser.add_argument("--check-file", default=False, help="check database", action="store_true", dest='check_file')
     parser.add_argument("--webstart", default=False, help="start web listener", action="store_true", dest='web')
+    parser.add_argument("--sqlchunksize", nargs="?", default="1000", help="sql chunk", action="store")
+    parser.add_argument("--max_workers", nargs="?", default="4", help="max_workers", action="store")
+    parser.add_argument("--chunks", nargs="?", default="4", help="chunks", action="store")
     args = parser.parse_args()
-    # maint = MainThread(name='main')
     threadlist = []
+    sender_threads = []
     paththread = MainPath(args, engine)
-    # check_db(engine=engine)
-    if len(args.path) > 1 and len(args.file) > 1:
-        logger.debug(f'path or file, exit!')
-        os._exit(-1)
-    if args.dump_db:
-        dump_db(args, engine)
-    if args.web:
-        pass
-        # start_web(engine=engine)
-    if args.check_db:
-        logger.debug(f'[maincheck] start')
-        try:
-            check_db(engine=engine)
-            logger.debug(f'[maincheck] done')
-        except struct.error as e:
-            logger.error(f'[checkdb] {e}')
-            sys.exit(-1)
-        logger.debug(f'[maincheck] done')
-        paththread.conn.close()
-        # engine = None
-        # engine.dispose()
-        os._exit(0)
-    if args.check_file:
-        check_file(args, engine)
-    if args.gui:
-        pass
+
+    if args.init_db:
+        logger.debug(f'[mainpath] Calling init_db ... ')
+        init_db(engine)
+
     if len(args.path) > 1:
         paththread.daemon = True
         threadlist.append(paththread)
         paththread.start()
         paththread.process()
         paththread.gather_csvfiles()
-        senders = paththread.start_sender_threads()
+        senders = paththread.get_sender_threads()
         for s in senders:
-            threadlist.append(s)
-            logger.debug(f'Appending {s.name} to threadlist. Total threads {len(threadlist)}')
+            sender_threads.append(s)
+            s.daemon = True
+            s.start()
 
-    if len(args.file) > 1:
-        logger.debug(f'[file] {args.file}')
-
-    while check_threads(threadlist):
-        try:
-            cmd = input(f'[{(datetime.now() - time_start).seconds}] : ')
-            if cmd[:1] == 'q':
-                for t in paththread.torqthreads:
-                    logger.info(f'[main] stopping {t}')
-                    t.kill = True
-                stop_all_threads(threadlist)
-                break
-            if cmd[:1] == 's':
-                paththread.process()
-                paththread.gather_csvfiles()
-                paththread.start_sender_threads()
-            if cmd[:1] == 'd':
-                total_remaining = 0
-                logger.debug(f'[{(datetime.now() - time_start).seconds}] [d] donethr:{paththread.donethreads} paththr:{len(paththread.torqthreads)} torqfiles:{len(paththread.torqfiles)} hashlist: {len(paththread.hashlist)} c: {paththread.csv_count}/{paththread.csv_totalcount}')
-                for t in paththread.torqthreads:
-                    if not t.kill or not t.finished:
-                        logger.debug(f'[dt] {t.get_status()}')
-                        total_remaining += t.get_remaining()
-                logger.debug(f'[{(datetime.now() - time_start).seconds}] [d] total remaining: {total_remaining} elapsed: {datetime.now().time()}')
-        except KeyboardInterrupt:
+    torqcount = 0
+    while True:
+        total_remaining = 0
+        for t in sender_threads:
+            total_remaining += t.get_remaining()
+        if total_remaining == 0:
+            logger.info(f'[main] total_remaining:{total_remaining} st:{len(sender_threads)} ')
+            for st in sender_threads:
+                logger.debug(f'[mainst] status {st.get_status()}')
+            stop_all_threads(sender_threads)
             stop_all_threads(threadlist)
-        except Exception as e:
-            logger.error(f'E in main {e}')
-            stop_all_threads(threadlist)
+            break
+    timeend = datetime.now() - timestart
+    # torqcount = get_torqlog_table(engine)
+    logger.info(f'[timeend] tc:{torqcount} path:{args.path} time:{timeend} sqlchunksize:{args.sqlchunksize} chunks:{args.chunks} max_workers:{args.max_workers}')
 
-# find and read all csv files, starting recursivly from '--path'
-# check column names, remove extra spaces, save result
-# make masterlist of columns
+
+
+
+        # try:
+        #     cmd = input(' > ')
+        #     if cmd[:1] == 'q':
+        #         for t in paththread.torqthreads:
+        #             logger.info(f'[main] quit stopping thread {t} tk:{t.kill} tf:{t.finished}')
+        #             t.kill = True
+        #         stop_all_threads(threadlist)
+        #         break
+        #     if cmd[:1] == 't':
+        #         torqcount = get_torqlog_table(engine)
+        #         logger.info(f'[t] {torqcount}')
+        #     if cmd[:1] == 'd':
+        #         threadremains = 0
+        #         logger.debug(f'[d] tc:{torqcount} paththr:{len(paththread.torqthreads)} torqfiles:{len(paththread.torqfiles)} hashlist: {len(paththread.hashlist)} ')
+        #         for t in paththread.torqthreads:
+        #             if not t.kill:
+        #                 logger.debug(f'[dt] {t.get_status()}')
+        #                 threadremains += t.get_remaining()
+        #         logger.debug(f'[d] threadremains: {threadremains} total remaining: {total_remaining} elapsed: {datetime.now() - timestart}')
+        # except KeyboardInterrupt:
+        #     stop_all_threads(threadlist)
+        #     break
+        # except Exception as e:
+        #     logger.error(f'E in main {e}')
+        #     stop_all_threads(threadlist)
+        #     break
