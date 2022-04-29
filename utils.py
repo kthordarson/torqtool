@@ -15,7 +15,7 @@ from datetime import datetime
 from dateutil.parser import ParserError
 from sqlalchemy.exc import ProgrammingError
 from hashlib import md5
-from sqlalchemy import create_engine, Table, MetaData, Column, Integer, String, inspect, select, BigInteger, Numeric, DateTime, text, BIGINT, BigInteger, Float
+from sqlalchemy import create_engine, Table, MetaData, Column, Integer, String, inspect, select, BigInteger, Numeric, DateTime, text, BIGINT,  Float
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.exc import OperationalError, DataError
@@ -365,9 +365,6 @@ def read_csv_columns_raw(csv_filename):
 	fixed_cols = column_fixer(lineone)
 	return fixed_cols
 
-def init_db(engine):
-	database_init(engine)
-
 def database_init(engine):
 	meta = MetaData(engine)
 	t1 = datetime.now()
@@ -376,7 +373,6 @@ def database_init(engine):
 		meta.drop_all(bind=engine, tables=[Torqfile.__table__, Torqlog.__table__], checkfirst=False)
 	except OperationalError as e:
 		logger.error(e)
-	logger.debug(f'[dbinit] {(datetime.now() - t1).total_seconds()} creating tables')
 	meta.create_all(bind=engine, tables=[Torqfile.__table__, Torqlog.__table__])
 	logger.debug(f'[dbinit] {(datetime.now() - t1).total_seconds()} done')
 
