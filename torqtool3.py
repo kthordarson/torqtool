@@ -1,4 +1,6 @@
+from aiomultiprocess import Pool
 import asyncio
+
 from multiprocessing import cpu_count
 from lib2to3.pgen2.token import OP
 import os
@@ -81,7 +83,7 @@ class DataSender(Thread):
 			# self.session.commit()
 			self.send_count += 1
 			self.remaining_files -= 1
-			# logger.debug(f'[{self.name}] sent {torqfile} sc:{self.send_count} st:{len(self.torqfiles)} r:{self.remaining_files}')
+			logger.debug(f'[{self.name}] sent {torqfile} sc:{self.send_count} st:{len(self.torqfiles)} r:{self.remaining_files}')
 		self.send_done = True
 		return
 
@@ -227,6 +229,10 @@ async def readtask(loop, executor_processes, csv):
 	torqfile = await loop.run_in_executor(executor_processes, Torqfile(filename=csv).buffread)
 	return torqfile
 
+async def readtasknew(filename):	
+	torqfile = Torqfile(filename=filename).buffread()
+	return torqfile
+
 def check_threads(threads):
 	return True in [t.is_alive() for t in threads]
 
@@ -248,75 +254,43 @@ async def main(args):
 	TORQDBUSER = 'torq' # os.getenv('TORQDBUSER')
 	TORQDBPASS = 'dzt3f5jCvMlbUvRG'
 	# TORQDBPASS = os.getenv('TORQDBPASS')
-	TORQDATABASE = 'torqdev2'
+	TORQDATABASE = 'torqdev3'
 	engine = create_engine(f"mysql+pymysql://{TORQDBUSER}:{TORQDBPASS}@{TORQDBHOST}/{TORQDATABASE}?charset=utf8mb4", pool_size=20, max_overflow=0)# , isolation_level='AUTOCOMMIT')
 	# engine = create_engine("mysql://" + loadConfigVar("user") + ":" + loadConfigVar("password") + "@" + loadConfigVar("host") + "/" + loadConfigVar("schema"),pool_size=20, max_overflow=0)
 	if args.init_db:
 		logger.debug(f'[mainpath] Calling init_db ... ')
 		database_init(engine)
 	maxworkers = cpu_count()
-	executor_processes = ProcessPoolExecutor(max_workers=maxworkers)
-	loop_ = asyncio.get_event_loop()
-	tasks = []
 	conn = engine.connect()
-	# Session = sessionmaker(bind=engine)
-	# session = Session()
-	# logger.debug(f'[db] conn:{conn} S:{Session} s:{session}')
 	hashlist = [k[0] for k in conn.execute('select hash from torqfiles')]
+	filelist = []
 	csv_file_list = get_csv_files(searchpath=args.path)
-	logger.debug(f'csvlist:{len(csv_file_list)}')
+	logger.debug(f'read start time: {(datetime.now() -t0).seconds} csv:{len(csv_file_list)}')
 	for csv in csv_file_list:
 		csvhash = md5(open(csv,'rb').read()).hexdigest()
 		if csvhash in hashlist:
 			logger.warning(f'[{csv}] already in database')
 		else:
+			filelist.append(csv)
 			tripid = str(csv.parts[-2])
 			sqlhash = f'INSERT INTO torqfiles (name, hash, tripid) VALUES ("{csv}", "{csvhash}", "{tripid}")'
 			conn.execute(sqlhash)
-			tasks.append(readtask(loop_, executor_processes, csv))
-	# session.commit()
-	logger.debug(f'waiting for {len(tasks)} tasks time: {(datetime.now() -t0).seconds}')
-	torqfiles = await asyncio.gather(*tasks)
+	tf = []
+	logger.debug(f't: {(datetime.now() -t0).seconds} ')
+	async with Pool() as pool:
+		async for t in pool.map(readtasknew, filelist):
+			tf.append(t)
+	logger.debug(f'read done time: {(datetime.now() -t0).seconds} tf:{len(tf)}')
 	senderthreads = []
-	chunkedlist = [k for k in chunks(torqfiles, maxworkers)]
-	logger.debug(f'tasks done {len(tasks)} time: {(datetime.now() -t0).seconds} tf:{len(torqfiles)} cl:{len(chunkedlist)}')
+	chunkedlist = [k for k in chunks(tf, maxworkers)]
 	for thread in range(len(chunkedlist)):
-		senderthread = DataSender(torqfiles=chunkedlist[thread], engine=engine, senderid=thread)
-		senderthreads.append(senderthread)
-		senderthread.start()
+		s = DataSender(torqfiles=chunkedlist[thread], engine=engine, senderid=thread)
+		senderthreads.append(s)
+		s.start()
 	logger.debug(f'started senders:{len(senderthreads)} time: {(datetime.now() -t0).seconds}')
 
-	#for torqfile in torqfiles:
-	#	senderthreads.append(DataSender(torqfile=torqfile, engine=engine))
-	# for sender in senderthreads:
-	# 	sender.daemon = True
-	# 	sender.start()
-	# 	logger.debug(f'sender {sender} started')
 	while check_threads(senderthreads):
 		pass
-		# try:
-		# 	cmd = input('> ')
-		# 	if cmd[:1] == 'q':
-		# 		for st in senderthreads:
-		# 			st.kill = True
-		# 			logger.info(f'[st] stopping')
-		# 			st.join(timeout=0)
-		# 		break
-		# 	if cmd[:1] == 'd':
-		# 		totalsent = 0
-		# 		totalremaining = 0
-		# 		for st in senderthreads:
-		# 			totalsent += st.send_count
-		# 			totalremaining += st.remaining_files
-		# 			# st.get_status()
-		# 		logger.info(f'[d] senders: {len(senderthreads)} ts:{totalsent} tr:{totalremaining}')
-		# except KeyboardInterrupt as e:
-		# 	logger.warning(f'[KeyboardInterrupt] {e}')
-		# 	break
-		# except Exception as e:
-		# 	logger.error(f'[err] {e}')
-		# 	break
-	# logger.debug('done')
 	
 if __name__ == '__main__':
 	parser = argparse.ArgumentParser(description="torqtool")
@@ -335,4 +309,4 @@ if __name__ == '__main__':
 	args = parser.parse_args()
 	t0 = datetime.now()
 	asyncio.run(main(args))
-	logger.info(f'done time: {datetime.now() - t0}')
+	logger.info(f'[main] done time: {datetime.now() - t0}')
