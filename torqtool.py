@@ -29,23 +29,6 @@ CHUNK_SIZE = 3
 SQLCHUNKSIZE = 1000
 from typing import Callable, Any
 
-def async_timed():
-    def wrapper(func: Callable) -> Callable:
-        @functools.wraps(func)
-        async def wrapped(*args, **kwargs) -> Any:
-            print(f'starting {func} with args {args} {kwargs}')
-            start = datetime.now()
-            try:
-                return await func(*args, **kwargs)
-            finally:
-                end = datetime.now()
-                total = end - start
-                print(f'finished {func}')
-
-        return wrapped
-
-    return wrapper
-
 def check_threads(threads):
     return True in [t.is_alive() for t in threads]
 
@@ -54,12 +37,10 @@ def stop_all_threads(threads):
         logger.debug(f'[stop_all_threads] stopping {t}')
         t.do_kill()
         try:
-            t.join(timeout=1)    
+            t.join(timeout=1)
         except AssertionError as e:
             pass
         t.kill = True
-        
-
 
 def chunks(l, n):
     """Yield n number of sequential chunks from l."""
@@ -68,9 +49,8 @@ def chunks(l, n):
         si = (d + 1) * (i if i < r else r) + d * (0 if i < r else i - r)
         yield l[si:si + (d + 1 if i < r else d)]
 
-
 class MainPath(Thread):
-    def __init__(self, args, engine):
+    def __init__(self, args=None, engine=None):
         Thread.__init__(self)
         self.args = args
         self.engine = engine
@@ -98,7 +78,6 @@ class MainPath(Thread):
         else:
             self.max_workers = MAX_THREADS
         self.threads_started = False
-        
 
     def do_kill(self):
         # logger.info(f'[mainpath] do_kill')
@@ -139,7 +118,7 @@ class MainPath(Thread):
                 tasks.append(loop.run_in_executor(executor, functools.partial(torqfile.do_self_fix)))
                 # tasks.append(loop.run_in_executor(executor, functools.partial(torqfile, None)))
         await asyncio.gather(*tasks)
-        
+
             # buffer = read_csv(self.filename, delimiter=',', low_memory=False, encoding='cp1252', na_values=0)
             # torqfile.buffer = buffer
 
@@ -187,124 +166,3 @@ class MainPath(Thread):
         logger.debug(f'[senders] total: {len(self.torqthreads)} cl: {len(chunklist)}')
         return self.torqthreads
 
-def maintorq():
-    timestart = datetime.now()
-    TORQDBHOST = 'elitedesk' # os.getenv('TORQDBHOST')
-    TORQDBUSER = 'torq' # os.getenv('TORQDBUSER')
-    TORQDBPASS = 'dzt3f5jCvMlbUvRG'
-    # TORQDBPASS = os.getenv('TORQDBPASS')
-    TORQDATABASE = 'torqdev'
-    engine = create_engine(f"mysql+pymysql://{TORQDBUSER}:{TORQDBPASS}@{TORQDBHOST}/{TORQDATABASE}?charset=utf8mb4")# , isolation_level='AUTOCOMMIT')
-    parser = argparse.ArgumentParser(description="torqtool")
-    parser.add_argument("--path", nargs="?", default=".", help="path to csv files", action="store")
-    parser.add_argument("--file", nargs="?", default=".", help="path to single csv file", action="store")
-    parser.add_argument("--gui", default=False, help="Run gui", action="store_true", dest='gui')
-    parser.add_argument("--check-db", default=False, help="check database", action="store_true", dest='check_db')
-    parser.add_argument("--init-db", default=False, help="init database", action="store_true", dest='init_db')
-    parser.add_argument("--fixcsv", default=False, help="repair csv", action="store_true", dest='fixcsv')
-    parser.add_argument("--dump-db", nargs="?", default=None, help="dump database to file", action="store")
-    parser.add_argument("--check-file", default=False, help="check database", action="store_true", dest='check_file')
-    parser.add_argument("--webstart", default=False, help="start web listener", action="store_true", dest='web')
-    parser.add_argument("--sqlchunksize", nargs="?", default="1000", help="sql chunk", action="store")
-    parser.add_argument("--max_workers", nargs="?", default="4", help="max_workers", action="store")
-    parser.add_argument("--chunks", nargs="?", default="4", help="chunks", action="store")
-    args = parser.parse_args()
-    threadlist = []
-    sender_threads = []
-    torq_thread = MainPath(args, engine)
-
-    if args.init_db:
-        logger.debug(f'[mainpath] Calling init_db ... ')
-        init_db(engine)
-
-    if len(args.path) > 1:
-        torq_thread.daemon = True
-        threadlist.append(torq_thread)
-        torq_thread.hashlist = torq_thread.get_hashlist()
-        torq_thread.gather_csvfiles()
-        torq_thread.start()
-        senders = [] #torq_thread.get_sender_threads()
-        # for s in senders:
-            # sender_threads.append(s)
-        # torq_thread.start_senders()
-            # s.daemon = True
-            # s.run()
-
-    torqcount = 0
-    while True:
-        total_remaining = 0
-        for t in sender_threads:
-            total_remaining += t.get_remaining()
-            if t.finished:
-                logger.info(f'tr: {t}  {total_remaining} t.get_remaining() {t.get_remaining()} {t.finished} {t.sent_files} {t.fixers_done}')
-#        if total_remaining <= 0:
-#            logger.info(f'[main] total_remaining:{total_remaining} st:{len(sender_threads)} ')
-#            for st in sender_threads:
-#                logger.debug(f'[mainst] status {st.get_status()}')
-#            stop_all_threads(sender_threads)
-#            stop_all_threads(threadlist)
-#            break
-        try:
-            cmd = input(' > ')
-            if cmd[:1] == 'q':
-                for t in torq_thread.torqthreads:
-                    logger.info(f'[main] quit stopping thread {t} tk:{t.kill} tf:{t.finished}')
-                    t.kill = True
-                stop_all_threads(threadlist)
-                break
-            if cmd[:1] == 't':
-                torqcount = get_torqlog_table(engine)
-                logger.info(f'[t] {torqcount}')
-            if cmd[:1] == 'd':
-                threadremains = 0
-                logger.debug(f'[d] tc:{torqcount} paththr:{len(torq_thread.torqthreads)} torqfiles:{len(torq_thread.torqfiles)} hashlist: {len(torq_thread.hashlist)} ')
-                for t in torq_thread.torqthreads:
-                    if not t.kill:
-                        logger.debug(f'[dt] {t.get_status()}')
-                        threadremains += t.get_remaining()
-                logger.debug(f'[d] threadremains: {threadremains} total remaining: {total_remaining} elapsed: {datetime.now() - timestart}')
-        except KeyboardInterrupt:
-            stop_all_threads(threadlist)
-            break
-        except Exception as e:
-            logger.error(f'E in main {e}')
-            stop_all_threads(threadlist)
-            break
-            
-    timeend = datetime.now() - timestart
-    # torqcount = get_torqlog_table(engine)
-    logger.info(f'[timeend] tc:{torqcount} path:{args.path} time:{timeend} sqlchunksize:{args.sqlchunksize} chunks:{args.chunks} max_workers:{args.max_workers}')
-
-
-if __name__ == '__main__':
-    maintorq()
-
-
-
-
-        # try:
-        #     cmd = input(' > ')
-        #     if cmd[:1] == 'q':
-        #         for t in torq_thread.torqthreads:
-        #             logger.info(f'[main] quit stopping thread {t} tk:{t.kill} tf:{t.finished}')
-        #             t.kill = True
-        #         stop_all_threads(threadlist)
-        #         break
-        #     if cmd[:1] == 't':
-        #         torqcount = get_torqlog_table(engine)
-        #         logger.info(f'[t] {torqcount}')
-        #     if cmd[:1] == 'd':
-        #         threadremains = 0
-        #         logger.debug(f'[d] tc:{torqcount} paththr:{len(torq_thread.torqthreads)} torqfiles:{len(torq_thread.torqfiles)} hashlist: {len(torq_thread.hashlist)} ')
-        #         for t in torq_thread.torqthreads:
-        #             if not t.kill:
-        #                 logger.debug(f'[dt] {t.get_status()}')
-        #                 threadremains += t.get_remaining()
-        #         logger.debug(f'[d] threadremains: {threadremains} total remaining: {total_remaining} elapsed: {datetime.now() - timestart}')
-        # except KeyboardInterrupt:
-        #     stop_all_threads(threadlist)
-        #     break
-        # except Exception as e:
-        #     logger.error(f'E in main {e}')
-        #     stop_all_threads(threadlist)
-        #     break
