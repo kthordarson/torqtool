@@ -156,8 +156,8 @@ class DataProcessor(Process):
 			return
 
 
-class Torqfile(Base):
-	__tablename__ = 'torqfiles'
+class Torqfile1(Base):
+	__tablename__ = 'torqfiles1'
 	fileid =  Column(Integer, primary_key=True)
 	name = Column(String(255))
 	hash = Column(String(255))
@@ -577,3 +577,146 @@ def SendProcess(torqfile): # send own csv data to database ...
 		logger.error(f'[T] {torqfile.filename} failed: AttributeError ')
 		send_result = -4
 	return send_result
+
+class TripProfile(Base):
+	__tablename__ = 'torqtrips'
+	tripid =  Column(BigInteger, primary_key=True)
+	filename = Column(String(255))
+	fuelCost = Column(Integer)
+	fuelUsed = Column(Integer)
+	time = Column(Integer)
+	distanceWhilstConnectedToOBD = Column(Integer)
+	distance = Column(Integer)
+	profile = Column(String(255))
+	tripdate = Column(DateTime, server_default=text('NOW()'))
+
+	def __init__(self, filename=None):
+		self.filename = filename
+
+class Torqfile(Base):
+	__tablename__ = 'torqfiles'
+	fileid =  Column(Integer, primary_key=True)
+	name = Column(String(255))
+	hash = Column(String(255))
+	tripid =  Column(String(255))
+	torqprofile = Column(String(255))
+
+	def __str__(self):
+		return(f'[torqfile] {self.name}')
+
+	def __repr__(self):
+		return(f'{self.name}')
+
+	def __init__(self, filename:Path):
+		self.name = str(filename)
+		self.filename = filename
+		self.fixed = False
+		self.read_done = False
+		self.buffer = DataFrame()
+		self.trip_profile = DataFrame()
+		self.filesize = filename.stat().st_size
+		self.tripid = str(filename.parts[-2])
+		self.columns = []
+		self.hash = self.gen_md5hash()
+		self.exists_in_db = False
+		self.send_done = False
+		self.send_failed = False
+		self.init_time = datetime.now()
+		self.send_time_start = datetime.now()
+		self.sqlchunksize = 10000
+
+	def get_columns(self):
+		self.columns = read_csv_columns_raw(self.filename)
+		return self.columns
+
+	def get_buffersize(self):
+		result = None
+		try:
+			result = len(self.buffer)
+		except TypeError as e:
+			logger.error(f'[bufsize] {e} b:{type(self.buffer)}')
+		return result
+
+	def get_hash(self): # return own md5 hash
+		if self.hash is None:
+			self.gen_md5hash()
+		return self.hash
+
+	def gen_md5hash(self): # generate md5 hash
+		hash = md5(open(self.filename,'rb').read()).hexdigest()
+		self.hash = hash
+		return hash
+
+	def get_profile(self):
+		return self.trip_profile
+
+	def read_profile(self):
+		p_filename = os.path.join(self.filename.parent, 'profile.properties')
+		with open(p_filename, 'r') as f:
+			pdata_ = f.readlines()
+		if len(pdata_) == 8:
+			pdata = [l.strip('\n') for l in pdata_ if not l.startswith('#')]
+			tripdate = to_datetime(pdata_[1][1:])
+			trip_profile = dict([k.split('=') for k in pdata])
+			trip_profile['filename'] = p_filename
+			trip_profile['tripid'] = int(self.tripid)
+			trip_profile['tripdate'] = tripdate
+			self.trip_profile = DataFrame([trip_profile])
+			# self.trip_profile.set_index('tripid', inplace=True)
+		else:
+			logger.warning(f'[p] {self.filename} len={len(pdata_)}')
+			# self.trip_profile = DataFrame(Series(trip_profile))
+			# logger.debug(f'[p] {len(self.trip_profile)} ')
+
+
+	def buffread(self):
+		self.buffer = read_csv(self.filename, delimiter=',', low_memory=False, encoding='cp1252', na_values=0, index_col='GPS Time')
+		self.buffer_fixer()
+		self.read_done = True
+		self.read_profile()
+		return self
+
+	def buffer_fixer(self):
+		t0 = datetime.now()
+		if self.fixed:
+			logger.warning(f'[bf] {self.filename} already fixed? self.self.buffer: {len(self.self.buffer)} buff:{len(self.buffer)} sf:{self.fixed} rd:{self.read_done}')
+			return None
+		if len(self.buffer) == 0:
+			self.buffread()
+			if len(self.buffer) == 0:
+				# logger.error(f'{self} buff {len(self.buffer)}')
+				return
+		# logger.info(f'[bf] {self.filename} self.buffer_fixer start')
+		self.buffer.replace('-','0', inplace=True)
+		self.buffer.replace('âˆž','0', inplace=True)
+		self.buffer.replace('Ã¢ÂˆÂž','0', inplace=True)
+		cols = [column_fixer(k) for k in self.buffer.columns]
+		fields = [FIELDMAPS[k] for k in cols]
+		# fields = [FIELDMAPS.get(k, '') for k in cols]
+		self.buffer.columns = fields
+		# logger.debug(f'[fix] {self.filename} t0 {t0}')
+		try:
+			if self.buffer.get('GPSTime') is not None:
+				self.buffer['GPSTime'].replace('-', self.buffer['GPSTime'][0], inplace=True)
+				self.buffer['GPSTime'].replace('0', self.buffer['GPSTime'][0], inplace=True)
+				self.buffer['GPSTime'] = to_datetime(self.buffer['GPSTime'], errors='raise', infer_datetime_format=True)
+			if self.buffer.get('GPS Time') is not None:
+				self.buffer['GPS Time'] = to_datetime(self.buffer['GPS Time'], errors='raise', infer_datetime_format=True)
+		except (ParserError, KeyError) as e:
+			logger.error(f'[bferr] gpstime {self.filename} {e}')
+		try:
+			if self.buffer.get('DeviceTime') is not None:
+				self.buffer['DeviceTime'] = to_datetime(self.buffer['DeviceTime'], errors='raise', infer_datetime_format=True)
+			if self.buffer.get('Device Time') is not None:
+				self.buffer['Device Time'] = to_datetime(self.buffer['Device Time'], errors='raise', infer_datetime_format=True)
+		except (ParserError, KeyError) as e:
+			logger.error(f'[bferr] devicetime {self.filename} {e}')
+		for f in fields:
+			for badv in badvals_str:
+				self.buffer[f].replace(badv, 0, inplace=True)
+			for badv in badvals:
+				self.buffer[f].replace(badv, 0, inplace=True)
+		self.fixed = True
+		# logger.debug(f'fix done {self} {datetime.now() - t0}')
+		# self.buffer.set_index('GPSTime', inplace=True)
+		return len(self.buffer)
