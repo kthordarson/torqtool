@@ -74,24 +74,25 @@ def read_and_send(csvfile=None, engine=None, session=None, csvhash=None, tablena
 	# logger.debug(f'[rs] {self.filename.name} b:{len(self.buffer)} time:{t0}')
 	tfile.buffer_fixer()
 	tfile.read_done = True
+	tfile.buffer['tripid'] = tripid
 	tfile.read_profile()
-	tfile.buffer.to_sql(con=engine, name='torqlogs', if_exists='append', index=False, method='multi', chunksize=tfile.sqlchunksize)
-	tfile.trip_profile.to_sql(con=session, name='torqtrips', if_exists='append', index=False, method='multi', chunksize=tfile.sqlchunksize)
+	tfile.buffer['hash'] = csvhash
+	tfile.hash = csvhash
+	
+	tfile.trip_profile['tripid'] = tripid
+	try:
+		tfile.buffer.to_sql(con=engine, name='torqlogs', if_exists='append', index=False, method='multi', chunksize=tfile.sqlchunksize)
+	except OperationalError as e:
+		logger.error(f'[err] in buffer {csvfile} {e.code} {e.args[0]}')
+	try:
+		tfile.trip_profile.to_sql(con=session, name='torqtrips', if_exists='append', index=False, method='multi', chunksize=tfile.sqlchunksize)
+	except OperationalError as e:
+		logger.error(f'[err] in profile {csvfile} {e.code} {e.args[0]}')
 	logger.debug(f'[rs] {tfile} b:{len(tfile.buffer)} donetime:{datetime.now()-t0}')
 	return
 
-
-async def readtask(loop, executor_processes, csv):
-	torqfile = await loop.run_in_executor(executor_processes, Torqfile(filename=csv).buffread)
-	return torqfile
-
-async def sendtask(loop=None, executor_processes=None, buffer=None, engine=None, tablename=None):
-	await loop.run_in_executor(None, functools.partial(buffer.to_sql, con=engine, name=tablename, if_exists='append', index=False, method='multi', chunksize=10000))
-	return 0
-
 async def torqtask(loop=None, executor_processes=None, buffer=None, engine=None,  session=None, csvhash=None, csvfile=None):
 	await loop.run_in_executor(None, functools.partial(read_and_send, engine=engine, session=session,csvhash=csvhash, csvfile=csvfile))
-	#await read_and_send(csv, engine, session)
 	return
 
 
@@ -100,7 +101,7 @@ async def main(args):
 	TORQDBHOST = 'elitedesk' # os.getenv('TORQDBHOST')
 	TORQDBUSER = 'torq' # os.getenv('TORQDBUSER')
 	TORQDBPASS = 'dzt3f5jCvMlbUvRG'
-	TORQDATABASE = 'torqdev4'
+	TORQDATABASE = 'torqdev5'
 	engine = create_engine(f"mysql+pymysql://{TORQDBUSER}:{TORQDBPASS}@{TORQDBHOST}/{TORQDATABASE}?charset=utf8mb4", pool_size=20, max_overflow=0)# , isolation_level='AUTOCOMMIT')
 	# engine = create_async_engine(f"mysql+asyncmy://{TORQDBUSER}:{TORQDBPASS}@{TORQDBHOST}/{TORQDATABASE}?charset=utf8mb4", pool_size=20, max_overflow=0)# , isolation_level='AUTOCOMMIT')
 	if args.init_db:
@@ -116,6 +117,7 @@ async def main(args):
 	# async_connection = asyncsession.connection()
 	hashlist = [k for k in conn.execute('select hash from torqfiles')]
 	filelist = []
+	torqfiles = None
 	csv_file_list = get_csv_files(searchpath=args.path)
 	logger.debug(f'read start time: {(datetime.now() -t0).seconds} csv:{len(csv_file_list)} h:{len(hashlist)}')
 	for csv in csv_file_list:
@@ -124,7 +126,7 @@ async def main(args):
 			logger.warning(f'[{csv}] already in database')
 		else:
 			filelist.append(csv)
-			tt = torqtask(loop=loop_, executor_processes=executor_processes, csvfile=csv, engine=engine, session=conn)
+			tt = torqtask(loop=loop_, executor_processes=executor_processes, csvfile=csv, engine=engine, session=conn, csvhash=csvhash)
 			tasks.append(tt)
 	#conn.commit()
 	# logger.debug(f'torqtask start time: {(datetime.now() -t0).seconds} tasks:{len(tasks)}')

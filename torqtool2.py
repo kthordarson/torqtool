@@ -170,7 +170,7 @@ class Torqfile(Base):
 			trip_profile['tripdate'] = tripdate
 			self.trip_profile = DataFrame([trip_profile])
 			# self.trip_profile = DataFrame(Series(trip_profile))
-			# logger.debug(f'[p] {len(self.trip_profile)} ')
+			logger.debug(f'[p] {len(self.trip_profile)} {self.trip_profile["tripid"]}')
 
 	def buffread(self):
 		self.buffer = read_csv(self.filename, delimiter=',', low_memory=False, encoding='cp1252', na_values=0)		

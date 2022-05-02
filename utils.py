@@ -15,7 +15,7 @@ from datetime import datetime
 from dateutil.parser import ParserError
 from sqlalchemy.exc import ProgrammingError
 from hashlib import md5
-from sqlalchemy import create_engine, Table, MetaData, Column, Integer, String, inspect, select, BigInteger, Numeric, DateTime, text, BIGINT,  Float
+from sqlalchemy import ForeignKey, create_engine, Table, MetaData, Column, Integer, String, inspect, select, BigInteger, Numeric, DateTime, text, BIGINT,  Float
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.exc import OperationalError, DataError
@@ -461,10 +461,9 @@ def parse_csvfile(csv_filename):
 
 class Torqlog(Base):
 	__tablename__ = 'torqlogs'
-	torqentryid =  Column(Integer, primary_key=True)
+	id =  Column(Integer, primary_key=True)
 	hash = Column(String(255))
 	tripid =  Column(String(255))
-	index =  Column(Integer)
 	AccelerationSensorTotalg = Column(Numeric, default=0)
 	AccelerationSensorXaxisg = Column(Numeric, default=0)
 	AccelerationSensorYaxisg = Column(Numeric, default=0)
@@ -580,7 +579,7 @@ def SendProcess(torqfile): # send own csv data to database ...
 
 class TripProfile(Base):
 	__tablename__ = 'torqtrips'
-	tripid =  Column(BigInteger, primary_key=True)
+	id =  Column(BigInteger, primary_key=True)
 	filename = Column(String(255))
 	fuelCost = Column(Integer)
 	fuelUsed = Column(Integer)
@@ -589,13 +588,15 @@ class TripProfile(Base):
 	distance = Column(Integer)
 	profile = Column(String(255))
 	tripdate = Column(DateTime, server_default=text('NOW()'))
+	hash = Column(String(255))
+	tripid = Column(String(255))
 
 	def __init__(self, filename=None):
 		self.filename = filename
 
 class Torqfile(Base):
 	__tablename__ = 'torqfiles'
-	fileid =  Column(Integer, primary_key=True)
+	id =  Column(Integer, primary_key=True)
 	name = Column(String(255))
 	hash = Column(String(255))
 	tripid =  Column(String(255))
@@ -661,12 +662,10 @@ class Torqfile(Base):
 			trip_profile['filename'] = p_filename
 			trip_profile['tripid'] = int(self.tripid)
 			trip_profile['tripdate'] = tripdate
+			trip_profile['hash'] = self.hash
 			self.trip_profile = DataFrame([trip_profile])
-			# self.trip_profile.set_index('tripid', inplace=True)
 		else:
 			logger.warning(f'[p] {self.filename} len={len(pdata_)}')
-			# self.trip_profile = DataFrame(Series(trip_profile))
-			# logger.debug(f'[p] {len(self.trip_profile)} ')
 
 
 	def buffread(self):
