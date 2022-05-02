@@ -18,6 +18,7 @@ from hashlib import md5
 from sqlalchemy import ForeignKey, create_engine, Table, MetaData, Column, Integer, String, inspect, select, BigInteger, Numeric, DateTime, text, BIGINT,  Float
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import relationship
 from sqlalchemy.exc import OperationalError, DataError
 import pymysql
 from fieldmaps import FIELDMAPS
@@ -577,22 +578,7 @@ def SendProcess(torqfile): # send own csv data to database ...
 		send_result = -4
 	return send_result
 
-class TripProfile(Base):
-	__tablename__ = 'torqtrips'
-	id =  Column(BigInteger, primary_key=True)
-	filename = Column(String(255))
-	fuelCost = Column(Integer)
-	fuelUsed = Column(Integer)
-	time = Column(Integer)
-	distanceWhilstConnectedToOBD = Column(Integer)
-	distance = Column(Integer)
-	profile = Column(String(255))
-	tripdate = Column(DateTime, server_default=text('NOW()'))
-	hash = Column(String(255))
-	tripid = Column(String(255))
-
-	def __init__(self, filename=None):
-		self.filename = filename
+		
 
 class Torqfile(Base):
 	__tablename__ = 'torqfiles'
@@ -601,6 +587,8 @@ class Torqfile(Base):
 	hash = Column(String(255))
 	tripid =  Column(String(255))
 	torqprofile = Column(String(255))
+	# trip = relationship('TripProfile', back_populates='torqfiles')
+	# trip = relationship('TripProfile')
 
 	def __str__(self):
 		return(f'[torqfile] {self.name}')
@@ -615,6 +603,7 @@ class Torqfile(Base):
 		self.read_done = False
 		self.buffer = DataFrame()
 		self.trip_profile = DataFrame()
+		self.fileinfo = DataFrame()
 		self.filesize = filename.stat().st_size
 		self.tripid = str(filename.parts[-2])
 		self.columns = []
@@ -659,6 +648,11 @@ class Torqfile(Base):
 			pdata = [l.strip('\n') for l in pdata_ if not l.startswith('#')]
 			tripdate = to_datetime(pdata_[1][1:])
 			trip_profile = dict([k.split('=') for k in pdata])
+			trip_profile['fuelCost'] = float(trip_profile['fuelCost'])
+			trip_profile['fuelUsed'] = float(trip_profile['fuelUsed'])
+			trip_profile['distanceWhilstConnectedToOBD'] = float(trip_profile['distanceWhilstConnectedToOBD'])
+			trip_profile['distance'] = float(trip_profile['distance'])
+			trip_profile['time'] = float(trip_profile['time'])
 			trip_profile['filename'] = p_filename
 			trip_profile['tripid'] = int(self.tripid)
 			trip_profile['tripdate'] = tripdate
@@ -719,3 +713,26 @@ class Torqfile(Base):
 		# logger.debug(f'fix done {self} {datetime.now() - t0}')
 		# self.buffer.set_index('GPSTime', inplace=True)
 		return len(self.buffer)
+
+class TripProfile(Base):
+	__tablename__ = 'torqtrips'
+	id =  Column(BigInteger, primary_key=True)
+	
+	filename = Column(String(255))
+	fuelCost = Column(Float)
+	fuelUsed = Column(Float)
+	time = Column(Float)
+	distanceWhilstConnectedToOBD = Column(Float)
+	distance = Column(Float)
+	profile = Column(String(255))
+	tripdate = Column(DateTime, server_default=text('NOW()'))
+	hash = Column(String(255))
+	tripid = Column(String(255))
+	# file_id = Column(Integer, ForeignKey("torqfile.id"))
+	# torqfile = relationship("Torqfile", foreign_keys=[file_id])
+	#torqfile = relationship("Torqfile", back_populates='torqtrips')
+	# torqfile = relationship("Torqfile")
+
+	def __init__(self, filename=None):
+		self.filename = filename
+

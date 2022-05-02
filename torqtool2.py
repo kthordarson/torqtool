@@ -259,10 +259,12 @@ async def main(args):
 	loop_ = asyncio.get_event_loop()
 	tasks = []
 	conn = engine.connect()
-	# Session = sessionmaker(bind=engine)
-	# session = Session()
+	Session = sessionmaker(bind=engine)
+	session = Session()
 	# logger.debug(f'[db] conn:{conn} S:{Session} s:{session}')
-	hashlist = [k[0] for k in conn.execute('select hash from torqfiles')]
+	hashres = session.execute(select(Torqfile)).fetchall()
+	hashlist = [k[0].hash for k in hashres]
+	# hashlist = [k[0] for k in conn.execute('select hash from torqfiles')]
 	csv_file_list = get_csv_files(searchpath=args.path)
 	logger.debug(f'csvlist:{len(csv_file_list)}')
 	for csv in csv_file_list:
