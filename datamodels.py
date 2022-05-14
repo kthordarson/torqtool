@@ -11,9 +11,6 @@ Base = declarative_base()
 
 class TorqEntry(Base):
 	__tablename__ = 'torqlogs'
-	__mapper_args__ = {
-		'exclude_properties': ['']
-	}
 	id =  Column(Integer, primary_key=True)
 	file_id = Column(Integer, ForeignKey('torqfiles.id', ondelete='NO ACTION'))
 	torqfile = relationship('TorqFile')
@@ -21,23 +18,6 @@ class TorqEntry(Base):
 	hash = Column(String(255))
 	tripid =  Column(String(255))
 	profile =  Column(String(255))
-	# Averagetripspeedwhilststoppedormovingonlykm = Column(Numeric, default=0)
-	# COaing = Column(Numeric, default=0)
-	# COing = Column(Numeric, default=0)
-	# costpermilekm = Column(Numeric, default=0)
-	# costpermilekminst = Column(Numeric, default=0)
-	# DistancetravelledwithMIL = Column(Numeric, default=0)
-	# Fuelflowrateccmin = Column(Numeric, default=0)
-	# Fuelflowratelhr = Column(Numeric, default=0)
-	# GPSSpeedkm = Column(Numeric, default=0)
-	# GPSvsOBDSpeeddifferencekm = Column(Numeric, default=0)
-	# LitresPer100KilometerInstantl = Column(Numeric, default=0)
-	# LitresPer100KilometerLongTermAveragel = Column(Numeric, default=0)
-	# MassAirFlowRateg = Column(Numeric, default=0)
-	# SpeedGPSkm = Column(Numeric, default=0)
-	# SpeedOBDkm = Column(Numeric, default=0)
-	# TripaverageLitres = Column(Numeric, default=0)
-	#Averagetripspeedwhilststoppedormovingkm = Column(Numeric, default=0)
 	AccelerationSensorTotalg = Column(Float, default=0)
 	AccelerationSensorXaxisg = Column(Float, default=0)
 	AccelerationSensorYaxisg = Column(Float, default=0)

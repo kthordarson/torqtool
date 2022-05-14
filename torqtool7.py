@@ -50,14 +50,6 @@ def fixbuffer(buffer=None, metadata=None, profile=None, csvfile=None, csvhash=No
 		buffer.rename(columns={col:newname}, inplace=True)
 		tempbuffer = buffer[newname].replace(nan, 0) # .transpose()
 		buffer[newname] = tempbuffer.transpose()
-		# logger.info(f'[fixb] c:{col} n:{newname} time: {datetime.now() - t0}')
-		# buffer[newname].replace(to_replace=340282346638528860000000000000000000000, value=0, inplace=True, regex=True)
-		# buffer[newname].replace(to_replace='340282346638528860000000000000000000000', value=0, inplace=True)
-		# buffer[newname].replace('340282346638528860000000000000000000000',0,inplace=True)
-		# buffer[newname].replace(340282346638528860000000000000000000000,0,inplace=True)
-		# buffer[newname].replace('-9999999999',0,inplace=True)
-		# buffer[newname].replace(9999999999,0,inplace=True)
-		# tempbuffer = tempbuffer.transpose()
 	logger.info(f'[fixb] done time: {(datetime.now() - t0).seconds} b:{len(buffer)} c:{csvfile} ')# 
 	return buffer
 
