@@ -1,30 +1,18 @@
-from multiprocessing import cpu_count
-
-import os
 import re
-from concurrent.futures import ProcessPoolExecutor
-from functools import wraps
 import argparse
-import functools
-import asyncio
-from pathlib import Path
-from pandas import read_csv, DataFrame, to_datetime, Series
+from pandas import read_csv, Series
 from numpy import nan
 from datetime import datetime
-from dateutil.parser import ParserError
 from sqlalchemy_utils import database_exists, create_database
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.exc import OperationalError, ProgrammingError, InternalError, NoReferencedTableError, ResourceClosedError, PendingRollbackError, IntegrityError
 from sqlalchemy import create_engine, Table, MetaData, Column, Integer, String, inspect, select, Numeric, DateTime, text, BIGINT, BigInteger, Float
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.exc import OperationalError, DataError
-import sqlalchemy.pool as pool
 from hashlib import md5
-# from utils import read_csv_columns_raw, column_fixer, FIELDMAPS, badvals, badvals_str, get_csv_files, Torqlog, Torqfile, TripProfile
-from utils import get_csv_files, torqbuffer_fixer, read_torq_profile
+from utils import get_csv_files, read_torq_profile
 from datamodels import TorqEntry, TorqFile, TorqProfile
+
 Base = declarative_base()
 
 from loguru import logger
@@ -122,8 +110,7 @@ def main(args):
 	TORQDATABASE = 'torq7'
 	dburl = f"mysql+pymysql://{TORQDBUSER}:{TORQDBPASS}@{TORQDBHOST}/{TORQDATABASE}?charset=utf8mb4" # &sessionVariables=sql_mode='NO_ENGINE_SUBSTITUTION'"
 	engine = create_engine(dburl, pool_size=200, max_overflow=0)# , isolation_level='AUTOCOMMIT')
-	maxworkers = cpu_count()
-	tasks = []
+
 	Session = sessionmaker(bind=engine)
 	session = Session()
 	session.autoflush = True

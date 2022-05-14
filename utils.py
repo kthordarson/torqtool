@@ -1,7 +1,4 @@
 # utils and db things here
-from lib2to3.pgen2.token import OP
-from multiprocessing.sharedctypes import Value
-from multiprocessing import Process
 import os
 import sys
 import re
@@ -10,24 +7,11 @@ from loguru import logger
 
 from datamodels import TorqProfile
 logger.add('tool.log')
-import inspect
-from re import T, search, sub
-from pandas import read_csv, DataFrame, to_datetime, to_numeric
-from datetime import datetime
-from dateutil.parser import ParserError
-from sqlalchemy.exc import ProgrammingError
-from hashlib import md5
-from sqlalchemy import ForeignKey, create_engine, Table, MetaData, Column, Integer, String, inspect, select, BigInteger, Numeric, DateTime, text, BIGINT,  Float
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.orm import relationship
-from sqlalchemy.exc import OperationalError, DataError
-import pymysql
-from fieldmaps import FIELDMAPS
-import json
-from threading import Thread, active_count
-from queue import Queue, Empty
-from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
+# import inspect
+# from re import T, search, sub
+from pandas import to_datetime
+
+from sqlalchemy.exc import OperationalError
 
 MIN_FILESIZE = 4096
 
@@ -42,64 +26,6 @@ def get_csv_files(searchpath:Path, recursive=True):
 	else:
 		torqcsvfiles = [k for k in searchpath.glob("**/trackLog.csv") if k.stat().st_size >= MIN_FILESIZE]
 		return torqcsvfiles
-
-def column_fixer(inputline):
-	columns = inputline.split(',') # split
-	columns = [sub('\n', '', col) for col in columns] # remove \n 's
-	columns = [sub(' ', '', col) for col in columns] # degree symbol
-	# columns = [sub('-', '', col) for col in columns] # degree symbol
-	columns = [sub(',', '', col) for col in columns] # degree symbol
-	columns = [sub('â', '', col) for col in columns] # degree symbol
-	columns = [sub('Â', '', col) for col in columns] # symbol cleanup
-	columns = [sub('Ã¢', '', col) for col in columns] # symbol cleanup
-	columns = [sub('Ã‚', '', col) for col in columns] # symbol cleanup
-	columns = [sub('CO,‚', 'CO', col) for col in columns] # symbol cleanup
-	columns = [sub(r'^\s', '', k) for k in columns] # remove extra spaces from start of col name
-	columns = ''.join([str(k)+',' for k in columns])
-	columns = columns.rstrip(',')
-	# columns = columns.lrstrip(',')
-	logger.debug(f'[i] {inputline} [o] {columns}')
-	return columns
-
-def read_csv_columns_raw(csv_filename):
-	with open(csv_filename) as f:
-		lineone = f.readline()
-	fixed_cols = column_fixer(lineone)
-	return fixed_cols
-
-
-def get_torqlog_table(engine):
-	# meta = MetaData(engine)
-	# Session = sessionmaker(bind=engine)
-	# session = Session()
-	conn = engine.connect()
-	torqfiles = conn.execute('SELECT * FROM torqlogs').fetchall()
-	engine.dispose()
-	return len(torqfiles)
-
-
-def make_column_list(columnlist):
-	templist = []
-	for list  in columnlist:
-		for col in list:
-			if col in templist:
-				pass
-			else:
-				templist.append(col)
-				# logger.debug(f'[templist] {len(templist)} added {col}')
-	templist = sorted(set(templist))
-	with open('tempfields.txt', 'a') as f:
-		f.writelines(templist)
-	return templist
-
-
-def parse_csvfile(csv_filename):
-	if len(csv_filename.parent.name) == 13: # torq creates folders based on unix time with milliseconds
-		dateguess = datetime.utcfromtimestamp(int(csv_filename.parent.name)/1000)
-	else: # normal....
-		dateguess = datetime.utcfromtimestamp(int(csv_filename.parent.name))
-	# logger.info(f'[dateguess] fn:{csv_filename} lfn:{len(csv_filename.parent.name)} dg:{dateguess} ')
-	return f'{dateguess}'
 
 
 def read_torq_profile(filename, tripid):
