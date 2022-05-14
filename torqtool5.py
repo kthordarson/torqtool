@@ -1,4 +1,5 @@
 import asyncio
+from genericpath import exists
 from sqlite3 import InternalError
 import psycopg2
 from multiprocessing import cpu_count
@@ -18,15 +19,15 @@ from dateutil.parser import ParserError
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.ext.asyncio import create_async_engine
-from sqlalchemy.exc import OperationalError, ProgrammingError, InternalError, NoReferencedTableError
+from sqlalchemy.exc import OperationalError, ProgrammingError, InternalError, NoReferencedTableError, ResourceClosedError, PendingRollbackError
 from sqlalchemy import create_engine, Table, MetaData, Column, Integer, String, inspect, select, Numeric, DateTime, text, BIGINT, BigInteger, Float
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.exc import OperationalError, DataError
 import sqlalchemy.pool as pool
 from hashlib import md5
-from utils import read_csv_columns_raw, column_fixer, FIELDMAPS, badvals, badvals_str, get_csv_files, Torqlog, Torqfile, TripProfile
-from threading import Thread, active_count
-
+# from utils import read_csv_columns_raw, column_fixer, FIELDMAPS, badvals, badvals_str, get_csv_files, Torqlog, Torqfile, TripProfile
+from utils import get_csv_files, torqbuffer_fixer, read_torq_profile
+from datamodels import TorqEntry, TorqFile, TorqProfile
 Base = declarative_base()
 
 from loguru import logger
@@ -39,10 +40,22 @@ def database_init(engine):
 	t1 = datetime.now()
 	logger.debug(f'[dbinit] {(datetime.now() - t1).total_seconds()} dropping from {meta}')
 	try:
-		meta.drop_all(bind=engine, tables=[Torqfile.__table__, Torqlog.__table__, TripProfile.__table__], checkfirst=False)
+		tables=[TorqEntry.__table__, TorqFile.__table__, TorqProfile.__table__]
+		for t in tables:
+			logger.debug(f'[d] dropping {t}')
+			t.drop(bind=engine, checkfirst=False)
+			#meta.drop_all(t, bind=engine, checkfirst=False)
 	except (OperationalError, NoReferencedTableError) as e:
 		logger.error(e)
-	Base.metadata.create_all(bind=engine, tables=[Torqfile.__table__, Torqlog.__table__, TripProfile.__table__])
+	try:
+		tables=[TorqEntry.__table__, TorqFile.__table__, TorqProfile.__table__]
+		meta.drop_all(bind=engine, tables=tables, checkfirst=False)
+	except Exception as e:
+		logger.error(e)
+	try:
+		Base.metadata.create_all(bind=engine, tables=[TorqEntry.__table__, TorqFile.__table__, TorqProfile.__table__], checkfirst=False)
+	except Exception as e:
+		logger.error(e)
 	logger.debug(f'[dbinit] {(datetime.now() - t1).total_seconds()} done')
 
 def chunks(l, n):
@@ -52,67 +65,31 @@ def chunks(l, n):
 		si = (d + 1) * (i if i < r else r) + d * (0 if i < r else i - r)
 		yield l[si:si + (d + 1 if i < r else d)]
 
-def read_and_send(csvfile=None, engine=None, session=None, csvhash=None, tablename=None, conn=None):
-	# localloop = asyncio.get_event_loop()
+def read_and_send(csvfile=None, engine=None, session=None, Session=None, csvhash=None, tablename=None, conn=None):
+	session = Session()
 	t0 = datetime.now()
 	tripid = str(csvfile.parts[-2])
-	# logger.info(f'[rs] driver {engine.driver}')
-	tfile = Torqfile(filename=csvfile)
-	tfile.buffer = read_csv(tfile.filename, delimiter=',', low_memory=False, encoding='cp1252', na_values=0)
-	# logger.debug(f'[rs] {self.filename.name} b:{len(self.buffer)} time:{t0}')
-	tfile.buffer_fixer()
-	tfile.read_done = True
-	tfile.torqfile = tripid
-	tfile.read_profile()
-	tfile.buffer['hash'] = csvhash
-	tfile.hash = csvhash
-	tfile.trip_profile['tripid'] = tripid
-	fileinfo = {}
-	fileinfo['hash'] = csvhash
-	fileinfo['name'] = str(csvfile)
-	fileinfo['tripid'] = tripid
-	tfile.fileinfo = DataFrame([fileinfo])
-	tfile.buffer['file_id'] = tfile.id
-#	if engine.driver == 'pymysql':
-
-		# sqlhash = f'INSERT INTO torqfiles (name, hash, tripid) VALUES ("{csvfile}", "{csvhash}", "{tripid}")'
-		# engine.execute(sqlhash)
+	torqbuffer = read_csv(csvfile, delimiter=',', low_memory=False, index_col=False, thousands='.', na_values=0, verbose=False)#, na_values=0, verbose=False, thousands='.', index_col=False, skiprows=1) # , encoding='cp1252'
+	tprof = read_torq_profile(csvfile, tripid)
+	tentry = TorqEntry(filename=csvfile, tripid=tripid)
+	tentry.set_data(torqbuffer)
+	torqfile = TorqFile()
+	torqfile.name = csvfile
+	torqfile.hash = csvhash
+	torqfile.tripid = tripid
+	session.add(tentry)
+	session.add(tprof)
+	session.add(torqfile)
 	try:
-		res_ = tfile.buffer.to_sql(con=conn, name='torqlogs', if_exists='append', index=False, method='multi', chunksize=tfile.sqlchunksize)
-	except (OperationalError, DataError, InternalError) as e:
-		logger.error(f'[err] in buffer {csvfile} {e.code} {e.args[0]}')
-	try:
-		res_ = tfile.trip_profile.to_sql(con=conn, name='torqtrips', if_exists='append', index=False, method='multi', chunksize=tfile.sqlchunksize)
-	except (OperationalError, DataError) as e:
-		logger.error(f'[err] in profile {csvfile} {e.code} {e.args[0]}')
-	try:
-		res_ = tfile.fileinfo.to_sql(con=conn, name='torqfiles', if_exists='append', index=False, method='multi', chunksize=tfile.sqlchunksize)
-	except (OperationalError, DataError) as e:
-		logger.error(f'[err] in buffer {csvfile} {e.code} {e.args[0]}')
-	logger.debug(f'[rs] {tfile} b:{len(tfile.buffer)} donetime:{datetime.now()-t0}')
-	del res_
-		# conn.close()
-
-	# if engine.driver == 'psycopg2':
-	# 	try:
-	# 		tfile.fileinfo.to_sql(con=engine, name='torqfiles', if_exists='append', index=False, method='multi', chunksize=tfile.sqlchunksize)
-	# 	except (OperationalError, DataError) as e:
-	# 		logger.error(f'[err] in buffer {csvfile} {e.code} {e.args[0]}')
-
-	# 	try:
-	# 		tfile.buffer.to_sql(con=engine, name='torqlogs', if_exists='append', index=False, method='multi', chunksize=tfile.sqlchunksize)
-	# 	except (OperationalError, DataError) as e:
-	# 		logger.error(f'[err] in buffer {csvfile} {e.code} {e.args[0]}')
-	# 	try:
-	# 		tfile.trip_profile.to_sql(con=engine, name='torqtrips', if_exists='append', index=False, method='multi', chunksize=tfile.sqlchunksize)
-	# 	except (OperationalError, DataError) as e:
-	# 		logger.error(f'[err] in profile {csvfile} {e.code} {e.args[0]}')
-	# 	logger.debug(f'[rs] {tfile} b:{len(tfile.buffer)} donetime:{datetime.now()-t0}')
-
+		session.commit()
+	except (OperationalError, DataError, ResourceClosedError, PendingRollbackError) as e:
+		logger.error(f'[sql] {csvfile} {e.code} {e.args[0]}')
+		session.rollback()
+	logger.debug(f'[rs] {tentry}  donetime:{datetime.now()-t0}')
 	return
 
-async def torqtask(loop=None, executor_processes=None, buffer=None, engine=None,  session=None, csvhash=None, csvfile=None, conn=None):
-	await loop.run_in_executor(None, functools.partial(read_and_send, engine=engine, session=session,csvhash=csvhash, csvfile=csvfile, conn=conn))
+async def torqtask(loop=None, executor_processes=None, buffer=None, engine=None,  session=None, Session=None, csvhash=None, csvfile=None, conn=None):
+	await loop.run_in_executor(None, functools.partial(read_and_send, engine=engine, session=session,Session=Session, csvhash=csvhash, csvfile=csvfile, conn=conn))
 	return
 
 async def main(args):
@@ -120,13 +97,13 @@ async def main(args):
 	TORQDBHOST = 'elitedesk' # os.getenv('TORQDBHOST')
 	TORQDBUSER = 'torq' # os.getenv('TORQDBUSER')
 	TORQDBPASS = 'dzt3f5jCvMlbUvRG'
-	TORQDATABASE = 'torq'
+	TORQDATABASE = 'torq5'
 	# engine = create_engine(f"mysql+pymysql://{TORQDBUSER}:{TORQDBPASS}@{TORQDBHOST}/{TORQDATABASE}?charset=utf8mb4", pool_size=20, max_overflow=0)# , isolation_level='AUTOCOMMIT')
 	# engine = create_engine(f"postgresql://postgres:foobar9999@elitedesk/torqdev")
 	# conn_ = psycopg2.connect("postgresql://postgres:foobar9999@elitedesk/torqdev")
 	param_dic = {
 		'host' : 'elitedesk',
-		'database' : 'torq',
+		'database' : 'torq5',
 		'user' : 'torq',
 		# 'password' : 'foobar9999',
 		'password' : 'dzt3f5jCvMlbUvRG',
@@ -143,18 +120,32 @@ async def main(args):
 
 	# engine = create_engine(connect)
 	engine = create_engine(f"mysql+pymysql://{TORQDBUSER}:{TORQDBPASS}@{TORQDBHOST}/{TORQDATABASE}?charset=utf8mb4", pool_size=200, max_overflow=0)# , isolation_level='AUTOCOMMIT')
-	if args.init_db:
-		logger.debug(f'[mainpath] Calling init_db ... ')
-		database_init(engine)
 	maxworkers = cpu_count()
 	tasks = []
 	conn = None
 	Session = sessionmaker(bind=engine)
 	session = Session()
+	session.autoflush = True
+
+	if args.init_db:
+		logger.debug(f'[mainpath] Calling init_db ... ')
+		try:
+			# sql = 'DROP TABLE IF EXISTS torqfiles;'
+			sql = 'DROP TABLE IF EXISTS  torq5.torqfiles;'
+			session.execute(sql)
+			sql = 'DROP TABLE IF EXISTS  torq5.torqlogs;'
+			session.execute(sql)
+			sql = 'DROP TABLE IF EXISTS  torq5.torqtrips;'
+			session.execute(sql)
+			
+		except Exception as e:
+			logger.error(f'[database_init] {e}')
+		database_init(engine)
+
 
 	executor_processes = ProcessPoolExecutor(max_workers=maxworkers)
 	loop_ = asyncio.get_event_loop()
-	hashres = session.execute(select(Torqfile)).fetchall()
+	hashres = session.execute(select(TorqFile)).fetchall()
 	hashlist = [k[0].hash for k in hashres]
 # 	hashlist = [k for k in conn.execute('select hash from torqfiles')]
 	filelist = []
@@ -166,10 +157,8 @@ async def main(args):
 			logger.warning(f'[{csv}] already in database')
 		else:
 			filelist.append(csv)
-			if engine.driver == 'pymysql':
-				conn = engine.connect()
-			tt = torqtask(loop=loop_, executor_processes=executor_processes, csvfile=csv, engine=None, session=session, csvhash=csvhash, conn=conn)
-			tasks.append(tt)
+		tt = torqtask(loop=loop_, executor_processes=executor_processes, csvfile=csv, engine=None, session=None, Session=Session, csvhash=csvhash, conn=conn)
+		tasks.append(tt)
 	# conn.commit()
 	if len(tasks) >= 1:
 		torqfiles = await asyncio.gather(*tasks)

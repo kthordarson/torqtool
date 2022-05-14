@@ -7,10 +7,12 @@ import sys
 import re
 from pathlib import Path
 from loguru import logger
+
+from datamodels import TorqProfile
 logger.add('tool.log')
 import inspect
 from re import T, search, sub
-from pandas import read_csv, DataFrame, to_datetime
+from pandas import read_csv, DataFrame, to_datetime, to_numeric
 from datetime import datetime
 from dateutil.parser import ParserError
 from sqlalchemy.exc import ProgrammingError
@@ -347,7 +349,7 @@ def column_fixer(inputline):
 	columns = inputline.split(',') # split
 	columns = [sub('\n', '', col) for col in columns] # remove \n 's
 	columns = [sub(' ', '', col) for col in columns] # degree symbol
-	columns = [sub('-', '', col) for col in columns] # degree symbol
+	# columns = [sub('-', '', col) for col in columns] # degree symbol
 	columns = [sub(',', '', col) for col in columns] # degree symbol
 	columns = [sub('â', '', col) for col in columns] # degree symbol
 	columns = [sub('Â', '', col) for col in columns] # symbol cleanup
@@ -358,6 +360,7 @@ def column_fixer(inputline):
 	columns = ''.join([str(k)+',' for k in columns])
 	columns = columns.rstrip(',')
 	# columns = columns.lrstrip(',')
+	logger.debug(f'[i] {inputline} [o] {columns}')
 	return columns
 
 def read_csv_columns_raw(csv_filename):
@@ -463,10 +466,12 @@ def parse_csvfile(csv_filename):
 class Torqlog(Base):
 	__tablename__ = 'torqlogs'
 	id =  Column(Integer, primary_key=True)
+	file_id = Column(Integer, ForeignKey('torqfiles.id'))
+	torqfile = relationship('Torqfile')
 	hash = Column(String(255))
 	tripid =  Column(String(255))
-	AccelerationSensorTotalg = Column(Numeric, default=0)
-	AccelerationSensorXaxisg = Column(Numeric, default=0)
+	AccelerationSensorTotalg = Column(String(255), default=0)
+	AccelerationSensorXaxisg = Column(String(255), default=0)
 	AccelerationSensorYaxisg = Column(Numeric, default=0)
 	AccelerationSensorZaxisg = Column(Numeric, default=0)
 	Actualenginetorque = Column(Numeric, default=0)
@@ -582,7 +587,7 @@ def SendProcess(torqfile): # send own csv data to database ...
 
 class Torqfile(Base):
 	__tablename__ = 'torqfiles'
-	id =  Column(Integer, primary_key=True)
+	id =  Column(Integer, primary_key=True, autoincrement="auto")
 	name = Column(String(255))
 	hash = Column(String(255))
 	tripid =  Column(String(255))
@@ -733,6 +738,88 @@ class TripProfile(Base):
 	#torqfile = relationship("Torqfile", back_populates='torqtrips')
 	# torqfile = relationship("Torqfile")
 
-	def __init__(self, filename=None):
-		self.filename = filename
+#	def __init__(self, filename=None, tripid=None, csvhash=None):
+#		self.filename = filename
+#		self.tripid = tripid
+#		self.csvhash = csvhash
 
+
+
+def torqbuffer_fixer(buffer=None):
+	t0 = datetime.now()
+#	buffer.replace('-',0, inplace=True)
+#	buffer.replace('-                         ',0, inplace=True)
+#	buffer.replace(regex=r'^-.*', value=0, inplace=True)
+#	buffer.replace('âˆž',0, inplace=True)
+#	buffer.replace('Ã¢ÂˆÂž',0, inplace=True)
+#	cols = [column_fixer(k) for k in buffer.columns]
+#	fields = [FIELDMAPS[k] for k in cols]
+	# fields = [FIELDMAPS.get(k, '') for k in cols]
+#	buffer.columns = fields
+	# buffer = buffer.fillna(0)
+	# logger.debug(f'[fix] {self.filename} t0 {t0}')
+#	if buffer.get('Acceleration Sensor(Total)(g)') is not None:
+#		pass
+		# buffer['Acceleration Sensor(Total)(g)'] = to_numeric(buffer['Acceleration Sensor(Total)(g)'], downcast='float')
+		# logger.warning(buffer['Acceleration Sensor(Total)(g)'])
+#	if buffer.get('AccelerationSensorTotalg') is not None:
+#		buffer.AccelerationSensorTotalg = to_numeric(buffer['AccelerationSensorTotalg'], downcast='float')
+#		logger.warning(f'[tbT] {buffer["AccelerationSensorTotalg"][0]} {buffer["AccelerationSensorTotalg"][1]} {buffer.AccelerationSensorTotalg[0]} {buffer.AccelerationSensorTotalg[1]}')
+	#'Acceleration Sensor(X axis)(g)'
+	#AccelerationSensor(Xaxis)(g)
+#	buffer.AccelerationSensorXaxisg = to_numeric(buffer.AccelerationSensorXaxisg, downcast='float')
+	#if buffer.get('AccelerationSensorXaxisg') is not None:
+	#	buffer.AccelerationSensorXaxisg = to_numeric(buffer.AccelerationSensorXaxisg, downcast='float')
+	#	logger.warning(f"[tbX] {buffer['AccelerationSensorXaxisg'][0]} {buffer['AccelerationSensorXaxisg'][1]} {buffer.AccelerationSensorXaxisg[0]} {buffer.AccelerationSensorXaxisg[1]}")
+	try:
+		if buffer.get('GPSTime') is not None:
+			#buffer['GPSTime'].replace('-', buffer['GPSTime'][0], inplace=True)
+			#buffer['GPSTime'].replace('0', buffer['GPSTime'][0], inplace=True)
+			buffer['GPSTime'] = to_datetime(buffer['GPSTime'], errors='raise', infer_datetime_format=True)
+		if buffer.get('GPS Time') is not None:
+			buffer['GPS Time'] = to_datetime(buffer['GPS Time'], errors='raise', infer_datetime_format=True)
+	except (ParserError, KeyError, OperationalError) as e:
+		logger.error(f'[bferr] gpstime {e}')
+	try:
+		if buffer.get('DeviceTime') is not None:
+			buffer['DeviceTime'] = to_datetime(buffer['DeviceTime'], errors='raise', infer_datetime_format=True)
+		if buffer.get('Device Time') is not None:
+			buffer['Device Time'] = to_datetime(buffer['Device Time'], errors='raise', infer_datetime_format=True)
+	except (ParserError, KeyError, OperationalError) as e:
+		logger.error(f'[bferr] devicetime {e}')
+	# for f in fields:
+	# 	for badv in badvals_str:
+	# 		buffer[f].replace(badv, 0, inplace=True)
+	# 	for badv in badvals:
+	# 		buffer[f].replace(badv, 0, inplace=True)
+	#logger.info(f'[b] {buffer.AccelerationSensorXaxisg}')
+	return buffer
+
+def read_torq_profile(filename, tripid):
+	p_filename = os.path.join(filename.parent, 'profile.properties')
+	with open(p_filename, 'r') as f:
+		pdata_ = f.readlines()
+	if len(pdata_) == 8:
+		pdata = [l.strip('\n') for l in pdata_ if not l.startswith('#')]
+		try:
+			pdata_date = str(pdata_[1][1:]).strip('\n')
+			tripdate = to_datetime(pdata_date).to_pydatetime()
+			# logger.info(f'[rs] pd:{pdata_date} {type(pdata_date)} td:{tripdate} {type(tripdate)}')
+		except (OperationalError, Exception) as e:
+			logger.error(f'[readsend] {e}')
+			tripdate = None
+		trip_profile = dict([k.split('=') for k in pdata])
+		torqprofile = TorqProfile()
+		torqprofile.fuelCost = float(trip_profile['fuelCost'])
+		torqprofile.fuelUsed = float(trip_profile['fuelUsed'])
+		torqprofile.distanceWhilstConnectedToOBD = float(trip_profile['distanceWhilstConnectedToOBD'])
+		torqprofile.distance = float(trip_profile['distance'])
+		torqprofile.time = float(trip_profile['time'])
+		torqprofile.filename = p_filename
+		torqprofile.tripdate = tripdate
+		torqprofile.profile = trip_profile['profile']
+		torqprofile.tripid = tripid
+		# trip_profile = DataFrame([trip_profile])
+		return torqprofile
+	else:
+		logger.warning(f'[p] {filename} len={len(pdata_)}')
