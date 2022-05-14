@@ -466,7 +466,7 @@ def parse_csvfile(csv_filename):
 class Torqlog(Base):
 	__tablename__ = 'torqlogs'
 	id =  Column(Integer, primary_key=True)
-	file_id = Column(Integer, ForeignKey('torqfiles.id'))
+	file_id = Column(Integer, ForeignKey('torqfiles.id', ondelete='NO ACTION'))
 	torqfile = relationship('Torqfile')
 	hash = Column(String(255))
 	tripid =  Column(String(255))

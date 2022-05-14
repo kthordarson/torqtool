@@ -127,7 +127,7 @@ def main(args):
 	TORQDBHOST = 'elitedesk' # os.getenv('TORQDBHOST')
 	TORQDBUSER = 'torq' # os.getenv('TORQDBUSER')
 	TORQDBPASS = 'dzt3f5jCvMlbUvRG'
-	TORQDATABASE = 'torq6'
+	TORQDATABASE = 'torq7'
 	dburl = f"mysql+pymysql://{TORQDBUSER}:{TORQDBPASS}@{TORQDBHOST}/{TORQDATABASE}?charset=utf8mb4" # &sessionVariables=sql_mode='NO_ENGINE_SUBSTITUTION'"
 	engine = create_engine(dburl, pool_size=200, max_overflow=0)# , isolation_level='AUTOCOMMIT')
 	maxworkers = cpu_count()
@@ -143,19 +143,19 @@ def main(args):
 		logger.debug(f'[mainpath] Calling init_db ... ')
 		try:
 			# sql = 'DROP TABLE IF EXISTS torqfiles;'
-			sql = 'DROP TABLE IF EXISTS  torq6.torqfiles;'
+			sql = 'DROP TABLE IF EXISTS  torq7.torqfiles;'
 			session.execute(sql)
 		except IntegrityError as e:
 			pass
 			# logger.warning(f'[e] {e}')
 		try:
-			sql = 'DROP TABLE IF EXISTS  torq6.torqlogs;'
+			sql = 'DROP TABLE IF EXISTS  torq7.torqlogs;'
 			session.execute(sql)
 		except IntegrityError as e:
 			pass
 			# logger.warning(f'[e] {e}')
 		try:
-			sql = 'DROP TABLE IF EXISTS  torq6.torqtrips;'
+			sql = 'DROP TABLE IF EXISTS  torq7.torqtrips;'
 			session.execute(sql)
 		except IntegrityError as e:
 			pass
