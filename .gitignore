@@ -163,4 +163,6 @@ pyinstro.html
 profile1.out
 test*
 edtesting.session.sql
-torqtrips.py
+#torqtrips.py
+map*
+result*
