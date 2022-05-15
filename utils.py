@@ -37,7 +37,6 @@ def read_torq_profile(filename):
 		try:
 			pdata_date = str(pdata_[1][1:]).strip('\n')
 			tripdate = to_datetime(pdata_date).to_pydatetime()
-			# logger.info(f'[rs] pd:{pdata_date} {type(pdata_date)} td:{tripdate} {type(tripdate)}')
 		except (OperationalError, Exception) as e:
 			logger.error(f'[readsend] {e}')
 			tripdate = None

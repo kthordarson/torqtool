@@ -15,15 +15,6 @@ class TorqFile(Base):
 	hash = Column(String(255))
 	profile = Column(String(255))
 
-	# trip = relationship('TripProfile', back_populates='torqfiles')
-	# trip = relationship('TripProfile')
-
-	# def __str__(self):
-	# 	return(f'[torqfile] {self.name}')
-
-	# def __repr__(self):
-	# 	return(f'{self.name}')
-
 
 class TorqTrip(Base):
 	__tablename__ = 'torqtrips'
@@ -37,11 +28,6 @@ class TorqTrip(Base):
 	profile = Column(String(255))
 	tripdate = Column(DateTime, server_default=text('NOW()'))
 	hash = Column(String(255))
-	# tripid = Column(String(255))
-	# file_id = Column(Integer, ForeignKey("torqfile.id"))
-	# torqfile = relationship("Torqfile", foreign_keys=[file_id])
-	#torqfile = relationship("Torqfile", back_populates='torqtrips')
-	# torqfile = relationship("Torqfile")
 
 class TorqLogEntry(Base):
 	__tablename__ = 'torqlogentries'
@@ -53,16 +39,8 @@ class TorqLogEntry(Base):
 class TorqEntry(Base):
 	__tablename__ = 'torqlogs'
 	id =  Column('id', Integer, primary_key=True, autoincrement="auto", unique=True)
-	# entry_id = Column(Integer)
 	tripid =  Column(Integer, ForeignKey('torqtrips.tripid'))
 	torqfileid = Column(Integer, ForeignKey('torqfiles.torqfileid'))
-	# torqfile = relationship('TorqFile')
-	# filename = Column(String(255), default='')
-	# filename = relationship(TorqFile, foreign_keys=[torqfileid, TorqFile.torqfileid])
-	# torqfilename = Column(String(255))#  relationship(TorqFile, foreign_keys=[torqfileid])
-	# hash = Column(String(255))
-	# tripid =  Column(String(255))
-	# profile =  Column(String(255))
 	AccelerationSensorTotalg = Column(Float, default=0)
 	AccelerationSensorXaxisg = Column(Float, default=0)
 	AccelerationSensorYaxisg = Column(Float, default=0)
