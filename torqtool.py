@@ -9,8 +9,8 @@ from multiprocessing import cpu_count
 from loguru import logger
 from pandas import read_csv, Series, to_datetime, DataFrame
 from sqlalchemy import create_engine, MetaData, select
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import IntegrityError, OperationalError, ProgrammingError
+from psycopg2.errors import DatatypeMismatch
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
@@ -53,11 +53,10 @@ def read_torq_trip(filename):
 
 def fixbuffer(buffer=None):  # , torqentryid=None):
 	t0 = datetime.now()
-	badvals_str = ['9999999999', '-9999999999', '3.402823466385289e+38', '-3402823534620772000000000000000000000', '-3.402823534620772e+36', '-3.4028236187100775e+36', '-3.402823618710077e+36',
+	badvals_str = ['â','∞','-','9999999999', '-9999999999', '3.402823466385289e+38', '-3402823534620772000000000000000000000', '-3.402823534620772e+36', '-3.4028236187100775e+36', '-3.402823618710077e+36',
 	               '-3402823618710077500000000000000000000', '612508207723425200000000000000000000000', '612508207723425231880386882817669201920', '340282346638528860000000000000000000000']
 	badvals = [9999999999, -9999999999, 3.402823466385289e+38, -3402823534620772000000000000000000000, -3.402823534620772e+36, -3.4028236187100775e+36, -3.402823618710077e+36, -
 	3402823618710077500000000000000000000, 612508207723425200000000000000000000000, 612508207723425231880386882817669201920, 340282346638528860000000000000000000000]
-
 	newbuff = DataFrame()
 	col_list = []
 	for col in buffer.columns:
@@ -108,7 +107,8 @@ def read_and_send(csvfile=None, csvhash=None):
 	TORQDBPASS = 'dzt3f5jCvMlbUvRG'
 	TORQDATABASE = 'torq8'
 	dburl = f"mysql+pymysql://{TORQDBUSER}:{TORQDBPASS}@{TORQDBHOST}/{TORQDATABASE}?charset=utf8mb4"  # &sessionVariables=sql_mode='NO_ENGINE_SUBSTITUTION'"
-	engine = create_engine(dburl, poolclass=NullPool)  # , isolation_level='AUTOCOMMIT')
+	#engine = create_engine(dburl, poolclass=NullPool)  # , isolation_level='AUTOCOMMIT')
+	engine = create_engine(f"postgresql://postgres:foobar9999@elitedesk/torq")
 	Session = sessionmaker(bind=engine)
 	session = Session()
 	session.autoflush = True
@@ -144,8 +144,10 @@ def read_and_send(csvfile=None, csvhash=None):
 	try:
 		logger.info(f'[tosql] csv:{csvfile} b:{len(buffer)} ')
 		buffer.to_sql(con=engine, name='torqlogs', if_exists='append', method='multi', chunksize=10000, index=False)
-	except (OperationalError, IntegrityError) as e:
+	except (OperationalError, IntegrityError, DatatypeMismatch, ProgrammingError) as e:
 		logger.error(f'csv:{csvfile} {e.code} {e.args[0]} tripid:{trip.tripid} profid:{trip.tripid} tfileid:{tfile.torqfileid}')
+	except Exception as e:
+		logger.error(f'csv:{csvfile} {e} tripid:{trip.tripid} profid:{trip.tripid} tfileid:{tfile.torqfileid}')
 
 	logger.debug(f'[rs] send done c:{csvfile} time: {(datetime.now() - t0).seconds} time: {(datetime.now() - t1).seconds} tripid:{trip.tripid} profid:{trip.tripid} tfileid:{tfile.torqfileid} ')  #
 	return 1
@@ -158,8 +160,8 @@ def main(args):
 	TORQDBPASS = 'dzt3f5jCvMlbUvRG'
 	TORQDATABASE = 'torq8'
 	dburl = f"mysql+pymysql://{TORQDBUSER}:{TORQDBPASS}@{TORQDBHOST}/{TORQDATABASE}?charset=utf8mb4"
-	engine = create_engine(dburl, pool_size=200, max_overflow=0)
-
+	#engine = create_engine(dburl, pool_size=200, max_overflow=0)
+	engine = create_engine(f"postgresql://postgres:foobar9999@elitedesk/torq")
 	Session = sessionmaker(bind=engine)
 	session = Session()
 	session.autoflush = True
