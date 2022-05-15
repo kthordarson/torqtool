@@ -7,16 +7,62 @@ from loguru import logger
 import re
 Base = declarative_base()
 
+class TorqFile(Base):
+	__tablename__ = 'torqfiles'
+	torqfileid =  Column('torqfileid', Integer, primary_key=True, autoincrement="auto", unique=False)
+	tripid =  Column(Integer, ForeignKey('torqtrips.tripid'))
+	torqfilename = Column(String(255))
+	hash = Column(String(255))
+	profile = Column(String(255))
+
+	# trip = relationship('TripProfile', back_populates='torqfiles')
+	# trip = relationship('TripProfile')
+
+	# def __str__(self):
+	# 	return(f'[torqfile] {self.name}')
+
+	# def __repr__(self):
+	# 	return(f'{self.name}')
+
+
+class TorqTrip(Base):
+	__tablename__ = 'torqtrips'
+	tripid =  Column('tripid', Integer, primary_key=True, autoincrement="auto", unique=False)	
+	filename = Column(String(255))
+	fuelCost = Column(Float)
+	fuelUsed = Column(Float)
+	time = Column(Float)
+	distanceWhilstConnectedToOBD = Column(Float)
+	distance = Column(Float)
+	profile = Column(String(255))
+	tripdate = Column(DateTime, server_default=text('NOW()'))
+	hash = Column(String(255))
+	# tripid = Column(String(255))
+	# file_id = Column(Integer, ForeignKey("torqfile.id"))
+	# torqfile = relationship("Torqfile", foreign_keys=[file_id])
+	#torqfile = relationship("Torqfile", back_populates='torqtrips')
+	# torqfile = relationship("Torqfile")
+
+class TorqLogEntry(Base):
+	__tablename__ = 'torqlogentries'
+	torqentryid =  Column('torqentryid', Integer, primary_key=True, autoincrement="auto")
+	# torqlogid =  Column('torqlogid', Integer, primary_key=True, autoincrement="auto")
+	tripid =  Column(Integer, ForeignKey('torqtrips.tripid'))
+	torqfileid = Column(Integer, ForeignKey('torqfiles.torqfileid'))
 
 class TorqEntry(Base):
 	__tablename__ = 'torqlogs'
-	id =  Column(Integer, primary_key=True)
-	file_id = Column(Integer, ForeignKey('torqfiles.id', ondelete='NO ACTION'))
-	torqfile = relationship('TorqFile')
-	filename = Column(String(255), default='')
-	hash = Column(String(255))
-	tripid =  Column(String(255))
-	profile =  Column(String(255))
+	id =  Column('id', Integer, primary_key=True, autoincrement="auto", unique=True)
+	# entry_id = Column(Integer)
+	tripid =  Column(Integer, ForeignKey('torqtrips.tripid'))
+	torqfileid = Column(Integer, ForeignKey('torqfiles.torqfileid'))
+	# torqfile = relationship('TorqFile')
+	# filename = Column(String(255), default='')
+	# filename = relationship(TorqFile, foreign_keys=[torqfileid, TorqFile.torqfileid])
+	# torqfilename = Column(String(255))#  relationship(TorqFile, foreign_keys=[torqfileid])
+	# hash = Column(String(255))
+	# tripid =  Column(String(255))
+	# profile =  Column(String(255))
 	AccelerationSensorTotalg = Column(Float, default=0)
 	AccelerationSensorXaxisg = Column(Float, default=0)
 	AccelerationSensorYaxisg = Column(Float, default=0)
@@ -24,7 +70,7 @@ class TorqEntry(Base):
 	Actualenginetorque = Column(Numeric, default=0)
 	Altitudem = Column(Numeric, default=0)
 	AndroiddeviceBatteryLevel = Column(Numeric, default=0)
-	Averagetripspeedwhilstmovingonlykmh = Column(Numeric, default=0)
+	Averagetripspeedwhilstmovingonlykmh = Column(Float, default=0)
 	Averagetripspeedwhilststoppedormovingkmh = Column(Numeric, default=0)
 	Bearing = Column(Numeric, default=0)
 	COingkmAveragegkm = Column(Numeric, default=0)
@@ -84,87 +130,4 @@ class TorqEntry(Base):
 	TurboBoostVacuumGaugebar = Column(Numeric, default=0)
 	VoltageOBDAdapterV = Column(Numeric, default=0)
 	VolumetricEfficiencyCalculated = Column(Numeric, default=0)
-
-	def __init__(self):
-		# self.filename = str(filename)
-		# self.tripid = tripid
-		# self.hash = csvhash
-		self.buffer = DataFrame()
-		
-	
-	def set_data(self, buffer=None, metadata=None, profile=None, csvfile=None, csvhash=None, tripid=None):
-		self.filename = DataFrame(data=[str(csvfile)])
-		self.filename.replace(nan, str(csvfile), inplace=True)
-		buffer['filename'] = self.filename
-		self.hash = DataFrame(data=[csvhash])
-		self.hash.replace(nan, csvhash, inplace=True)
-		buffer['hash'] = self.hash
-		self.tripid = DataFrame(data=[tripid])
-		self.tripid.replace(nan, tripid, inplace=True)
-		buffer['tripid'] = self.tripid
-		self.profile = DataFrame(data=[[profile]])
-		self.profile.replace(nan, profile, inplace=True)
-		buffer['profile'] = self.profile
-		# logger.info(f'[sd] tb:{type(buffer)} {self.filename} {self.hash} {self.tripid} {self.profile}')
-		for col in buffer.columns:
-			newname_ = re.sub('\W', '', col) #.encode('ascii', 'ignore')
-			newname = newname_.encode('ascii','ignore').decode()
-			buffer.rename(columns={col:newname}, inplace=True)
-			tempbuffer = buffer[newname].replace(nan, 0) # .transpose()
-			buffer[newname] = tempbuffer.transpose()
-			# tempbuffer = tempbuffer.transpose()
-			fields = [k.name for k in self.__table__.columns]
-			self.__dict__[newname] = tempbuffer
-			try:
-				eval(f"self.{newname}")
-				#logger.info(f'[eval] {newname} {eval(f"self.{newname}")}')				
-			except AttributeError as e:
-				logger.error(f'{newname}')
-		self.buffer = buffer
-
-
-
-class TorqFile(Base):
-	__tablename__ = 'torqfiles'
-	id =  Column(Integer, primary_key=True, autoincrement="auto")
-	filename = Column(String(255))
-	hash = Column(String(255))
-	tripid =  Column(String(255))
-	profile = Column(String(255))
-	def __init__(self, filename, hash, tripid, profile):
-		self.filename = filename
-		self.hash = hash
-		self.tripid = tripid
-		self.profile = profile
-	# trip = relationship('TripProfile', back_populates='torqfiles')
-	# trip = relationship('TripProfile')
-
-	# def __str__(self):
-	# 	return(f'[torqfile] {self.name}')
-
-	# def __repr__(self):
-	# 	return(f'{self.name}')
-
-
-class TorqProfile(Base):
-	__tablename__ = 'torqtrips'
-	id =  Column(BigInteger, primary_key=True)
-	
-	filename = Column(String(255))
-	fuelCost = Column(Float)
-	fuelUsed = Column(Float)
-	time = Column(Float)
-	distanceWhilstConnectedToOBD = Column(Float)
-	distance = Column(Float)
-	profile = Column(String(255))
-	tripdate = Column(DateTime, server_default=text('NOW()'))
-	hash = Column(String(255))
-	tripid = Column(String(255))
-	# file_id = Column(Integer, ForeignKey("torqfile.id"))
-	# torqfile = relationship("Torqfile", foreign_keys=[file_id])
-	#torqfile = relationship("Torqfile", back_populates='torqtrips')
-	# torqfile = relationship("Torqfile")
-
-	def __init__(self, filename=None):
-		self.filename = filename
 

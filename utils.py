@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 from loguru import logger
 
-from datamodels import TorqProfile
+from datamodels import TorqTrip
 logger.add('tool.log')
 # import inspect
 # from re import T, search, sub
@@ -28,7 +28,7 @@ def get_csv_files(searchpath:Path, recursive=True):
 		return torqcsvfiles
 
 
-def read_torq_profile(filename, tripid):
+def read_torq_profile(filename):
 	p_filename = os.path.join(filename.parent, 'profile.properties')
 	with open(p_filename, 'r') as f:
 		pdata_ = f.readlines()
@@ -42,17 +42,17 @@ def read_torq_profile(filename, tripid):
 			logger.error(f'[readsend] {e}')
 			tripdate = None
 		trip_profile = dict([k.split('=') for k in pdata])
-		torqprofile = TorqProfile()
-		torqprofile.fuelCost = float(trip_profile['fuelCost'])
-		torqprofile.fuelUsed = float(trip_profile['fuelUsed'])
-		torqprofile.distanceWhilstConnectedToOBD = float(trip_profile['distanceWhilstConnectedToOBD'])
-		torqprofile.distance = float(trip_profile['distance'])
-		torqprofile.time = float(trip_profile['time'])
-		torqprofile.filename = p_filename
-		torqprofile.tripdate = tripdate
-		torqprofile.profile = trip_profile['profile']
-		torqprofile.tripid = tripid
+		torq_trip = TorqTrip()
+		torq_trip.fuelCost = float(trip_profile['fuelCost'])
+		torq_trip.fuelUsed = float(trip_profile['fuelUsed'])
+		torq_trip.distanceWhilstConnectedToOBD = float(trip_profile['distanceWhilstConnectedToOBD'])
+		torq_trip.distance = float(trip_profile['distance'])
+		torq_trip.time = float(trip_profile['time'])
+		torq_trip.filename = p_filename
+		torq_trip.tripdate = tripdate
+		torq_trip.profile = trip_profile['profile']
+		# torq_trip.tripid = tripid
 		# trip_profile = DataFrame([trip_profile])
-		return torqprofile
+		return torq_trip
 	else:
 		logger.warning(f'[p] {filename} len={len(pdata_)}')
