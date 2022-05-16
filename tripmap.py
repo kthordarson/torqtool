@@ -166,7 +166,7 @@ if __name__ == '__main__':
 		'dialect': 'mysql',
 		'driver': 'pymysql',
 		'host' : 'elitedesk',
-		'database' : 'torq8',
+		'database' : 'torq9',
 		'user' : 'torq',
 		# 'password' : 'foobar9999',
 		'password' : 'dzt3f5jCvMlbUvRG',

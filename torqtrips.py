@@ -19,7 +19,7 @@ param_dic = {
 	'dialect': 'mysql',
 	'driver': 'pymysql',
 	'host' : 'elitedesk',
-	'database' : 'torq8',
+	'database' : 'torq9',
 	'user' : 'torq',
 	# 'password' : 'foobar9999',
 	'password' : 'dzt3f5jCvMlbUvRG',
@@ -49,7 +49,7 @@ max_results = 10
 sql = f"SELECT * FROM torqtrips ORDER BY distance DESC LIMIT {max_results}"
 mycursor = session.execute(sql)
 profiles = mycursor.fetchall()
-sql = f"select * from information_schema.columns where table_schema = 'torq8'"
+sql = f"select * from information_schema.columns where table_schema = 'torq9'"
 colnames = session.execute(sql).fetchall()
 columns = [k[3] for k in colnames if k[2] == 'torqlogs']
 [print(f'[profiledata] top {max_results} tripid:{k.tripid} dist:{k.distance} trip:{k.tripid}') for k in profiles]
