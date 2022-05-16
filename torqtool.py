@@ -12,7 +12,7 @@ from multiprocessing import cpu_count
 import psycopg2
 from loguru import logger
 from pandas import read_csv, Series, to_datetime, DataFrame
-from sqlalchemy import create_engine, MetaData, select
+from sqlalchemy import create_engine, MetaData, select, update
 from sqlalchemy.exc import IntegrityError, OperationalError, ProgrammingError, DataError
 from psycopg2.errors import DatatypeMismatch
 from sqlalchemy.ext.declarative import declarative_base
@@ -164,12 +164,22 @@ def read_and_send(args):
 	#engine = create_engine(dburl, poolclass=NullPool)  # , isolation_level='AUTOCOMMIT')
 	#engine = create_engine(f"postgresql://postgres:foobar9999@elitedesk/torq", max_overflow=0, pool_size=10)
 	# tripid = str(csvfile.parts[-2])
+	r0 = datetime.now()
+	torqbuffer = read_csv(str(csvfile), delimiter=',', low_memory=False, skipinitialspace=True, thousands=',', keep_default_na=False, on_bad_lines='skip', encoding='utf-8', na_values=BADVALS)
+	torqbuffer.fillna(0, inplace=True)
+	readtime = (datetime.now() - r0).microseconds
+
+	r2 = datetime.now()
+	buffer = fixbuffer(buffer=torqbuffer)
+	fixtime = (datetime.now() - r2).microseconds
 
 	trip = read_torq_trip(csvfile)
 	trip.hash = csvhash
 	session.add(trip)
 	session.commit()
 	tfile = TorqFile()
+	tfile.read_time = readtime
+	tfile.fix_time = fixtime
 	tfile.hash = csvhash
 	tfile.torqfilename = str(csvfile)
 	tfile.tripid = trip.tripid
@@ -181,15 +191,9 @@ def read_and_send(args):
 	torqlogentry.torqfileid = tfile.torqfileid
 	session.add(torqlogentry)
 	session.commit()
-	torqbuffer = read_csv(str(csvfile), delimiter=',', low_memory=False, skipinitialspace=True, thousands=',', keep_default_na=False, on_bad_lines='skip', encoding='utf-8', na_values=BADVALS)
-	torqbuffer.fillna(0, inplace=True)
-	buffer = fixbuffer(buffer=torqbuffer)
-#	try:
-	logger.info(f'[tb] {csvfile} b:{len(buffer)} tb:{len(torqbuffer)}')
+
+
 	sbuffer = Series(data=[tfile.tripid for k in range(len(buffer))], dtype='object')
-#	except ValueError as e:
-#		logger.error(f'{csvfile} {e} {tfile.tripid} {type({tfile.tripid})}')
-	# logger.info(f'[tbi] {csvfile} b:{len(buffer)} tb:{len(sbuffer)}')
 	buffer['tripid'] = DataFrame(data=sbuffer, columns=['tripid'])
 
 	sbuffer = Series(data=[tfile.torqfileid for k in range(len(buffer))], dtype='object')
@@ -200,7 +204,11 @@ def read_and_send(args):
 	t1 = datetime.now()
 	try:
 		# logger.info(f'[tosql] csv:{csvfile} b:{len(buffer)} ')
+		s0 = datetime.now()
 		buffer.to_sql(con=engine, name='torqlogs', if_exists='append', method='multi', chunksize=10000, index=False)
+		sendtime = (datetime.now() - s0).microseconds
+		session.execute(update(TorqFile).where(TorqFile.torqfileid == tfile.torqfileid).values(send_time=sendtime))
+		session.commit()
 	except (DataError, OperationalError, IntegrityError, DatatypeMismatch, ProgrammingError, psycopg2.errors.DatatypeMismatch, psycopg2.errors.InvalidTextRepresentation, psycopg2.errors.InvalidTextRepresentation) as e:
 		logger.error(f'csv:{csvfile} {e.code} {e.args[0]} tripid:{trip.tripid} profid:{trip.tripid} tfileid:{tfile.torqfileid}')
 	except Exception as e:
@@ -247,14 +255,16 @@ def main(args):
 		else:
 			filelist.append({'filename': csv, 'hash': csvhash, 'dbmode':args.dbmode})
 	logger.debug(f'read start time: {(datetime.now() - t0).seconds} csv:{len(csv_file_list)} h:{len(hashlist)} fl:{len(filelist)}')
+	pp_counter = 0
 	with ProcessPoolExecutor(max_workers=maxworkers) as ex:
 		#result = ex.map(read_and_send, filelist, [args])
 		#result = ex.map(read_and_send, filelist)
 		#for output in result:
 		#	logger.debug(f'[z] c:{result} r:{output} f:{filelist}')
 		for csv, res in zip(filelist, ex.map(read_and_send, filelist)):
-			logger.debug(f'[z] c:{csv} r:{res}')
-	logger.debug(f'torqtask done time: {(datetime.now() - t0).seconds} start:{t0} end:{datetime.now()} duration:{datetime.now() - t0}')
+			pp_counter += 1
+			logger.debug(f'[PP] c:{csv["filename"]} h:{csv["hash"]} r:{res} ppc:{pp_counter} fl:{len(filelist)} remaining:{len(filelist)-pp_counter}')
+	logger.debug(f'torqtask done time: {(datetime.now() - t0).seconds} start:{t0} end:{datetime.now()} duration:{datetime.now() - t0} mw:{maxworkers}')
 
 
 if __name__ == '__main__':

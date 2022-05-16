@@ -1,6 +1,6 @@
 from pandas import DataFrame, concat
 from numpy import nan
-from sqlalchemy import ForeignKey, create_engine, Table, MetaData, Column, Integer, String, inspect, select, BigInteger, Float, DateTime, text, BIGINT,  Float
+from sqlalchemy import ForeignKey, create_engine, Table, MetaData, Column, Integer, String, inspect, select, BigInteger, Float, DateTime, text, BIGINT, Numeric
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
 from loguru import logger
@@ -14,6 +14,9 @@ class TorqFile(Base):
 	torqfilename = Column(String(255))
 	hash = Column(String(255))
 	profile = Column(String(255))
+	send_time = Column(Numeric)
+	read_time = Column(Numeric)
+	fix_time = Column(Numeric)
 
 
 class TorqTrip(Base):
