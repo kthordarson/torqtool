@@ -166,3 +166,4 @@ edtesting.session.sql
 #torqtrips.py
 map*
 result*
+torqtool.py

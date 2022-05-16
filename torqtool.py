@@ -28,7 +28,7 @@ Base = declarative_base()
 TORQDBHOST = 'elitedesk'  # os.getenv('TORQDBHOST')
 TORQDBUSER = 'torq'  # os.getenv('TORQDBUSER')
 TORQDBPASS = 'dzt3f5jCvMlbUvRG'
-TORQDATABASE = 'torq9'
+TORQDATABASE = 'torqfiskur'
 BADVALS = ['NaN', '-','∞','â', r'∞',340282346638528860000000000000000000000,'340282346638528860000000000000000000000',612508207723425200000000000000000000000,'612508207723425200000000000000000000000']
 
 def read_torq_trip(filename):
@@ -156,14 +156,6 @@ def read_and_send(args):
 	t0 = datetime.now()
 	# logger.info(f'[rs] args:{args} {type(args)} h:{csvhash} e:{engine} s:{session} S:{Session}')
 
-#	TORQDBHOST = 'elitedesk'
-#	TORQDBUSER = 'torq'
-#	TORQDBPASS = 'dzt3f5jCvMlbUvRG'
-#	TORQDATABASE = 'torq9'
-#	dburl = f"mysql+pymysql://{TORQDBUSER}:{TORQDBPASS}@{TORQDBHOST}/{TORQDATABASE}?charset=utf8mb4"  # &sessionVariables=sql_mode='NO_ENGINE_SUBSTITUTION'"
-	#engine = create_engine(dburl, poolclass=NullPool)  # , isolation_level='AUTOCOMMIT')
-	#engine = create_engine(f"postgresql://postgres:foobar9999@elitedesk/torq", max_overflow=0, pool_size=10)
-	# tripid = str(csvfile.parts[-2])
 	r0 = datetime.now()
 	torqbuffer = read_csv(str(csvfile), delimiter=',', low_memory=False, skipinitialspace=True, thousands=',', keep_default_na=False, on_bad_lines='skip', encoding='utf-8', na_values=BADVALS)
 	torqbuffer.fillna(0, inplace=True)
@@ -222,7 +214,7 @@ def get_engine(args):
 		dburl = f"mysql+pymysql://{TORQDBUSER}:{TORQDBPASS}@{TORQDBHOST}/{TORQDATABASE}?charset=utf8mb4"
 		return create_engine(dburl, pool_size=200, max_overflow=0)
 	if args == 'postgres':
-		return create_engine(f"postgresql://postgres:foobar9999@elitedesk/torq")
+		return create_engine(f"postgresql://postgres:foobar9999@elitedesk/torqfiskur")
 
 
 def main(args):
@@ -232,7 +224,7 @@ def main(args):
 		dburl = f"mysql+pymysql://{TORQDBUSER}:{TORQDBPASS}@{TORQDBHOST}/{TORQDATABASE}?charset=utf8mb4"
 		engine = create_engine(dburl, pool_size=200, max_overflow=0)
 	elif args.dbmode == 'postgres':
-		engine = create_engine(f"postgresql://postgres:foobar9999@elitedesk/torq")
+		engine = create_engine(f"postgresql://postgres:foobar9999@elitedesk/torqfiskur")
 	else:
 		engine = None
 	Session = sessionmaker(bind=engine)
