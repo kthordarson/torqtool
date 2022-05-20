@@ -21,7 +21,6 @@ param_dic = {
 	'host' : 'elitedesk',
 	'database' : 'torqfiskur',
 	'user' : 'torq',
-	# 'password' : 'foobar9999',
 	'password' : 'dzt3f5jCvMlbUvRG',
 	'pool_size': 200,
 	'max_overflow':0,

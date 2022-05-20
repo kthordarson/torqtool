@@ -11,8 +11,8 @@ from hashlib import md5
 from multiprocessing import cpu_count
 import psycopg2
 from loguru import logger
-from pandas import read_csv, Series, to_datetime, DataFrame
-from sqlalchemy import create_engine, MetaData, select, update
+from pandas import read_csv, Series, to_datetime, DataFrame, read_sql_query, Index, concat, io
+from sqlalchemy import create_engine, MetaData, select, update, DDL, Column, String, Table
 from sqlalchemy.exc import IntegrityError, OperationalError, ProgrammingError, DataError
 from psycopg2.errors import DatatypeMismatch
 from sqlalchemy.ext.declarative import declarative_base
@@ -22,11 +22,11 @@ from sqlalchemy.pool import NullPool
 from sqlalchemy_utils import database_exists, create_database
 
 from datamodels import TorqEntry, TorqFile, TorqTrip, TorqLogEntry
-from utils import get_csv_files
+from utils import get_csv_files, size_format, database_init, clean_files
 
 Base = declarative_base()
-TORQDBHOST = 'elitedesk'  # os.getenv('TORQDBHOST')
-TORQDBUSER = 'torq'  # os.getenv('TORQDBUSER')
+TORQDBHOST = 'elitedesk'
+TORQDBUSER = 'torq'
 TORQDBPASS = 'dzt3f5jCvMlbUvRG'
 TORQDATABASE = 'torqfiskur'
 BADVALS = ['NaN', '-','∞','â', r'∞',340282346638528860000000000000000000000,'340282346638528860000000000000000000000',612508207723425200000000000000000000000,'612508207723425200000000000000000000000']
@@ -53,95 +53,118 @@ def read_torq_trip(filename):
 		torq_trip.filename = p_filename
 		torq_trip.tripdate = tripdate
 		torq_trip.profile = trip_profile['profile']
-		# torq_trip.tripid = tripid
-		# trip_profile = DataFrame([trip_profile])
 		return torq_trip
 	else:
 		logger.warning(f'[p] {filename} len={len(pdata_)}')
 
 
-def fixbuffer(buffer=None):  # , torqentryid=None):
+def fixbuffer(buffer=None):
 	t0 = datetime.now()
 	old_len = len(buffer)
 	
-	newbuff = DataFrame()
-	try:
-		buffer['GPSTime'] = to_datetime(buffer['GPS Time'], errors='raise', infer_datetime_format=True)
-	except ParserError as e:
-		logger.error(f'[fgpstime] err {e}')
-		buffer['GPSTime'] = to_datetime(datetime.now(), errors='raise', infer_datetime_format=True)
-	try:
-		buffer['DeviceTime'] = to_datetime(buffer['Device Time'], errors='raise', infer_datetime_format=True)
-	except ParserError as e:
-		logger.error(f'[fDeviceTime] err {e}')
-		buffer['DeviceTime'] = to_datetime(datetime.now(), errors='raise', infer_datetime_format=True)
-	col_list = []
-	for col in buffer.columns:
-		for b in BADVALS:
-			buffer[col].replace(to_replace=b, value=0, regex=True, inplace=True)
-			#buffer = buffer.iloc[np.where(buffer[col].values!=b)]
-			#indexNames = buffer[buffer[col] == b ].index
-			#buffer.drop(indexNames , inplace=True)
-			# logger.warning(f'[drop] {b} {col} {indexNames}')
-			# buffer = buffer[col].drop(buffer[col] == b)
-			# buffer[col].replace(to_replace=b, value=np.nan, regex=True, inplace=True)
-	if len(buffer) < old_len:
-		logger.warning(f'[fbd] bwdrop old:{old_len} new:{len(buffer)} ')
-	new_len = len(buffer)
-	if len(buffer) < new_len:
-		logger.warning(f'[fbd] bwstrdrop {old_len} drops: {len(buffer)} ')
-	for col in buffer.columns:
+	# newbuff = DataFrame()
+	# newbuff = TorqEntry()
+	# bcol_list = get_col_list(buffer)
+	ser_list = []
+	# s0 = Series
+	# b1=DataFrame(buffer,columns=[b['name'] for b in bcol_list], index=[k for k in range(len(buffer))])
+	# b1=DataFrame()
+	# newbuff = DataFrame()
+	frames = []
+	for col in buffer: # :.columns:
+		newname_ = col
 		newname_ = re.sub(r'\W', '', col)
 		newname = newname_.encode('ascii', 'ignore').decode()
-		col_list.append(newname)
-	newbuff = buffer.set_axis(col_list, axis=1, inplace=False)
-	logger.info(f'[fixb] done time: {(datetime.now() - t0).seconds} b:{len(buffer)} nb:{len(newbuff)}')
+		#s1=Series(buffer[col].values)
+		s2=DataFrame(Series(buffer[col].values), index=buffer[col].index, columns=[newname])
+		frames.append(s2)
+
+		#newbuff.add(Series(buffer[col],name=newname))
+	newbuff = concat(frames)
 	return newbuff
+		#buffer[col].rename(newname, inplace=True)
+		#buffer[col].index.name = 'id'		
+#		b1 = concat([b1, buffer[col]])
 
-
-def database_init(engine):
-	close_all_sessions()
-#	session_factory = sessionmaker(engine)
-#	session_factory.close_all()
-	meta = MetaData(engine)
-	t1 = datetime.now()
-	# tables = (TorqLogEntry.__table__, TorqEntry.__table__, TorqFile.__table__, TorqTrip.__table__)
+	# for b in col_list:
+	# 	s1 = Series(b['newcol'])
+	# 	# s1.set_axis(s1, inplace=True)
+	# 	ser_list.append(s1)
+	#ser_list = [Series(k['newcol']) for k in col_list]
+	#s2 = DataFrame(ser_list)
 	
-	# for t in tables:
-	# 	logger.info(f'dropping t: {t}')
-	# 	try:
-	# 		connection = engine.connect()
-	# 		logger.info(f'dropping t: {t} conn: {connection}')
-	# 		r = connection.execute(t.select())
-	# 		logger.info(f'dropping t: {t} conn: {connection} r:{r}')
-	# 		r.fetchone()
-	# 		connection.close()
-	# 		t.drop(engine)
-	# 	except Exception as e:
-	# 		logger.error(f'ERR {e}')
-	try:
-		logger.debug(f'[dbinit] {(datetime.now() - t1).total_seconds()} dropping from {meta}')
-		Base.metadata.drop_all(bind=engine, tables=[TorqLogEntry.__table__, TorqEntry.__table__, TorqFile.__table__, TorqTrip.__table__], checkfirst=True)
-	except (OperationalError, psycopg2.errors.UndefinedTable, sqlalchemy.exc.ProgrammingError) as e:
-		logger.error(f'dropall {e}')
-	try:
-		Base.metadata.create_all(bind=engine, tables=[TorqLogEntry.__table__, TorqEntry.__table__, TorqFile.__table__, TorqTrip.__table__], checkfirst=False)
-	except OperationalError as e:
-		logger.error(f'metacreateall {e}')
-	logger.debug(f'[dbinit] {(datetime.now() - t1).total_seconds()} done')
+	# newbuff = DataFrame(columns=[k['name'] for k in col_list], data=[k['newcol'] for k in col_list])
+	# newbuff = {} # DataFrame()
+	# for col in col_list:
+	# 	newser = Series(col['newcol'])
+	# 	newbuff[col['name']] = newser
+	# 	#newcol = buffer[col['oldname']]		
+	# 	#newbuff[newser] = buffer[col].index
+	# return newbuff
+	
+	# for col in buffer.columns:
+	# 	newname_ = col
+	# 	newname_ = re.sub(r'\W', '', col)
+	# 	newname = newname_.encode('ascii', 'ignore').decode()
+#		for b in BADVALS:
+#			buffer[col].replace(to_replace=b, value=0, regex=True, inplace=True)
+#			newcol = buffer[col]
+#			newcol.index.name = 'id'
+			
 
+def get_col_list(buffer):
+	col_list = []
+	for col in buffer: # :.columns:
+		newname_ = col
+		newname_ = re.sub(r'\W', '', col)
+		newname = newname_.encode('ascii', 'ignore').decode()
+		buffer[col].name = newname
+		buffer[col].index.name = 'id'		
+		#newcol.name = newname
+		#col_list.append({'name':newname, 'newcol': newcol, 'oldname':col})
+		#logger.info(f'[gcl] newcol:{newcol.name} col:{col} newname:{newname} c:{len(col_list)} b:{len(buffer)}')
+	return buffer
+	#newbuff = DataFrame(columns=[c for c in col_list])
+	#newbuff.set_axis(col_list, axis=1, inplace=True)
+# Incorrect datetime value: 'Fri Dec 10 18:31:58 GMT+01:00 2021' for column `torqfiskur`.`torqlogs`.`GPSTime` at row 1") tripid:2 profid:
 
-def chunks(l, n):
-	"""Yield n number of sequential chunks from l."""
-	d, r = divmod(len(l), n)
-	for i in range(n):
-		si = (d + 1) * (i if i < r else r) + d * (0 if i < r else i - r)
-		yield l[si:si + (d + 1 if i < r else d)]
+def get_col_names(buffer):
+	name_list = []
+	for col in buffer: # :.columns:
+		newname_ = col
+		newname_ = re.sub(r'\W', '', col)
+		newname = newname_.encode('ascii', 'ignore').decode()
+		name_list.append({'name':newname, 'oldname':col})
+	return name_list
+
+def fixdates(buffer):
+	try:
+		GPSTime = to_datetime(buffer['GPSTime'], errors='ignore', infer_datetime_format=False)
+		buffer['GPSTime'] = GPSTime
+	except (ParserError, KeyError) as e:
+		logger.warning(f'[fgpstime] err {e}')# {buffer.__dict__}')
+		#newbuff.GPSTime = to_datetime(buffer['GPS Time'], format="%a %b %m %H:%M:%S %Z %Y", errors='ignore', infer_datetime_format=False)
+		# raw_data['Mycol'] =  pd.to_datetime(raw_data['Mycol'], format='%d%b%Y:%H:%M:%S.%f')
+		# buffer['GPSTime'] = to_datetime(datetime.now(), errors='raise', infer_datetime_format=True)
+	try:
+		DeviceTime = to_datetime(buffer['DeviceTime'], errors='ignore', infer_datetime_format=False)
+		buffer['DeviceTime'] = DeviceTime
+	except (ParserError, KeyError) as e:
+		logger.warning(f'[fDeviceTime] err {e}')
+		#newbuff.DeviceTime = to_datetime(buffer['Device Time'], format="%a %b %m %H:%M:%S %Z %Y", errors='ignore', infer_datetime_format=False)
+		# newbuff['DeviceTime'] = to_datetime(datetime.now(), errors='ignore', infer_datetime_format=True)
+	logger.info(f'[fixb] done time: {(datetime.now() - t0).seconds} b:{len(buffer)} ')
+#	torqentry = TorqEntry()
+#	for k in torqentry.__mapper__.tables[0].columns:
+#		torqentry.__dict__[k] = newbuff[k]
+	# [k for k in torqentry.__mapper__.tables[0].columns]
+	return buffer
+
 
 
 def read_and_send(args):
 	csvhash = args['hash']
-	csvfile = args['filename']
+	csvfile = args['csvfilefixed']
 	dbmode = args['dbmode']
 	engine = None
 	try:
@@ -154,15 +177,27 @@ def read_and_send(args):
 	session.autocommit = False
 	# session.expires_on_commit = False
 	t0 = datetime.now()
-	# logger.info(f'[rs] args:{args} {type(args)} h:{csvhash} e:{engine} s:{session} S:{Session}')
+	logger.info(f'[rs] args:{args} {type(args)} h:{csvhash} e:{engine} s:{session} S:{Session}')
 
 	r0 = datetime.now()
-	torqbuffer = read_csv(str(csvfile), delimiter=',', low_memory=False, skipinitialspace=True, thousands=',', keep_default_na=False, on_bad_lines='skip', encoding='utf-8', na_values=BADVALS)
-	torqbuffer.fillna(0, inplace=True)
+	# torqbuffer = read_csv(str(csvfile), delimiter=',', low_memory=False, skipinitialspace=True, thousands=',', keep_default_na=False, on_bad_lines='skip', encoding='utf-8', na_values=BADVALS, index_col=False)
+	torqbuffer = read_csv(args['csvfilefixed'], delimiter=',', low_memory=False, skipinitialspace=True, na_values=BADVALS, keep_default_na=False)
+	# torqbuffer.fillna(0, inplace=True)
+
 	readtime = (datetime.now() - r0).microseconds
 
 	r2 = datetime.now()
-	buffer = fixbuffer(buffer=torqbuffer)
+	torqentry = TorqEntry(buffer=torqbuffer)
+	
+	Base.metadata.create_all(bind=engine,tables=[torqentry.__table__])
+	session.add(torqentry)
+	try:
+		session.commit()
+	except OperationalError as e:
+		logger.error(f'torqentry err csv:{csvfile} {e.code} {e.args[0]} tetable: {TorqEntry.__table__} temap: {TorqEntry.__mapper__}')
+		session.rollback()
+	# torqentry.setdata(buffer)
+
 	fixtime = (datetime.now() - r2).microseconds
 
 	trip = read_torq_trip(csvfile)
@@ -184,29 +219,35 @@ def read_and_send(args):
 	session.add(torqlogentry)
 	session.commit()
 
+	#sbuffer = Series(data=[k for k in range(len(buffer))], dtype='int')
+	# buffer['id'] = DataFrame(data=[k for k in range(len(buffer))], dtype='int')
 
-	sbuffer = Series(data=[tfile.tripid for k in range(len(buffer))], dtype='object')
-	buffer['tripid'] = DataFrame(data=sbuffer, columns=['tripid'])
+	#sbuffer = Series(data=[tfile.tripid for k in range(len(buffer))], dtype='int')
+	#buffer['tripid'] = DataFrame(data=[sbuffer], dtype='int')
 
-	sbuffer = Series(data=[tfile.torqfileid for k in range(len(buffer))], dtype='object')
-	buffer['torqfileid'] = DataFrame(data=sbuffer, columns=['torqfileid'])
+	#sbuffer = Series(data=[tfile.torqfileid for k in range(len(buffer))], dtype='int')
+	#buffer['torqfileid'] = DataFrame(data=[sbuffer], dtype='int')
 	# logger.info(f'[tt] {csvfile} b:{len(buffer)} tb:{len(sbuffer)}')
 
-	logger.debug(f'[rs] sending c:{csvfile} size:{len(buffer)} tlid:{torqlogentry.torqentryid} tfid:{tfile.tripid}')
+	logger.debug(f'[rs] sending c:{csvfile} tlid:{torqlogentry.torqlog_entry} tfid:{tfile.tripid}')
 	t1 = datetime.now()
+	# sqlbuffer = read_sql_query(con=engine, sql=buffer)
+	# cols = buffer.keys()
+	logger.info(f'[tosql] csv:{csvfile} b:{len(torqbuffer)} ')
+	#buffer.index = [Index([k for k in range(len(buffer))])]
+	# sqlbuffer['index'] = range(1, len(buffer) + 1)
+	
+	s0 = datetime.now()
 	try:
-		# logger.info(f'[tosql] csv:{csvfile} b:{len(buffer)} ')
-		s0 = datetime.now()
-		buffer.to_sql(con=engine, name='torqlogs', if_exists='append', method='multi', chunksize=10000, index=False)
 		sendtime = (datetime.now() - s0).microseconds
-		session.execute(update(TorqFile).where(TorqFile.torqfileid == tfile.torqfileid).values(send_time=sendtime))
-		session.commit()
-	except (DataError, OperationalError, IntegrityError, DatatypeMismatch, ProgrammingError, psycopg2.errors.DatatypeMismatch, psycopg2.errors.InvalidTextRepresentation, psycopg2.errors.InvalidTextRepresentation) as e:
-		logger.error(f'csv:{csvfile} {e.code} {e.args[0]} tripid:{trip.tripid} profid:{trip.tripid} tfileid:{tfile.torqfileid}')
+	except (sqlalchemy.exc.DataError, pymysql.err.DataError, DataError, OperationalError, IntegrityError, DatatypeMismatch, ProgrammingError, psycopg2.errors.DatatypeMismatch, psycopg2.errors.InvalidTextRepresentation, psycopg2.errors.InvalidTextRepresentation) as e:
+		logger.error(f'tosqlerr csv:{csvfile} {e.code} {e.args[0]} ')
+	except ValueError as e:
+		logger.error(f'csv:{csvfile} {e}')
 	except Exception as e:
-		logger.error(f'csv:{csvfile} {e.code} {e.args[0]} {e} tripid:{trip.tripid} profid:{trip.tripid} tfileid:{tfile.torqfileid}')
-
+		logger.error(f'csv:{csvfile} {e}')
 	logger.debug(f'[rs] send done c:{csvfile} time: {(datetime.now() - t0).seconds} time: {(datetime.now() - t1).seconds} tripid:{trip.tripid} profid:{trip.tripid} tfileid:{tfile.torqfileid} ')  #
+	session.flush()
 	return 1
 
 def get_engine(args):
@@ -215,7 +256,6 @@ def get_engine(args):
 		return create_engine(dburl, pool_size=200, max_overflow=0)
 	if args == 'postgres':
 		return create_engine(f"postgresql://postgres:foobar9999@elitedesk/torqfiskur")
-
 
 def main(args):
 	t0 = datetime.now()
@@ -238,25 +278,27 @@ def main(args):
 
 	hashres = session.execute(select(TorqFile)).fetchall()
 	hashlist = [k[0].hash for k in hashres]
-	filelist = []
-	csv_file_list = get_csv_files(searchpath=args.path)
-	for idx, csv in enumerate(csv_file_list):
-		csvhash = md5(open(csv, 'rb').read()).hexdigest()
-		if csvhash in hashlist:
-			logger.warning(f'[{csv}] already in database')
-		else:
-			filelist.append({'filename': csv, 'hash': csvhash, 'dbmode':args.dbmode})
-	logger.debug(f'read start time: {(datetime.now() - t0).seconds} csv:{len(csv_file_list)} h:{len(hashlist)} fl:{len(filelist)}')
+	# filelist = []
+	filelist_ = get_csv_files(searchpath=args.path, dbmode=args.dbmode)
+	# cleanfilelist = clean_files(filelist_)	#filelist = sorted(filelist, key=lambda d: d['size'])
+	filelist = [k for k in reversed(sorted(filelist_, key=lambda d: d['size']) ) if k['hash'] not in hashlist]
+	totalbytes = sum([k['size'] for k in filelist])
+	# for idx, csv in enumerate(csv_file_list):
+	# 	csvhash = md5(open(csv, 'rb').read()).hexdigest()
+	# 	if csvhash in hashlist:
+	# 		logger.warning(f'[{csv}] already in database')
+	# 	else:
+	# 		filelist.append({'filename': csv, 'hash': csvhash, 'dbmode':args.dbmode})
+	# filelist=[({'filename':k, 'size':os.stat(k).st_size}) for k in csv_file_list]
+
+	logger.debug(f'read start time: {(datetime.now() - t0).seconds}  h:{len(hashlist)} fl:{len(filelist)} tb:{size_format(totalbytes)}')
 	pp_counter = 0
 	with ProcessPoolExecutor(max_workers=maxworkers) as ex:
-		#result = ex.map(read_and_send, filelist, [args])
-		#result = ex.map(read_and_send, filelist)
-		#for output in result:
-		#	logger.debug(f'[z] c:{result} r:{output} f:{filelist}')
 		for csv, res in zip(filelist, ex.map(read_and_send, filelist)):
 			pp_counter += 1
-			logger.debug(f'[PP] c:{csv["filename"]} h:{csv["hash"]} r:{res} ppc:{pp_counter} fl:{len(filelist)} remaining:{len(filelist)-pp_counter}')
-	logger.debug(f'torqtask done time: {(datetime.now() - t0).seconds} start:{t0} end:{datetime.now()} duration:{datetime.now() - t0} mw:{maxworkers}')
+			totalbytes -= csv['size']
+			logger.debug(f'[PP] c:{csv["csvfilename"]} h:{csv["hash"]} r:{res} ppc:{pp_counter} fl:{len(filelist)} remaining:{len(filelist)-pp_counter} tb:{size_format(totalbytes)} tb:{totalbytes}' )
+	logger.debug(f'torqtask done time: {(datetime.now() - t0).seconds} start:{t0} end:{datetime.now()} duration:{datetime.now() - t0} mw:{maxworkers} tb:{size_format(totalbytes)}')
 
 
 if __name__ == '__main__':
