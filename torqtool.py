@@ -39,7 +39,7 @@ def prepdb(filelist=None, engine=None, dbinit=False):
 	#	torqentry_attr_dict[nc] = Column(name=nc)
 	Session = sessionmaker(bind=engine)
 	session = Session()
-	
+
 	Base = declarative_base()
 	logger.info(f'[dbprep] f:{len(filelist)}')
 	torqentry_attr_dict = {
@@ -50,13 +50,13 @@ def prepdb(filelist=None, engine=None, dbinit=False):
 	col_list = []
 	for f in filelist:
 		fc = f['newcolumns'].split(',')
-		[col_list.append(c) for c in fc if c not in col_list]
-	for nc in col_list:	
-		torqentry_attr_dict[nc] = Column(name=nc, type_=String(255), default=0)
+		[col_list.append(c) for c in fc if c not in col_list if len(c) < 45]
+	for nc in col_list:
+		torqentry_attr_dict[nc] = Column(name=nc, type_=String(100), default=0)
 	# torqentry_attr_dict['index'] = Column(Integer, primary_key=True, autoincrement='true', unique=True)
-	torqentry_attr_dict['Averagetripspeedwhilstmovingonlykmh'] = Column('Averagetripspeedwhilstmovingonlykmh',Float, default=0)
-	torqentry_attr_dict['EnginekWAtthewheelskW'] = Column('EnginekWAtthewheelskW', Float, default=0)
-	torqentry_attr_dict['SpeedGPSkmh'] = Column('SpeedGPSkmh', Float, default=0)
+	# torqentry_attr_dict['Averagetripspeedwhilstmovingonlykmh'] = Column('Averagetripspeedwhilstmovingonlykmh',Float, default=0)
+	# torqentry_attr_dict['EnginekWAtthewheelskW'] = Column('EnginekWAtthewheelskW', Float, default=0)
+	# torqentry_attr_dict['SpeedGPSkmh'] = Column('SpeedGPSkmh', Float, default=0)
 	# SpeedGPSkmh
 	# Averagetripspeedwhilstmovingonlykmh
 	# EnginekWAtthewheelskW
@@ -89,6 +89,7 @@ def read_buffers(filelist):
 			logger.error(f'[rs] err {e} {tf}')
 		torqbuffer = read_csv(csvfile, delimiter=',', low_memory=False, skipinitialspace=True, na_values=BADVALS, keep_default_na=False, index_col=0)
 		bigbuffer.append(torqbuffer)
+		logger.info(f'[rb] {csvfile} tb:{len(torqbuffer)} lb:{len(bigbuffer)} ')
 	return bigbuffer
 
 def read_and_send(args):
@@ -148,7 +149,7 @@ def read_and_send(args):
 	logger.info(f'[tosql] csv:{csvfile} b:{len(torqbuffer)} ')
 	#buffer.index = [Index([k for k in range(len(buffer))])]
 	# sqlbuffer['index'] = range(1, len(buffer) + 1)
-	
+
 	s0 = datetime.now()
 	#newindex = DataFrame([k for k in range(len(torqbuffer))])
 	#torqbuffer.insert(0, "id", newindex)
@@ -181,7 +182,7 @@ def chunks(l, n):
 
 def main(args):
 	t0 = datetime.now()
-	
+
 	if args.dbmode == 'mysql':
 		dburl = f"mysql+pymysql://{TORQDBUSER}:{TORQDBPASS}@{TORQDBHOST}/{TORQDATABASE}?charset=utf8mb4"
 		engine = create_engine(dburl, pool_size=200, max_overflow=0)
@@ -208,9 +209,9 @@ def main(args):
 	except ProgrammingError as e:
 		logger.error(f'[pe] hashlisterr {e}')
 		hashlist = []
-	
+
 	# filelist = []
-	
+
 	prepdb(filelist, engine, args.init_db)
 	totalbytes = sum([k['size'] for k in filelist])
 	buffer = read_buffers(filelist)
@@ -224,11 +225,17 @@ def main(args):
 	# chsize = int(totalbytes/len(buffer))
 	# chsize = len(buffer)
 	chsize = (int(len(mb)/len(buffer)))
+	# chsize = 2000
+	# todo send chunks with threads or processpool
 	try:
+		chunks_sent = 0
+		chunks_rem = len(mb)
 		for idx, tchunk in enumerate(chunks(mb, chsize)):
-			logger.info(f'[b] idx:{idx} tosql b:{len(buffer)} mb:{len(mb)} tb:{totalbytes} dbm:{dbmethod} chs:{chsize}')
+			logger.info(f'[btosql] idx:{idx}/{len(buffer)} dbm:{dbmethod} chs:{chsize} cs:{chunks_sent} cr:{chunks_rem}')
 		# mb.to_sql('entries',con=engine, if_exists='append',method='multi', chunksize=10000)
 			tchunk.to_sql('entries',con=engine, if_exists='append', method=dbmethod, chunksize=chsize)
+			chunks_sent += 1
+			chunks_rem -= chsize
 	except Exception as e:
 		logger.error(f'[tosql] {e.code} {e.args[0]} ')
 	# for idx, csv in enumerate(csv_file_list):
