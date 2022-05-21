@@ -8,96 +8,120 @@ from loguru import logger
 import re
 Base = declarative_base()
 
+
+def attribute_factory():
+    return dict(
+        id=Column(Integer, primary_key=True),
+        CLASS_VAR=12345678,
+    )
+
 class TorqTest(declarative_base()):
-	__tablename__ = 'test'
-	id =  Column('id', Integer, primary_key=True, autoincrement="auto", unique=True)
-	foobar = Column(String(255))
+    __tablename__ = 'test'
+    id = Column('id', Integer, primary_key=True,
+                autoincrement="auto", unique=True)
+    foobar = Column(String(255))
 
-	def __repr__(self) -> str:
-		return self.__tablename__
-	
-	def getfoobar(self):
-		return self.foobar
-	def setfoobar(self, foo):
-		self.foobar = foo
-	def getcols(self):
-		return [k for k in self.__mapper__.tables[0].columns]
-	def setcol(self, testcol):
-		self.testcol = testcol
-	def getcol(self, colname):
-		return self.colname
+    def __repr__(self) -> str:
+        return self.__tablename__
 
+    def getfoobar(self):
+        return self.foobar
+
+    def setfoobar(self, foo):
+        self.foobar = foo
+
+    def getcols(self):
+        return [k for k in self.__mapper__.tables[0].columns]
+
+    def setcol(self, testcol):
+        self.testcol = testcol
+
+    def getcol(self, colname):
+        return self.colname
+
+# Table('torqfiles', MetaData(), 
+# Column('torqfileid', Integer(), table=<torqfiles>, primary_key=True, nullable=False), 
+# Column('tripid', Integer(), ForeignKey('torqtrips.tripid'), table=<torqfiles>), Column('torqfilename', String(length=255), table=<torqfiles>), Column('hash', String(length=255), table=<torqfiles>), Column('profile', String(length=255), table=<torqfiles>), Column('send_time', Numeric(), table=<torqfiles>), Column('read_time', Numeric(), table=<torqfiles>), Column('fix_time', Numeric(), table=<torqfiles>), schema=None)
 class TorqFile(Base):
-	__tablename__ = 'torqfiles'
-	torqfileid =  Column('torqfileid', Integer, primary_key=True, autoincrement="auto", unique=False)
-	tripid =  Column(Integer, ForeignKey('torqtrips.tripid'))
-	torqfilename = Column(String(255))
-	hash = Column(String(255))
-	profile = Column(String(255))
-	send_time = Column(Numeric)
-	read_time = Column(Numeric)
-	fix_time = Column(Numeric)
-	torqlogentries = relationship("TorqEntry", back_populates='torqfile')
-	def len(self):
-		return 101
+    __tablename__ = 'torqfiles'
+    torqfileid = Column('torqfileid', Integer, primary_key=True,
+                        autoincrement="auto", unique=False)
+    tripid = Column(Integer, ForeignKey('torqtrips.tripid'))
+    torqfilename = Column(String(255))
+    hash = Column(String(255))
+    profile = Column(String(255))
+    send_time = Column(Numeric)
+    read_time = Column(Numeric)
+    fix_time = Column(Numeric)
+    # torqlogentries = relationship("TorqEntry", back_populates='torqfile')
+
+    def len(self):
+        return 101
 
 
 class TorqTrip(Base):
-	__tablename__ = 'torqtrips'
-	tripid =  Column('tripid', Integer, primary_key=True, autoincrement="auto", unique=False)
-	filename = Column(String(255))
-	fuelCost = Column(Float)
-	fuelUsed = Column(Float)
-	time = Column(Float)
-	distanceWhilstConnectedToOBD = Column(Float)
-	distance = Column(Float)
-	profile = Column(String(255))
-	tripdate = Column(DateTime, server_default=text('NOW()'))
-	hash = Column(String(255))
-	def len(self):
-		return 101
+    __tablename__ = 'torqtrips'
+    tripid = Column('tripid', Integer, primary_key=True,
+                    autoincrement="auto", unique=False)
+    filename = Column(String(255))
+    fuelCost = Column(Float)
+    fuelUsed = Column(Float)
+    time = Column(Float)
+    distanceWhilstConnectedToOBD = Column(Float)
+    distance = Column(Float)
+    profile = Column(String(255))
+    tripdate = Column(DateTime, server_default=text('NOW()'))
+    hash = Column(String(255))
+
+    def len(self):
+        return 101
+
 
 class TorqLogEntry(Base):
-	__tablename__ = 'torqlogentries'
-	torqlog_entry =  Column('torqlog_entry', Integer, primary_key=True, autoincrement="auto", unique=False)
-	# torqlogid =  Column('torqlogid', Integer, primary_key=True, autoincrement="auto")
-	tripid =  Column(Integer, ForeignKey('torqtrips.tripid'))
-	torqfileid = Column(Integer, ForeignKey('torqfiles.torqfileid'))
+    __tablename__ = 'torqlogentries'
+    torqlog_entry = Column('torqlog_entry', Integer,
+                           primary_key=True, autoincrement="auto", unique=False)
+    # torqlogid =  Column('torqlogid', Integer, primary_key=True, autoincrement="auto")
+    tripid = Column(Integer, ForeignKey('torqtrips.tripid'))
+    torqfileid = Column(Integer, ForeignKey('torqfiles.torqfileid'))
 
-	def len(self):
-		return 101
-	
+    def len(self):
+        return 101
 
-class TorqEntry(Base):
-	__tablename__ = 'torqlogs'
-	
-	id =  Column('id', Integer, primary_key=True, autoincrement="auto",unique=False)
-	tripid =  Column(Integer, ForeignKey('torqtrips.tripid'))
-	torqtrip = relationship("TorqTrip")
-	torqfileid = Column(Integer, ForeignKey('torqfiles.torqfileid'))
-	torqfile = relationship("TorqFile")
-	torqlog_entry = Column(Integer, ForeignKey('torqlogentries.torqlog_entry'))
-	
-	def __init__(self, **kw):
-		pass
-		# if len(kw) > 0:
-		# 	for k in kw['buffer']:
-		# 		#k1 = Column(name='')
-		# 		#ktemp = DataFrame([kw['buffer'][k].values], index=False) #, kw['buffer'][k].values)
-		# 		#logger.info(f'[setattr] {k} {type(ktemp)}')
-		# 		c = kw['buffer'][k].items
-		# 		# c.table = 'torqlogs'
-		# 		try:					
-		# 			setattr(self, k, {c})
-		# 		except (AttributeError, KeyError) as e:
-		# 			logger.error(f'[setattr] err {e} k:{k} kw:{kw}')
-		# 		logger.info(f'[setattr] {k} {len(kw)} {type(kw)} {type(k)}')
-		# 	#setattr(self, k, kw[k])
 
-	def setdata(self, buffer):
-		for c in buffer:
-			setattr(self, c, buffer[c])
-			logger.info(f'[setattr] {c} {len(buffer)}')
+
+
+class TorqEntry_foo(Base):
+    __tablename__ = 'torqlogs'
+
+    id = Column('id', Integer, primary_key=True,
+                autoincrement="auto", unique=False)
+    tripid = Column(Integer, ForeignKey('torqtrips.tripid'))
+    torqtrip = relationship("TorqTrip")
+    torqfileid = Column(Integer, ForeignKey('torqfiles.torqfileid'))
+    torqfile = relationship("TorqFile")
+    torqlog_entry = Column(Integer, ForeignKey('torqlogentries.torqlog_entry'))
+
+    def __init__(self, **kw):
+        pass
+        # if len(kw) > 0:
+        # 	for k in kw['buffer']:
+        # 		#k1 = Column(name='')
+        # 		#ktemp = DataFrame([kw['buffer'][k].values], index=False) #, kw['buffer'][k].values)
+        # 		#logger.info(f'[setattr] {k} {type(ktemp)}')
+        # 		c = kw['buffer'][k].items
+        # 		# c.table = 'torqlogs'
+        # 		try:
+        # 			setattr(self, k, {c})
+        # 		except (AttributeError, KeyError) as e:
+        # 			logger.error(f'[setattr] err {e} k:{k} kw:{kw}')
+        # 		logger.info(f'[setattr] {k} {len(kw)} {type(kw)} {type(k)}')
+        # 	#setattr(self, k, kw[k])
+
+    def setdata(self, buffer):
+        for c in buffer:
+            setattr(self, c, buffer[c])
+            logger.info(f'[setattr] {c} {len(buffer)}')
 
 # class TorqEntryold(Base):
 # 	__tablename__ = 'torqlogs'
@@ -180,4 +204,3 @@ class TorqEntry(Base):
 # 		pass
 # 	def len(self):
 # 		return 101
-
