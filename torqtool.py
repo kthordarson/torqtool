@@ -175,6 +175,10 @@ def get_engine(args):
 	if args == 'postgres':
 		return create_engine(f"postgresql://postgres:foobar9999@elitedesk/torqfiskur")
 
+def chunks(l, n):
+	for i in range(0, len(l), n):
+         yield l.iloc[i:i+n]
+
 def main(args):
 	t0 = datetime.now()
 	
@@ -215,14 +219,16 @@ def main(args):
 	mb.insert(0, "idx", newindex)
 	mb = mb.set_index('idx')
 	dbmethod = None
-	#dbmethod = 'multi'
+	# dbmethod = 'multi'
 	# chsize = int(totalbytes/len(mb))
-	# chsize = int(len(mb)/len(buffer))
-	chsize = 10000
+	# chsize = int(totalbytes/len(buffer))
+	# chsize = len(buffer)
+	chsize = (int(len(mb)/len(buffer)))
 	try:
-		logger.info(f'[b] tosql b:{len(buffer)} mb:{len(mb)} tb:{totalbytes} dbm:{dbmethod} chs:{chsize}')
+		for idx, tchunk in enumerate(chunks(mb, chsize)):
+			logger.info(f'[b] idx:{idx} tosql b:{len(buffer)} mb:{len(mb)} tb:{totalbytes} dbm:{dbmethod} chs:{chsize}')
 		# mb.to_sql('entries',con=engine, if_exists='append',method='multi', chunksize=10000)
-		mb.to_sql('entries',con=engine, if_exists='append', method=dbmethod, chunksize=chsize)
+			tchunk.to_sql('entries',con=engine, if_exists='append', method=dbmethod, chunksize=chsize)
 	except Exception as e:
 		logger.error(f'[tosql] {e.code} {e.args[0]} ')
 	# for idx, csv in enumerate(csv_file_list):
