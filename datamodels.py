@@ -1,206 +1,171 @@
-from pandas import DataFrame, concat, Series
-from numpy import nan
-from sqlalchemy import ForeignKey, create_engine, Table, MetaData, Column, Integer, String, inspect, select, BigInteger, Float, DateTime, text, BIGINT, Numeric
-from sqlalchemy import DDL
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import relationship
+import os
+import uuid
+from datetime import datetime
+from enum import unique
+from hashlib import md5
+from pathlib import Path
+
 from loguru import logger
-import re
-Base = declarative_base()
+from numpy import nan
+from pandas import DataFrame, Series, concat, to_datetime
+from sqlalchemy import (BIGINT, DDL, BigInteger, Column, DateTime, Float,
+                        ForeignKey, Integer, MetaData, Numeric, String, Table,
+                        create_engine, inspect, select, text)
+from sqlalchemy.exc import (ArgumentError, DataError, IntegrityError,
+                            InternalError, OperationalError, ProgrammingError)
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy_utils import create_database, database_exists
+
+from torqsqlstrings import sqlcmds
 
 
-def attribute_factory():
-    return dict(
-        id=Column(Integer, primary_key=True),
-        CLASS_VAR=12345678,
-    )
-
-class TorqTest(declarative_base()):
-    __tablename__ = 'test'
-    id = Column('id', Integer, primary_key=True,
-                autoincrement="auto", unique=True)
-    foobar = Column(String(255))
-
-    def __repr__(self) -> str:
-        return self.__tablename__
-
-    def getfoobar(self):
-        return self.foobar
-
-    def setfoobar(self, foo):
-        self.foobar = foo
-
-    def getcols(self):
-        return [k for k in self.__mapper__.tables[0].columns]
-
-    def setcol(self, testcol):
-        self.testcol = testcol
-
-    def getcol(self, colname):
-        return self.colname
-
-# Table('torqfiles', MetaData(), 
-# Column('torqfileid', Integer(), table=<torqfiles>, primary_key=True, nullable=False), 
-# Column('tripid', Integer(), ForeignKey('torqtrips.tripid'), table=<torqfiles>), Column('torqfilename', String(length=255), table=<torqfiles>), Column('hash', String(length=255), table=<torqfiles>), Column('profile', String(length=255), table=<torqfiles>), Column('send_time', Numeric(), table=<torqfiles>), Column('read_time', Numeric(), table=<torqfiles>), Column('fix_time', Numeric(), table=<torqfiles>), schema=None)
-class TorqFile(Base):
-    __tablename__ = 'torqfiles'
-    torqfileid = Column('torqfileid', Integer, primary_key=True,
-                        autoincrement="auto", unique=False)
-    tripid = Column(Integer, ForeignKey('torqtrips.tripid'))
-    torqfilename = Column(String(255))
-    hash = Column(String(255))
-    profile = Column(String(255))
-    send_time = Column(Numeric)
-    read_time = Column(Numeric)
-    fix_time = Column(Numeric)
-    # torqlogentries = relationship("TorqEntry", back_populates='torqfile')
-
-    def len(self):
-        return 101
+def genuuid():
+	return str(uuid.uuid4())
 
 
-class TorqTrip(Base):
-    __tablename__ = 'torqtrips'
-    tripid = Column('tripid', Integer, primary_key=True,
-                    autoincrement="auto", unique=False)
-    filename = Column(String(255))
-    fuelCost = Column(Float)
-    fuelUsed = Column(Float)
-    time = Column(Float)
-    distanceWhilstConnectedToOBD = Column(Float)
-    distance = Column(Float)
-    profile = Column(String(255))
-    tripdate = Column(DateTime, server_default=text('NOW()'))
-    hash = Column(String(255))
+def send_torq_trip(tf=None, tripdict=None, session=None, engine=None):
+	# logger.debug(f'[stt] tf:{tf} `td:{tripdict} s:{session} e:{engine}')
+	if not tripdict:
+		logger.error(f'[stt] no tripdict tf={tf}')
+		return None
+	distance = tripdict['distance']
+	fuelcost = tripdict['fuelcost']
+	fuelused = tripdict['fuelused']
+	distancewhilstconnectedtoobd = tripdict['distancewhilstconnectedtoobd']
+	time = tripdict['time']
+	tripdate = tripdict['tripdate']
+	profile = tripdict['profile']
+	csvfilename = tripdict['csvfilename']
+	csvhash = tripdict['csvhash']
+	sql = ''
+	if engine.name == 'mysql':
+		engine.execute('SET FOREIGN_KEY_CHECKS=0')
+		sql = f"""insert into torqtrips (csvfilename, csvhash, distance, fuelcost, fuelused, distancewhilstconnectedtoobd, tripdate, profile, time) values ("{csvfilename}", "{csvhash}", "{distance}", "{fuelcost}", "{fuelused}", "{distancewhilstconnectedtoobd}", "{tripdate}", "{profile}","{time}");"""
+	if engine.name == 'sqlite':
+		sql = f'insert into torqtrips (csvfilename, csvhash, distance, fuelcost, fuelused, distancewhilstconnectedtoobd, tripdate, profile, time) values ("{csvfilename}", "{csvhash}",  "{distance}", "{fuelcost}", "{fuelused}", "{distancewhilstconnectedtoobd}", "{tripdate}", "{profile}","{time}");'
+	if engine.name == 'postgresql':
+		sql = f"insert into torqtrips (csvfilename, csvhash, distance, fuelcost, fuelused, distancewhilstconnectedtoobd, tripdate, profile, time) values ('{csvfilename}', '{csvhash}', '{distance}', '{fuelcost}', '{fuelused}', '{distancewhilstconnectedtoobd}', '{tripdate}', '{profile}','{time}') returning id;"
+	try:
+		res = engine.execute(sql)
+		if engine.name == 'postgresql':
+			id = res.fetchone()[0]
+		else:
+			id = res.lastrowid
+			engine.execute('SET FOREIGN_KEY_CHECKS=1')
+		return id
+	except (DataError, IntegrityError) as e:
+		logger.error(f'[sql] errcode {e.code} errargs: {e.args[0]}')
+		return None
 
-    def len(self):
-        return 101
+
+def get_trip_profile(filename):
+	filename = Path(filename)
+	p_filename = os.path.join(filename.parent, 'profile.properties')
+	with open(p_filename, 'r') as f:
+		pdata_ = f.readlines()
+	if len(pdata_) == 8:
+		pdata = [l.strip('\n').lower() for l in pdata_ if not l.startswith('#')]
+		try:
+			pdata_date = str(pdata_[1][1:]).strip('\n')
+			tripdate = to_datetime(pdata_date)
+			tripdate = tripdate.strftime('%Y-%m-%d %H:%M:%S')
+		# logger.info(f'[tripdate] {tripdate}')
+		except (OperationalError, Exception) as e:
+			logger.error(f'[readsend] {e}')
+			tripdate = None
+		trip_profile = dict([k.split('=') for k in pdata])
+		torq_trip = {}
+		torq_trip['fuelcost'] = float(trip_profile['fuelcost'])
+		torq_trip['fuelused'] = float(trip_profile['fuelused'])
+		torq_trip['distancewhilstconnectedtoobd'] = float(trip_profile['distancewhilstconnectedtoobd'])
+		torq_trip['distance'] = float(trip_profile['distance'])
+		torq_trip['time'] = float(trip_profile['time'])
+		torq_trip['filename'] = p_filename
+		torq_trip['csvfilename'] = filename
+		torq_trip['csvhash'] = md5(open(filename, 'rb').read()).hexdigest()
+		torq_trip['tripdate'] = tripdate
+		torq_trip['profile'] = trip_profile['profile']
+		return torq_trip
+	else:
+		logger.warning(f'[p] {filename} len={len(pdata_)}')
 
 
-class TorqLogEntry(Base):
-    __tablename__ = 'torqlogentries'
-    torqlog_entry = Column('torqlog_entry', Integer,
-                           primary_key=True, autoincrement="auto", unique=False)
-    # torqlogid =  Column('torqlogid', Integer, primary_key=True, autoincrement="auto")
-    tripid = Column(Integer, ForeignKey('torqtrips.tripid'))
-    torqfileid = Column(Integer, ForeignKey('torqfiles.torqfileid'))
+def database_init(engine, dburl, filelist):
+	logger.info(f'[dbprep] dropping e:{engine}  dburl:{database_exists(dburl)}')
+	sess = sessionmaker(bind=engine)
+	session = sess()
+	tables = ['torqtrips', 'torqlogs', 'torqfiles', 'torqdata']
+	for t in tables:
+		if engine.name == 'mysql':
+			try:
+				session.execute('SET FOREIGN_KEY_CHECKS=0;')
+				session.commit()
+			except (InternalError, ProgrammingError) as e:
+				logger.error(f'[dbinit] {e}')
+				session.rollback()
+		sqldrop = f'DROP TABLE IF EXISTS {t} CASCADE;'
+		logger.info(f'[dbprep] drop {t}')
+		session.execute(sqldrop)
+		session.commit()
+		if engine.name == 'mysql':
+			try:
+				session.execute('SET FOREIGN_KEY_CHECKS=1;')
+				session.commit()
+			except (InternalError, ProgrammingError) as e:
+				logger.error(f'[dbinit] {e}')
+				session.rollback()
+		logger.info(f'[dbprep] drop done')
+	create_cmd = sqlcmds[engine.name]
+	for c in create_cmd:
+		session.execute(sqlcmds[engine.name][c])
+		session.commit()
+	logger.info(f'[dbprep] create done')
+	for tf in filelist:
+		csvfile = tf['csvfilename']
+		csvhash = tf['csvhash']
+		csvfilefixed = tf['csvfilefixed']
+		fixedhash = md5(open(csvfilefixed, 'rb').read()).hexdigest()
+		sql = f"insert into torqfiles (csvfilename, csvhash, csvfilefixed, fixedhash) values ('{csvfile}','{csvhash}','{csvfilefixed}','{fixedhash}');"
+		# logger.debug(sql)
+		try:
+			session.execute(sql)
+			session.commit()
+		except (OperationalError, ArgumentError) as e:
+			logger.error(f'[i] {e}')
+			session.rollback()
 
-    def len(self):
-        return 101
 
-
-
-
-class TorqEntry_foo(Base):
-    __tablename__ = 'torqlogs'
-
-    id = Column('id', Integer, primary_key=True,
-                autoincrement="auto", unique=False)
-    tripid = Column(Integer, ForeignKey('torqtrips.tripid'))
-    torqtrip = relationship("TorqTrip")
-    torqfileid = Column(Integer, ForeignKey('torqfiles.torqfileid'))
-    torqfile = relationship("TorqFile")
-    torqlog_entry = Column(Integer, ForeignKey('torqlogentries.torqlog_entry'))
-
-    def __init__(self, **kw):
-        pass
-        # if len(kw) > 0:
-        # 	for k in kw['buffer']:
-        # 		#k1 = Column(name='')
-        # 		#ktemp = DataFrame([kw['buffer'][k].values], index=False) #, kw['buffer'][k].values)
-        # 		#logger.info(f'[setattr] {k} {type(ktemp)}')
-        # 		c = kw['buffer'][k].items
-        # 		# c.table = 'torqlogs'
-        # 		try:
-        # 			setattr(self, k, {c})
-        # 		except (AttributeError, KeyError) as e:
-        # 			logger.error(f'[setattr] err {e} k:{k} kw:{kw}')
-        # 		logger.info(f'[setattr] {k} {len(kw)} {type(kw)} {type(k)}')
-        # 	#setattr(self, k, kw[k])
-
-    def setdata(self, buffer):
-        for c in buffer:
-            setattr(self, c, buffer[c])
-            logger.info(f'[setattr] {c} {len(buffer)}')
-
-# class TorqEntryold(Base):
-# 	__tablename__ = 'torqlogs'
-# 	id =  Column('id', Integer, primary_key=True, autoincrement="auto",unique=False)
-# 	#idx =  Column('idx', Integer)
-# 	tripid =  Column(Integer, ForeignKey('torqtrips.tripid'))
-# 	torqtrip = relationship("TorqTrip")
-# 	torqfileid = Column(Integer, ForeignKey('torqfiles.torqfileid'))
-# 	torqfile = relationship("TorqFile")
-# 	torqlog_entry = Column(Integer, ForeignKey('torqlogentries.torqlog_entry'))
-# 	AccelerationSensorTotalg = Column(Float, default=0)
-# 	AccelerationSensorXaxisg = Column(Float, default=0)
-# 	AccelerationSensorYaxisg = Column(Float, default=0)
-# 	AccelerationSensorZaxisg = Column(Float, default=0)
-# 	Actualenginetorque = Column(Float, default=0)
-# 	Altitudem = Column(Float, default=0)
-# 	AndroiddeviceBatteryLevel = Column(Float, default=0)
-# 	Averagetripspeedwhilstmovingonlykmh = Column(Float, default=0)
-# 	Averagetripspeedwhilststoppedormovingkmh = Column(Float, default=0)
-# 	Bearing = Column(Float, default=0)
-# 	COingkmAveragegkm = Column(Float, default=0)
-# 	COingkmInstantaneousgkm = Column(Float, default=0)
-# 	CostpermilekmInstantkm = Column(Float, default=0)
-# 	CostpermilekmTripkm = Column(Float, default=0)
-# 	DeviceTime = Column(DateTime, server_default=text('NOW()')) # Column(String(255), default=0)
-# 	DistancetoemptyEstimatedkm = Column(Float, default=0)
-# 	DistancetravelledwithMILCELlitkm = Column(Float, default=0)
-# 	EngineCoolantTemperatureF = Column(Float, default=0)
-# 	EnginekWAtthewheelskW = Column(Float, default=0)
-# 	EngineLoad = Column(Float, default=0)
-# 	EngineRPMrpm = Column(Float, default=0)
-# 	Fuelcosttripcost = Column(Float, default=0)
-# 	Fuelflowratehourlhr = Column(Float, default=0)
-# 	Fuelflowrateminuteccmin = Column(Float, default=0)
-# 	Fuelpressurekpa = Column(Float, default=0)
-# 	FuelRailPressurekpa = Column(Float, default=0)
-# 	FuelRemainingCalculatedfromvehicleprofile = Column(Float, default=0)
-# 	Fuelusedtripl = Column(Float, default=0)
-# 	GPSAccuracym = Column(Float, default=0)
-# 	GPSAltitudem = Column(Float, default=0)
-# 	GPSBearing = Column(Float, default=0)
-# 	GPSLatitude = Column(Float, default=0)
-# 	GPSLongitude = Column(Float, default=0)
-# 	GPSSatellites = Column(Float, default=0)
-# 	GPSSpeedkmh = Column(Float, default=0)
-# 	GPSTime = Column(String(255), server_default=text('NOW()'))
-# 	GPSvsOBDSpeeddifferencekmh = Column(Float, default=0)
-# 	GravityXG = Column(Float, default=0)
-# 	GravityYG = Column(Float, default=0)
-# 	GravityZG = Column(Float, default=0)
-# 	HorizontalDilutionofPrecision = Column(Float, default=0)
-# 	HorsepowerAtthewheelshp = Column(Float, default=0)
-# 	IntakeAirTemperatureF = Column(Float, default=0)
-# 	IntakeManifoldPressurekpa = Column(Float, default=0)
-# 	KilometersPerLitreInstantkpl = Column(Float, default=0)
-# 	KilometersPerLitreLongTermAveragekpl = Column(Float, default=0)
-# 	Latitude = Column(Float, default=0)
-# 	LitresPer100KilometerInstantl100km = Column(Float, default=0)
-# 	LitresPer100KilometerLongTermAveragel100km = Column(Float, default=0)
-# 	Longitude = Column(Float, default=0)
-# 	MassAirFlowRategs = Column(Float, default=0)
-# 	MilesPerGallonInstantmpg = Column(Float, default=0)
-# 	MilesPerGallonLongTermAveragempg = Column(Float, default=0)
-# 	SpeedGPSkmh = Column(Float, default=0)
-# 	SpeedOBDkmh = Column(Float, default=0)
-# 	Torqueftlb = Column(Float, default=0)
-# 	TripaverageKPLkpl = Column(Float, default=0)
-# 	TripaverageLitres100KMl100km = Column(Float, default=0)
-# 	TripaverageMPGmpg = Column(Float, default=0)
-# 	TripDistancekm = Column(Float, default=0)
-# 	Tripdistancestoredinvehicleprofilekm = Column(Float, default=0)
-# 	TripTimeSincejourneystarts = Column(Float, default=0)
-# 	Triptimewhilstmovings = Column(Float, default=0)
-# 	Triptimewhilststationarys = Column(Float, default=0)
-# 	TurboBoostVacuumGaugebar = Column(Float, default=0)
-# 	VoltageOBDAdapterV = Column(Float, default=0)
-# 	VolumetricEfficiencyCalculated = Column(Float, default=0)
-
-# 	def __init__(self,buffer):
-# 		pass
-# 	def len(self):
-# 		return 101
+def prepdb(filelist=None, engine=None, args=None, dburl=None, Base=None):
+	if args.combinecsv:
+		return filelist
+	logger.info(f'[dbprep] f:{len(filelist)}')
+	tables = ['torqtrips', 'torqlogs', 'torqfiles']
+	Session = sessionmaker(bind=engine)
+	session = Session()
+	if args.init_db:
+		database_init(engine, dburl, filelist)
+		return filelist
+	else:
+		sql = f'select * from torqfiles;'
+		torqdbfiles = session.execute(sql).fetchall()
+		hlist = [k['csvhash'] for k in torqdbfiles]
+		for tf in filelist:
+			csvfile = tf['csvfilename']
+			csvhash = tf['csvhash']
+			csvfilefixed = tf['csvfilefixed']
+			fixedhash = md5(open(csvfilefixed, 'rb').read()).hexdigest()
+			# fixedhash = tf['fixedhash']
+			if csvhash not in [k['csvhash'] for k in torqdbfiles]:
+				sql = f'insert into torqfiles (csvfilename, csvhash, csvfilefixed, fixedhash) values ("{csvfile}","{csvhash}","{csvfilefixed}","{fixedhash}");'
+				try:
+					session.execute(sql)
+					session.commit()
+				except ProgrammingError as e:
+					logger.error(f'[E] {e}')
+					session.rollback()
+			# logger.debug(sql)
+			else:
+				logger.warning(f'[csv] {csvfile} already in db')
+		newfiles = [k for k in filelist if k['csvhash'] not in hlist]
+		return newfiles
