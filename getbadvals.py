@@ -1,7 +1,7 @@
 from pathlib import Path
 from loguru import logger
 
-MIN_FILESIZE = 2200
+MIN_FILESIZE = 2300
 
 
 def get_bad_vals(csvfile: str):

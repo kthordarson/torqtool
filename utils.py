@@ -25,7 +25,7 @@ from sqlalchemy.exc import (DataError, IntegrityError, OperationalError,
                             ProgrammingError)
 from sqlalchemy.ext.declarative import declarative_base
 
-MIN_FILESIZE = 2200
+MIN_FILESIZE = 2300
 
 
 def checkcsv(searchpath: Path):
