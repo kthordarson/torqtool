@@ -1,3 +1,6 @@
+# todo fix [IntegrityError] trip:63 gkpj pymysql.err.IntegrityError 1452 Cannot add or update a child row: a foreign key constraint fails (`torq`.`torqdata`, CONSTRAINT `torqdata_ibfk_1` FOREIGN KEY (`id`) REFERENCES `torqlogs` (`tripid`))') tripdate=2022-12-20 18:03:04
+# todo fix only create tripdata for new trips
+
 from hashlib import md5
 from threading import Thread, active_count
 
@@ -11,8 +14,8 @@ from sqlalchemy.exc import (ArgumentError, CompileError, DataError, IntegrityErr
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.orm.session import close_all_sessions
 
-def create_tripdata(engine=None):
-	selectfoo=""" 
+def create_tripdata(engine, newfilelist):
+	selectfoo="""
 	SELECT     torqtrips.distance,
 					 torqtrips.fuelused,
 					 torqtrips.fuelcost,
@@ -208,7 +211,7 @@ def create_tripdata(engine=None):
 FROM       torqlogs
 INNER JOIN torqtrips
 ON         torqtrips.id = torqlogs.tripid
-WHERE      torqlogs.tripid= """
+WHERE      torqlogs.tripid="""
 
 	selectfoo_psql="""
 select
@@ -410,9 +413,10 @@ from
 where
 	tripid =
 """
-	toptrips = pd.read_sql(f'select * from torqtrips', engine)
-	for trip in toptrips.id:
+	torqtrips = pd.read_sql(f'select id from torqtrips', engine)
+	for newtrip in newfilelist:
 		# logger.debug(f'[updatetrip] id={trip}')
+		trip = newtrip.get('tripid')
 		try:
 			if engine.name == 'postgresql':
 				sqlmagic = f'{selectfoo_psql}{trip} group by torqtrips.distance,torqtrips.fuelused,torqtrips.fuelcost,torqtrips.time,torqtrips.distancewhilstconnectedtoobd '
@@ -421,15 +425,22 @@ where
 				sqlmagic = f'{selectfoo}{trip}'
 			#res = pd.read_sql(f'SELECT tripid, MIN({c}) as min{c}, MAX({c}) as max{c}, AVG({c}) as avg{c} FROM torqlogs WHERE tripid = "{trip}"', engine)
 			res = pd.read_sql(sqlmagic, engine)
-			tripdate = pd.read_sql(f'select tripdate from torqtrips where id={trip} ', engine)
+			# tripdate_ = pd.read_sql(f'select tripdate from torqtrips where id={trip} ', engine)
 			# torqtrip = pd.read_sql(f'select * from torqtrips where id={trip} ', engine)
-			tripdate = pd.to_datetime(tripdate.values[0][0])
-			res.insert(1, "tripdate", [tripdate for k in range(len(res))])
+			# tripdate = pd.to_datetime(tripdate_.values[0][0])
+			tripdate = pd.to_datetime(pd.read_sql(f'select tripdate from torqtrips where id={trip} ', engine).values[0][0])
+			# res.insert(1, "tripdate", [tripdate for k in range(len(res))])
+			res.insert(1, "tripdate", tripdate)
 			if engine.name == 'mysql':
 				try:
 					res.to_sql('torqdata', engine, if_exists='append', index_label='id')
 				except IntegrityError as e:
-					logger.error(f'[E] {e} trip:{trip}')
+					emsg1 = e.args[0].split(') (')[0][1:]
+					emsg2 = e.args[0].split(') (')[1][0:4]
+					emsg3 = e.args[0].split(') (')[1][7:]
+					logger.error(f'[IntegrityError] trip:{trip} {e.code} {emsg1} {emsg2} {emsg3} tripdate={tripdate}')
+				except ValueError as e:
+					logger.error(f'[valueerror] trip:{trip} {e} tripdate={tripdate}')
 			if engine.name == 'postgresql':
 				res.to_sql('torqdata', engine, if_exists='append', index=False)
 			# alltripsdata.append({'tripid':trip, 'data':res})

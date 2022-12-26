@@ -191,9 +191,7 @@ async def main(args):
 	results = None
 	send_start = timer()
 	if args.combinecsv:
-		logger.debug(f'dump csv start')
 		mb.to_csv('torqdump.csv')
-		logger.debug(f'dump csv done')
 	else:
 		with ProcessPoolExecutor(max_workers=maxworkers) as executor:
 			# future_to_stuff = [executor.submit(sqlsender, chunk, engine) for chunk in enumerate(chunks(mb, chsize))]
@@ -208,7 +206,9 @@ async def main(args):
 	# fix_nulls(engine)
 	fix_end = timer()
 	up_start = timer()
-	create_tripdata(engine)
+	# todo fix [IntegrityError] trip:63 gkpj pymysql.err.IntegrityError 1452 Cannot add or update a child row: a foreign key constraint fails (`torq`.`torqdata`, CONSTRAINT `torqdata_ibfk_1` FOREIGN KEY (`id`) REFERENCES `torqlogs` (`tripid`))') tripdate=2022-12-20 18:03:04
+	# todo fix only create tripdata for new trips
+	create_tripdata(engine, newfilelist)
 	up_end = timer()
 	logger.info(f'timers readtime={timedelta(seconds=readend - readstart)} sendtime={timedelta(seconds=send_end - send_start)} fixtime={timedelta(seconds=fix_end - fix_start)} uptime={timedelta(seconds=up_end - up_start)}')
 

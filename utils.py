@@ -136,7 +136,7 @@ def get_csv_files(searchpath: Path, recursive=True, dbmode=None):
 				'newcolumns': newcolname,
 				# 'id' : 0,
 			}
-		logger.info(f'[getcsv] t:{len(torqcsvfiles)}')
+		logger.info(f'[getcsv] files:{len(torqcsvfiles)}')
 		# print(comma_counter)
 		return torqcsvfiles
 

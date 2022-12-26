@@ -92,11 +92,11 @@ def get_trip_profile(filename):
 
 
 def database_init(engine, dburl, filelist):
-	logger.info(f'[dbprep] dropping e:{engine}  dburl:{database_exists(dburl)}')
 	sess = sessionmaker(bind=engine)
 	session = sess()
 	tables = ['torqtrips', 'torqlogs', 'torqfiles', 'torqdata']
 	for t in tables:
+		logger.info(f'[dbprep] drop {t}')
 		if engine.name == 'mysql':
 			try:
 				session.execute('SET FOREIGN_KEY_CHECKS=0;')
@@ -105,7 +105,6 @@ def database_init(engine, dburl, filelist):
 				logger.error(f'[dbinit] {e}')
 				session.rollback()
 		sqldrop = f'DROP TABLE IF EXISTS {t} CASCADE;'
-		logger.info(f'[dbprep] drop {t}')
 		session.execute(sqldrop)
 		session.commit()
 		if engine.name == 'mysql':
@@ -115,7 +114,6 @@ def database_init(engine, dburl, filelist):
 			except (InternalError, ProgrammingError) as e:
 				logger.error(f'[dbinit] {e}')
 				session.rollback()
-		logger.info(f'[dbprep] drop done')
 	create_cmd = sqlcmds[engine.name]
 	for c in create_cmd:
 		session.execute(sqlcmds[engine.name][c])
@@ -139,7 +137,7 @@ def database_init(engine, dburl, filelist):
 def prepdb(filelist=None, engine=None, args=None, dburl=None, Base=None):
 	if args.combinecsv:
 		return filelist
-	logger.info(f'[dbprep] f:{len(filelist)}')
+	logger.info(f'[prepdb] files:{len(filelist)}')
 	tables = ['torqtrips', 'torqlogs', 'torqfiles']
 	Session = sessionmaker(bind=engine)
 	session = Session()
@@ -162,10 +160,10 @@ def prepdb(filelist=None, engine=None, args=None, dburl=None, Base=None):
 					session.execute(sql)
 					session.commit()
 				except ProgrammingError as e:
-					logger.error(f'[E] {e}')
+					logger.error(f'[prepdb] {e}')
 					session.rollback()
 			# logger.debug(sql)
 			else:
-				logger.warning(f'[csv] {csvfile} already in db')
+				logger.warning(f'[prepdb] {csvfile} already in db')
 		newfiles = [k for k in filelist if k['csvhash'] not in hlist]
 		return newfiles
