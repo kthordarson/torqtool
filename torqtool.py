@@ -144,6 +144,7 @@ async def main(args):
 	filelist_ = get_csv_files(searchpath=args.path, dbmode=args.dbmode)
 	# filelist = [k for k in reversed(sorted(filelist_, key=lambda d: d['fixedsize']) )]
 	filelist = [k for k in sorted(filelist_, key=lambda d: d['csvtimestamp'])]
+	newfilelist = None
 	newfilelist = prepdb(filelist, engine, args, dburl, Base)
 	if len(newfilelist) == 0:
 		sys.exit(1)
@@ -154,63 +155,64 @@ async def main(args):
 		newfilelist[tidx]['tripid'] = sendres
 	# logger.debug(f"newfilelist[tidx]['tripid'] {newfilelist[tidx]['tripid']} = {sendres}")
 	# newfilelist = [k for k in reversed(sorted(newfilelist, key=lambda d: d['tripdate']) )]
-	totalbytes_fixed = sum([k['fixedsize'] for k in newfilelist])
-	totalbytes_csv = sum([k['csvsize'] for k in newfilelist])
-	totalbytes_lines = sum([k['buflen'] for k in newfilelist])
-	logger.info(f'[sizes] totalbytes_fixed:{totalbytes_fixed} totalbytes_csv:{totalbytes_csv} totalbytes_lines:{totalbytes_lines} fl:{len(filelist)} nfl:{len(newfilelist)}')
+	if newfilelist:
+		totalbytes_fixed = sum([k['fixedsize'] for k in newfilelist])
+		totalbytes_csv = sum([k['csvsize'] for k in newfilelist])
+		totalbytes_lines = sum([k['buflen'] for k in newfilelist])
+		logger.info(f'[sizes] totalbytes_fixed:{totalbytes_fixed} totalbytes_csv:{totalbytes_csv} totalbytes_lines:{totalbytes_lines} fl:{len(filelist)} nfl:{len(newfilelist)}')
 
-	maxworkers = cpu_count()
-	loop_ = asyncio.get_event_loop()
-	read_tasks = []
-	buffs = []
-	readstart = timer()
-	with ProcessPoolExecutor(max_workers=maxworkers) as executor:
-		read_task_start = timer()
-		for tf in newfilelist:
-			rt = asyncio.create_task(read_buff(tf))
-			read_tasks.append(rt)
-		logger.debug(f'read_tasks:{len(read_tasks)}')
-		buffs = await asyncio.gather(*read_tasks)
-		read_task_end = timer()
-		logger.debug(f'buffs:{len(buffs)} t={timedelta(seconds=read_task_end - read_task_start)}')
-	# with ProcessPoolExecutor(max_workers=maxworkers) as executor:
-	# 	future_to_stuff = [executor.submit(read_buff, tf) for tf in newfilelist]
-	# 	for buffer in as_completed(future_to_stuff):
-	# 		buffres = buffer.result()
-	# 		buffs.append(buffres)
-	# logger.debug(f'[tpe] br:{len(buffres)} b:{len(buffs)}')
-	buffer = [b for b in buffs]
-	mb = concat([b for b in buffer])
-	dbmethod = None
-	chsize = 10000  # int(len(mb) / len(buffer)) # 10000 # int(len(mb) / maxworkers)
-	readend = timer()
-	logger.debug(f'[read] done time={timedelta(seconds=readend - readstart)} b:{len(buffer)} bs:{len(buffs)} mb:{len(mb)} chsize:{chsize}')
-	# chsize = (int(len(mb)/len(buffer))) #  int(totalbytes_lines/len(filelist)) #5000 # (int(len(mb)/len(buffer)))
-	# todo send chunks with threads or processpool
-	sendtasks = []
-	results = None
-	send_start = timer()
-	if args.combinecsv:
-		mb.to_csv('torqdump.csv')
-	else:
+		maxworkers = cpu_count()
+		loop_ = asyncio.get_event_loop()
+		read_tasks = []
+		buffs = []
+		readstart = timer()
 		with ProcessPoolExecutor(max_workers=maxworkers) as executor:
-			# future_to_stuff = [executor.submit(sqlsender, chunk, engine) for chunk in enumerate(chunks(mb, chsize))]
-			for idx, tchunk in enumerate(chunks(mb, chsize)):
-				# logger.debug(f'[{idx}] sending...')
-				task = asyncio.create_task(sqlsender(buffer=tchunk, dburl=dburl))
-				sendtasks.append(task)
-			logger.debug(f'sendtasks = {len(sendtasks)}')
-			await asyncio.gather(*sendtasks)
-	send_end = timer()
-	fix_start = timer()
-	# fix_nulls(engine)
-	fix_end = timer()
-	up_start = timer()
-	# todo fix [IntegrityError] trip:63 gkpj pymysql.err.IntegrityError 1452 Cannot add or update a child row: a foreign key constraint fails (`torq`.`torqdata`, CONSTRAINT `torqdata_ibfk_1` FOREIGN KEY (`id`) REFERENCES `torqlogs` (`tripid`))') tripdate=2022-12-20 18:03:04
-	# todo fix only create tripdata for new trips
-	create_tripdata(engine, newfilelist)
-	up_end = timer()
-	logger.info(f'timers readtime={timedelta(seconds=readend - readstart)} sendtime={timedelta(seconds=send_end - send_start)} fixtime={timedelta(seconds=fix_end - fix_start)} uptime={timedelta(seconds=up_end - up_start)}')
+			read_task_start = timer()
+			for tf in newfilelist:
+				rt = asyncio.create_task(read_buff(tf))
+				read_tasks.append(rt)
+			logger.debug(f'read_tasks:{len(read_tasks)}')
+			buffs = await asyncio.gather(*read_tasks)
+			read_task_end = timer()
+			logger.debug(f'buffs:{len(buffs)} t={timedelta(seconds=read_task_end - read_task_start)}')
+		# with ProcessPoolExecutor(max_workers=maxworkers) as executor:
+		# 	future_to_stuff = [executor.submit(read_buff, tf) for tf in newfilelist]
+		# 	for buffer in as_completed(future_to_stuff):
+		# 		buffres = buffer.result()
+		# 		buffs.append(buffres)
+		# logger.debug(f'[tpe] br:{len(buffres)} b:{len(buffs)}')
+		buffer = [b for b in buffs]
+		mb = concat([b for b in buffer])
+		dbmethod = None
+		chsize = 10000  # int(len(mb) / len(buffer)) # 10000 # int(len(mb) / maxworkers)
+		readend = timer()
+		logger.debug(f'[read] done time={timedelta(seconds=readend - readstart)} b:{len(buffer)} bs:{len(buffs)} mb:{len(mb)} chsize:{chsize}')
+		# chsize = (int(len(mb)/len(buffer))) #  int(totalbytes_lines/len(filelist)) #5000 # (int(len(mb)/len(buffer)))
+		# todo send chunks with threads or processpool
+		sendtasks = []
+		results = None
+		send_start = timer()
+		if args.combinecsv:
+			mb.to_csv('torqdump.csv')
+		else:
+			with ProcessPoolExecutor(max_workers=maxworkers) as executor:
+				# future_to_stuff = [executor.submit(sqlsender, chunk, engine) for chunk in enumerate(chunks(mb, chsize))]
+				for idx, tchunk in enumerate(chunks(mb, chsize)):
+					# logger.debug(f'[{idx}] sending...')
+					task = asyncio.create_task(sqlsender(buffer=tchunk, dburl=dburl))
+					sendtasks.append(task)
+				logger.debug(f'sendtasks = {len(sendtasks)}')
+				await asyncio.gather(*sendtasks)
+		send_end = timer()
+		fix_start = timer()
+		# fix_nulls(engine)
+		fix_end = timer()
+		up_start = timer()
+		# todo fix [IntegrityError] trip:63 gkpj pymysql.err.IntegrityError 1452 Cannot add or update a child row: a foreign key constraint fails (`torq`.`torqdata`, CONSTRAINT `torqdata_ibfk_1` FOREIGN KEY (`id`) REFERENCES `torqlogs` (`tripid`))') tripdate=2022-12-20 18:03:04
+		# todo fix only create tripdata for new trips
+		create_tripdata(engine, newfilelist)
+		up_end = timer()
+		logger.info(f'timers readtime={timedelta(seconds=readend - readstart)} sendtime={timedelta(seconds=send_end - send_start)} fixtime={timedelta(seconds=fix_end - fix_start)} uptime={timedelta(seconds=up_end - up_start)}')
 
 
 if __name__ == '__main__':

@@ -11,8 +11,7 @@ from pandas import DataFrame, Series, concat, to_datetime
 from sqlalchemy import (BIGINT, DDL, BigInteger, Column, DateTime, Float,
                         ForeignKey, Integer, MetaData, Numeric, String, Table,
                         create_engine, inspect, select, text)
-from sqlalchemy.exc import (ArgumentError, DataError, IntegrityError,
-                            InternalError, OperationalError, ProgrammingError)
+from sqlalchemy.exc import (ArgumentError, DataError, IntegrityError, InternalError, OperationalError, ProgrammingError)
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy_utils import create_database, database_exists
