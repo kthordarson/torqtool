@@ -413,37 +413,40 @@ from
 where
 	tripid =
 """
-	torqtrips = pd.read_sql(f'select id from torqtrips', engine)
+	Session = sessionmaker(bind=engine)
+	session = Session()
+	#torqtrips = pd.read_sql(f'select id from torqtrips', session)
 	for newtrip in newfilelist:
 		# logger.debug(f'[updatetrip] id={trip}')
 		trip = newtrip.get('tripid')
-		try:
-			if engine.name == 'postgresql':
-				sqlmagic = f'{selectfoo_psql}{trip} group by torqtrips.distance,torqtrips.fuelused,torqtrips.fuelcost,torqtrips.time,torqtrips.distancewhilstconnectedtoobd '
-			else:
-				#sqlmagic = f'{selectfoo}{trip} group by tripid '
-				sqlmagic = f'{selectfoo}{trip}'
-			#res = pd.read_sql(f'SELECT tripid, MIN({c}) as min{c}, MAX({c}) as max{c}, AVG({c}) as avg{c} FROM torqlogs WHERE tripid = "{trip}"', engine)
-			res = pd.read_sql(sqlmagic, engine)
-			# tripdate_ = pd.read_sql(f'select tripdate from torqtrips where id={trip} ', engine)
-			# torqtrip = pd.read_sql(f'select * from torqtrips where id={trip} ', engine)
-			# tripdate = pd.to_datetime(tripdate_.values[0][0])
-			tripdate = pd.to_datetime(pd.read_sql(f'select tripdate from torqtrips where id={trip} ', engine).values[0][0])
-			# res.insert(1, "tripdate", [tripdate for k in range(len(res))])
-			res.insert(1, "tripdate", tripdate)
+		if engine.name == 'postgresql':
+			sqlmagic = f'{selectfoo_psql}{trip} group by torqtrips.distance,torqtrips.fuelused,torqtrips.fuelcost,torqtrips.time,torqtrips.distancewhilstconnectedtoobd '
+		else:
+			#sqlmagic = f'{selectfoo}{trip} group by tripid '
+			sqlmagic = f'{selectfoo}{trip}'
+		#res = pd.read_sql(f'SELECT tripid, MIN({c}) as min{c}, MAX({c}) as max{c}, AVG({c}) as avg{c} FROM torqlogs WHERE tripid = "{trip}"', engine)
+		#res = pd.read_sql(sqlmagic, session)
+		res = [k._asdict() for k in session.execute(text(sqlmagic)).all()]
+		if res[0].get('distance') == None:
+			tripdate = pd.to_datetime(newtrip['csvtimestamp'])
+			logger.warning(f'[createtripdata] sqlmagic failed tripid={trip} has no data. tripdate set to {tripdate}')
+		else:
+			sql_tripdate = text(f'select tripdate from torqtrips where id={trip}')
+			tripdate = [k._asdict() for k in session.execute(sql_tripdate).fetchall()]
+			logger.debug(f'[createtripdata] res={len(res)} {type(res)} res0={type(res[0])} tripdate={tripdate}')
+			# res.insert(1, "tripdate", tripdate)
 			if engine.name == 'mysql':
 				try:
-					res.to_sql('torqdata', engine, if_exists='append', index_label='id')
+					pd.DataFrame(res).to_sql('torqdata', engine, if_exists='append',  index_label='id')
+					#_ = [pd.DataFrame(r).to_sql('torqdata', session, if_exists='append',  index=False) for r in res]
+				except AttributeError as e:
+					logger.error(f'[createtripdata] {e}')
 				except IntegrityError as e:
 					emsg1 = e.args[0].split(') (')[0][1:]
 					emsg2 = e.args[0].split(') (')[1][0:4]
 					emsg3 = e.args[0].split(') (')[1][7:]
 					logger.error(f'[IntegrityError] trip:{trip} {e.code} {emsg1} {emsg2} {emsg3} tripdate={tripdate}')
 				except ValueError as e:
-					logger.error(f'[valueerror] trip:{trip} {e} tripdate={tripdate}')
+					logger.error(f'[createtripdata] {e} {type(e)} trip:{trip} tripdate={tripdate}')
 			if engine.name == 'postgresql':
-				res.to_sql('torqdata', engine, if_exists='append', index=False)
-			# alltripsdata.append({'tripid':trip, 'data':res})
-			#print(f'[r] {res}')
-		except OperationalError as e:
-			logger.error(f'err {e}')
+				res.to_sql('torqdata', session, if_exists='append', index=False)

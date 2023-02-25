@@ -39,19 +39,20 @@ def send_torq_trip(tf=None, tripdict=None, session=None, engine=None):
 	csvhash = tripdict['csvhash']
 	sql = ''
 	if engine.name == 'mysql':
-		engine.execute('SET FOREIGN_KEY_CHECKS=0')
+		session.execute(text('SET FOREIGN_KEY_CHECKS=0'))
 		sql = f"""insert into torqtrips (csvfilename, csvhash, distance, fuelcost, fuelused, distancewhilstconnectedtoobd, tripdate, profile, time) values ("{csvfilename}", "{csvhash}", "{distance}", "{fuelcost}", "{fuelused}", "{distancewhilstconnectedtoobd}", "{tripdate}", "{profile}","{time}");"""
 	if engine.name == 'sqlite':
 		sql = f'insert into torqtrips (csvfilename, csvhash, distance, fuelcost, fuelused, distancewhilstconnectedtoobd, tripdate, profile, time) values ("{csvfilename}", "{csvhash}",  "{distance}", "{fuelcost}", "{fuelused}", "{distancewhilstconnectedtoobd}", "{tripdate}", "{profile}","{time}");'
 	if engine.name == 'postgresql':
 		sql = f"insert into torqtrips (csvfilename, csvhash, distance, fuelcost, fuelused, distancewhilstconnectedtoobd, tripdate, profile, time) values ('{csvfilename}', '{csvhash}', '{distance}', '{fuelcost}', '{fuelused}', '{distancewhilstconnectedtoobd}', '{tripdate}', '{profile}','{time}') returning id;"
 	try:
-		res = engine.execute(sql)
+		res = session.execute(text(sql))
 		if engine.name == 'postgresql':
 			id = res.fetchone()[0]
 		else:
 			id = res.lastrowid
-			engine.execute('SET FOREIGN_KEY_CHECKS=1')
+			session.execute(text('SET FOREIGN_KEY_CHECKS=1'))
+		session.commit()
 		return id
 	except (DataError, IntegrityError) as e:
 		logger.error(f'[sql] errcode {e.code} errargs: {e.args[0]}')
@@ -98,24 +99,24 @@ def database_init(engine, dburl, filelist):
 		logger.info(f'[dbprep] drop {t}')
 		if engine.name == 'mysql':
 			try:
-				session.execute('SET FOREIGN_KEY_CHECKS=0;')
+				session.execute(text('SET FOREIGN_KEY_CHECKS=0;'))
 				session.commit()
 			except (InternalError, ProgrammingError) as e:
 				logger.error(f'[dbinit] {e}')
 				session.rollback()
-		sqldrop = f'DROP TABLE IF EXISTS {t} CASCADE;'
-		session.execute(sqldrop)
+
+		session.execute(text(f'DROP TABLE IF EXISTS {t} CASCADE;'))
 		session.commit()
 		if engine.name == 'mysql':
 			try:
-				session.execute('SET FOREIGN_KEY_CHECKS=1;')
+				session.execute(text('SET FOREIGN_KEY_CHECKS=1;'))
 				session.commit()
 			except (InternalError, ProgrammingError) as e:
 				logger.error(f'[dbinit] {e}')
 				session.rollback()
 	create_cmd = sqlcmds[engine.name]
 	for c in create_cmd:
-		session.execute(sqlcmds[engine.name][c])
+		session.execute(text(sqlcmds[engine.name][c]))
 		session.commit()
 	logger.info(f'[dbprep] create done')
 	for tf in filelist:
@@ -123,7 +124,7 @@ def database_init(engine, dburl, filelist):
 		csvhash = tf['csvhash']
 		csvfilefixed = tf['csvfilefixed']
 		fixedhash = md5(open(csvfilefixed, 'rb').read()).hexdigest()
-		sql = f"insert into torqfiles (csvfilename, csvhash, csvfilefixed, fixedhash) values ('{csvfile}','{csvhash}','{csvfilefixed}','{fixedhash}');"
+		sql = text(f"insert into torqfiles (csvfilename, csvhash, csvfilefixed, fixedhash) values ('{csvfile}','{csvhash}','{csvfilefixed}','{fixedhash}');")
 		# logger.debug(sql)
 		try:
 			session.execute(sql)
@@ -133,7 +134,7 @@ def database_init(engine, dburl, filelist):
 			session.rollback()
 
 
-def prepdb(filelist=None, engine=None, args=None, dburl=None, Base=None):
+def prepdb(filelist=None, engine=None, args=None, dburl=None):
 	if args.combinecsv:
 		return filelist
 	logger.info(f'[prepdb] files:{len(filelist)}')
@@ -144,17 +145,17 @@ def prepdb(filelist=None, engine=None, args=None, dburl=None, Base=None):
 		database_init(engine, dburl, filelist)
 		return filelist
 	else:
-		sql = f'select * from torqfiles;'
+		sql = text(f'select * from torqfiles;')
 		torqdbfiles = session.execute(sql).fetchall()
-		hlist = [k['csvhash'] for k in torqdbfiles]
+		hlist = [k.csvhash for k in torqdbfiles]
 		for tf in filelist:
 			csvfile = tf['csvfilename']
 			csvhash = tf['csvhash']
 			csvfilefixed = tf['csvfilefixed']
 			fixedhash = md5(open(csvfilefixed, 'rb').read()).hexdigest()
 			# fixedhash = tf['fixedhash']
-			if csvhash not in [k['csvhash'] for k in torqdbfiles]:
-				sql = f'insert into torqfiles (csvfilename, csvhash, csvfilefixed, fixedhash) values ("{csvfile}","{csvhash}","{csvfilefixed}","{fixedhash}");'
+			if csvhash not in [k.csvhash for k in torqdbfiles]:
+				sql = text(f'insert into torqfiles (csvfilename, csvhash, csvfilefixed, fixedhash) values ("{csvfile}","{csvhash}","{csvfilefixed}","{fixedhash}");')
 				try:
 					session.execute(sql)
 					session.commit()

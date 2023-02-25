@@ -121,7 +121,6 @@ def fix_nulls(engine):
 
 async def main(args):
 	t0 = datetime.now()
-	Base = declarative_base()
 	dburl = None
 	if args.dbmode == 'mysql':
 		dburl = f"mysql+pymysql://{args.dbuser}:{args.dbpass}@{args.dbhost}/{args.dbname}?charset=utf8mb4"
@@ -145,7 +144,7 @@ async def main(args):
 	# filelist = [k for k in reversed(sorted(filelist_, key=lambda d: d['fixedsize']) )]
 	filelist = [k for k in sorted(filelist_, key=lambda d: d['csvtimestamp'])]
 	newfilelist = None
-	newfilelist = prepdb(filelist, engine, args, dburl, Base)
+	newfilelist = prepdb(filelist, engine, args, dburl)
 	if len(newfilelist) == 0:
 		sys.exit(1)
 	for tidx, f in enumerate(newfilelist):
