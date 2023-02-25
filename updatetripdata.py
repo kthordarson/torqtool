@@ -426,14 +426,19 @@ where
 			sqlmagic = f'{selectfoo}{trip}'
 		#res = pd.read_sql(f'SELECT tripid, MIN({c}) as min{c}, MAX({c}) as max{c}, AVG({c}) as avg{c} FROM torqlogs WHERE tripid = "{trip}"', engine)
 		#res = pd.read_sql(sqlmagic, session)
-		res = [k._asdict() for k in session.execute(text(sqlmagic)).all()]
+		try:
+			res = [k._asdict() for k in session.execute(text(sqlmagic)).all()]
+		except OperationalError as e:
+			logger.error(f'[createtripdata] OperationalError {e}  tripid={trip} newtrip={newtrip} ')
+			continue
 		if res[0].get('distance') == None:
 			tripdate = pd.to_datetime(newtrip['csvtimestamp'])
 			logger.warning(f'[createtripdata] sqlmagic failed tripid={trip} has no data. tripdate set to {tripdate}')
+			continue
 		else:
 			sql_tripdate = text(f'select tripdate from torqtrips where id={trip}')
 			tripdate = [k._asdict() for k in session.execute(sql_tripdate).fetchall()]
-			logger.debug(f'[createtripdata] res={len(res)} {type(res)} res0={type(res[0])} tripdate={tripdate}')
+			# logger.debug(f'[createtripdata] res={len(res)} {type(res)} res0={type(res[0])} tripdate={tripdate}')
 			# res.insert(1, "tripdate", tripdate)
 			if engine.name == 'mysql':
 				try:

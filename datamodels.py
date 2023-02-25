@@ -142,7 +142,11 @@ def prepdb(filelist=None, engine=None, args=None, dburl=None):
 	Session = sessionmaker(bind=engine)
 	session = Session()
 	if args.init_db:
-		database_init(engine, dburl, filelist)
+		try:
+			database_init(engine, dburl, filelist)
+		except OperationalError as e:
+			logger.error(f'[prepdb] {e}')
+			return None
 		return filelist
 	else:
 		sql = text(f'select * from torqfiles;')

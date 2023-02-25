@@ -79,7 +79,7 @@ async def sqlsender(buffer=None, con=None, chsize=None, dburl=None):
 	except IntegrityError as e:
 		logger.warning(f'[tosql] code={e.code} args={e.args[0]}')
 		# logger.warning(f'[tosql] {e.statement} {e.params}')
-		logger.warning(f'[tosql] {e}')
+		# logger.warning(f'[tosql] {e}')
 	except DataError as e:
 		errmsg = e.args[0]
 		# err_row = errmsg.split('row')[-1].strip()
@@ -146,6 +146,7 @@ async def main(args):
 	newfilelist = None
 	newfilelist = prepdb(filelist, engine, args, dburl)
 	if len(newfilelist) == 0:
+		logger.warning(f'[main]	no files from prepdb....')
 		sys.exit(1)
 	for tidx, f in enumerate(newfilelist):
 		csvfn = f['csvfilename']
