@@ -20,12 +20,12 @@ from sqlalchemy.orm import (DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy.orm.exc import DetachedInstanceError
 from datamodels import get_trip_profile, send_torqfiles, send_torq_trip, database_init, sqlite_db_init, send_trip_profile, send_torqtrips
 from datamodels import Torqdata, TorqFile, Torqtrips
-from updatetripdata import create_tripdata
+from updatetripdata import create_tripdata, send_torqdata
 from utils import checkcsv, get_csv_files, convert_datetime
 from datamap import entry_datamap
 BADVALS = ['-', 'NaN', '0', 'â', r'0']
 
-
+CPU_COUNT = cpu_count()
 
 def read_buff(tf_csvfile, tf_fileid, tf_tripid):
 	start = timer()
@@ -85,15 +85,15 @@ def sqlsender(buffer=None, session=None):
 
 
 def read_process(dbtorqfiles, session):
-	maxworkers = cpu_count()
-	buffs = []
+	maxworkers = CPU_COUNT
 	read_res = []
 	tasklist = []
+	read_task_start = timer()
+	t0=datetime.now()
 	with ProcessPoolExecutor(max_workers=maxworkers) as executor:
-		read_task_start = timer()
 		for tf in dbtorqfiles:
 			tasklist.append(executor.submit(read_buff, tf.csvfilefixed, tf.id, tf.tripid))
-		read_task_end = timer()
+
 
 	for res in as_completed(tasklist):
 		# set read_flag
@@ -109,11 +109,12 @@ def read_process(dbtorqfiles, session):
 		}
 		read_res.append(br)
 	# buffer = [b for b in buffs]
-	logger.debug(f'buffs:{len(buffs)} read_res={len(read_res)} t={timedelta(seconds=read_task_end - read_task_start)}')
+	read_task_end = timer()
+	logger.debug(f'read_res={len(read_res)} t={timedelta(seconds=read_task_end - read_task_start)} / {datetime.now()-t0}')
 	return read_res
 
 def send_process(buffs, session):
-	maxworkers = cpu_count()
+	maxworkers = CPU_COUNT
 	sendtasks = []
 	sendres = []
 	with ProcessPoolExecutor(max_workers=maxworkers) as executor:
@@ -125,8 +126,21 @@ def send_process(buffs, session):
 			sendres.append(r)
 	return sendres
 
+def send_data_process(dbtorqfiles, dburl):
+	maxworkers = CPU_COUNT
+	sendtasks = []
+	sendres = []
+	with ProcessPoolExecutor(max_workers=maxworkers) as executor:
+		for idx, tf in enumerate(dbtorqfiles):
+			sendtasks.append(executor.submit(send_torqdata,tf.id,dburl))
+	for res in as_completed(sendtasks):
+		r = res.result()
+		if r:
+			sendres.append(r)
+	return sendres
+
 def xsend_process(buffs, session):
-	maxworkers = cpu_count()
+	maxworkers = CPU_COUNT
 	sendtasks = []
 	sendres = []
 	with ProcessPoolExecutor(max_workers=maxworkers) as executor:
@@ -205,12 +219,16 @@ def main(args):
 				ntf.send_flag = 1
 				session.commit()
 		send_end = timer()
+
 		logger.debug(f'[send_process] done t0={datetime.now()-t0} time={timedelta(seconds=send_end - send_start)} starting create_tripdata')
 		datastart = timer()
-		create_tripdata(engine, session, newfilelist)
+		#for tf in dbtorqfiles:
+		#	send_torqdata(tf, session, engine)
+		send_data_process(dbtorqfiles, dburl)
+		# create_tripdata(engine, session, newfilelist)
 		dataend = timer()
 
-		logger.info(f'[*] timers t0={datetime.now()-t0} readtime={timedelta(seconds=readend - readstart)} sendtime={timedelta(seconds=send_end - send_start)} triptime={timedelta(seconds=tripend - tripstart)} datatime={timedelta(seconds=dataend - datastart)}')
+		logger.info(f'[*] timers t0={datetime.now()-t0} readtime={timedelta(seconds=readend - readstart)} sendtime={timedelta(seconds=send_end - send_start)} triptime={timedelta(seconds=tripend - tripstart)} datatime={timedelta(seconds=dataend - datastart)} buffs:{len(buffs)} dbtorqfiles={len(dbtorqfiles)} CPU_COUNT={CPU_COUNT}')
 		# fixtime={timedelta(seconds=fix_end - fix_start)} uptime={timedelta(seconds=up_end - up_start)}
 
 
