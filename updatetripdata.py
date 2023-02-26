@@ -420,13 +420,16 @@ where
 		trip = newtrip.id
 		if engine.name == 'postgresql':
 			sqlmagic = f'{selectfoo_psql}{trip} group by torqtrips.distance,torqtrips.fuelused,torqtrips.fuelcost,torqtrips.time,torqtrips.distancewhilstconnectedtoobd '
-		else:
+		elif engine.name == 'mysql':
+			#sqlmagic = f'{selectfoo}{trip} group by tripid '
+			sqlmagic = f'{selectfoo}{trip}'
+		elif engine.name == 'sqlite':
 			#sqlmagic = f'{selectfoo}{trip} group by tripid '
 			sqlmagic = f'{selectfoo}{trip}'
 		#res = pd.read_sql(f'SELECT tripid, MIN({c}) as min{c}, MAX({c}) as max{c}, AVG({c}) as avg{c} FROM torqlogs WHERE tripid = "{trip}"', engine)
 		#res = pd.read_sql(sqlmagic, session)
 		try:
-			res = [k._asdict() for k in session.execute(text(sqlmagic)).all()]
+			res = [k for k in session.execute(text(sqlmagic)).all()]
 		except OperationalError as e:
 			logger.error(f'[createtripdata] OperationalError tripid={trip} newtrip={newtrip} ')
 			logger.error(e)
@@ -436,20 +439,21 @@ where
 		tripdate = [k._asdict() for k in session.execute(sql_tripdate).fetchall()]
 		# logger.debug(f'[createtripdata] res={len(res)} {type(res)} res0={type(res[0])} tripdate={tripdate}')
 		# res.insert(1, "tripdate", tripdate)
-		if engine.name == 'mysql':
+		if engine.name == 'mysql' or engine.name == 'sqlite':
 			try:
-				pd.DataFrame(res).to_sql('torqdata', engine, if_exists='append',  index_label='id')
+				pd.DataFrame(res).to_sql('torqdata', engine, if_exists='append',  index=False)
 				#_ = [pd.DataFrame(r).to_sql('torqdata', session, if_exists='append',  index=False) for r in res]
 			except AttributeError as e:
 				logger.error(f'[createtripdata] {e}')
 			except IntegrityError as e:
-				emsg1 = e.args[0].split(') (')[0][1:]
-				emsg2 = e.args[0].split(') (')[1][0:4]
-				emsg3 = e.args[0].split(') (')[1][7:]
-				logger.error(f'[IntegrityError] trip:{trip} {e.code} {emsg1} {emsg2} {emsg3} tripdate={tripdate}')
+				logger.error(f'[IntegrityError] trip:{trip} {e}')
+				# emsg1 = e.args[0].split(') (')[0][1:]
+				# emsg2 = e.args[0].split(') (')[1][0:4]
+				# emsg3 = e.args[0].split(') (')[1][7:]
+				# logger.error(f'[IntegrityError] trip:{trip} {e.code} {emsg1} {emsg2} {emsg3} tripdate={tripdate}')
 			except ValueError as e:
 				logger.error(f'[createtripdata] {e} {type(e)} trip:{trip} tripdate={tripdate}')
-		if engine.name == 'postgresql':
+		elif engine.name == 'postgresql':
 			try:
 				pd.DataFrame(res).to_sql('torqdata', engine, if_exists='append', index=False)
 			except InvalidTextRepresentation as e:

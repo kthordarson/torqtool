@@ -17,6 +17,7 @@ import re
 from datetime import datetime
 from hashlib import md5
 from pathlib import Path
+from datamap import entry_datamap
 
 from loguru import logger
 from pandas import DataFrame, Series, concat, to_datetime
@@ -78,6 +79,8 @@ def replace_all(text, dic):
 	return text
 
 def fix_csv_file(tf):
+	# read csv file, replace badvals and fix column names
+	# returns a buff with the fixed csv file
 	with open(tf['csvfilename'], 'r') as reader:
 		data = reader.readlines()
 	badvals = {
@@ -112,10 +115,10 @@ def save_fixed_csv(lines, nf):
 		writer.writelines(lines)
 
 def get_csv_files(searchpath: Path,  dbmode=None):
-	# comma_counter = {}
+	# scan searchpath for csv files
 	torqcsvfiles = [({
-		'csvfilename': k,
-		'csvfilefixed': f'{k}.fixed.csv',
+		'csvfilename': k, # original csv file
+		'csvfilefixed': f'{k}.fixed.csv', # fixed csv file
 		'size': os.stat(k).st_size,
 		'dbmode': dbmode}) for k in searchpath.glob("**/trackLog.csv") if k.stat().st_size >= MIN_FILESIZE]
 	logger.info(f'[getcsv] sending {len(torqcsvfiles)} files to fixer')
@@ -169,3 +172,43 @@ def get_bad_vals(csvfile: str):
 				logger.error(f'unicodeerr: {e} in {csvfile} lt={type(line)} l={line}')
 			except AttributeError as e:
 				logger.error(f'AttributeError: {e} in {csvfile} lt={type(line)} l={line}')
+
+def fix_nulls(engine):
+	read_sql = None
+	for k in entry_datamap:
+		df = read_sql(f'select {k} from torqlogs where {k} is null', engine)
+		if len(df) >= 1:
+			sqlcmd = f'update torqlogs set {k} = 0 where {k} IS NULL;'
+			engine.execute(sqlcmd)
+			# df0=read_sql(f'select {k} from torqlogs where {k} is null', engine)
+			logger.debug(f'fixnulls k:{k} l:{len(k)}')
+
+def convert_datetime(val):
+	newval = 0
+	if val == '-':
+		logger.warning(f'[cd] v:{val} ')
+		return to_datetime('2000-01-01', errors='raise').to_numpy()
+	try:
+		newval = to_datetime(val, errors='raise', infer_datetime_format=False).to_numpy()
+	except AttributeError as e:
+		newval = val.strip()[2:]
+		logger.warning(f'[cd] {e} v:{val} n:{newval}')
+		newval = to_datetime(newval)
+	return newval
+
+def get_engine(args):
+	if args == 'mysql':
+		dburl = f"mysql+pymysql://{args.dbuser}:{args.dbpass}@{args.dbhost}/{args.dbname}?charset=utf8mb4"
+	# return create_engine(dburl, pool_size=200, max_overflow=0)
+	if args == 'postgresql':
+		# dburl = f"postgresql://postgres:foobar9999@{args.dbhost}/{args.dbname}"
+		dburl = f"postgresql://{args.dbuser}:{args.dbpass}@{args.dbhost}/{args.dbname}"
+	if args == 'sqlite':
+		dburl = f'sqlite:///torqfiskurdb'
+	else:
+		dburl = 'none'
+	return create_engine(dburl)
+
+def chunks(l, n):
+	for i in range(0, len(l), n):
+		yield l.iloc[i:i + n]

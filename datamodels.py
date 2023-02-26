@@ -34,12 +34,16 @@ class TorqFile(Base):
 	csvfilefixed = Column('csvfilefixed', String(255))
 	csvhash = Column('csvhash', String(255))
 	fixedhash = Column('fixedhash', String(255))
+	read_flag = Column('read_flag', Integer)
+	send_flag = Column('send_flag', Integer)
 
 	def __init__(self, csvfilename, csvfilefixed, csvhash, fixedhash):
 		self.csvfilename = csvfilename
 		self.csvfilefixed = csvfilefixed
 		self.csvhash = csvhash
 		self.fixedhash = fixedhash
+		self.read_flag = 0
+		self.send_flag = 0
 
 class Torqtrips(Base):
 	__tablename__ = 'torqtrips'
@@ -494,9 +498,8 @@ def database_init(session, engine):
 def sqlite_db_init(engine):
 	Base.metadata.create_all(bind=engine)
 
-def prepdb(filelist=None, session=None):
-	logger.info(f'[prepdb] files:{len(filelist)}')
-
+def send_torqfiles(filelist=None, session=None):
+	logger.info(f'[send_torqfiles] files:{len(filelist)}')
 	#torqdbfiles = session.execute(text(f'select * from torqfiles;')).all()
 	torqdbfiles = session.query(TorqFile).all()
 	hlist = [k.csvhash for k in torqdbfiles]
@@ -507,29 +510,26 @@ def prepdb(filelist=None, session=None):
 		csvfilefixed = tf['csvfilefixed']
 		fixedhash = tf['fixedhash']
 		if csvhash not in [k.csvhash for k in torqdbfiles]:
-			# new csv file, add to db
-			#sql = text(f'insert into torqfiles (csvfilename, csvhash, csvfilefixed, fixedhash) values ("{csvfile}","{csvhash}","{csvfilefixed}","{fixedhash}");')
-			#for tidx, f in enumerate(newfilelist):
-			#	send_trip_profile(f, session)
 			torqfile = TorqFile(str(csvfile), csvfilefixed, csvhash, fixedhash)
+			session.add(torqfile)
 			try:
-				session.add(torqfile)
 				session.commit()
 				newfiles.append(torqfile)
 			except ProgrammingError as e:
-				logger.error(f'[prepdb] {e}')
+				logger.error(f'[send_torqfiles] {e}')
 				session.rollback()
 			except OperationalError as e:
-				logger.error(f'[prepdb] {e}')
+				logger.error(f'[send_torqfiles] {e}')
 				session.rollback()
-			trip = get_trip_profile(csvfile)
-			tt = Torqtrips(torqfile.id, str(csvfile), csvhash, trip['distance'], trip['fuelcost'], trip['fuelused'], trip['distancewhilstconnectedtoobd'], trip['tripdate'], trip['profile'], trip['time'])
-			session.add(tt)
-			session.commit()
-			torqfile.tripid = tt.id
-			#session.add(torqfile)
-			session.commit()
 		else:
-			logger.warning(f'[prepdb] {csvfile} already in db')
+			logger.warning(f'[send_torqfiles] {csvfile} already in db')
 	# newfiles = [k for k in filelist if k['csvhash'] not in hlist]
 	return newfiles
+
+def send_torqtrips(torqfile, session):
+	trip = get_trip_profile(torqfile.csvfilename)
+	tt = Torqtrips(torqfile.id, str(torqfile.csvfilename), torqfile.csvhash, trip['distance'], trip['fuelcost'], trip['fuelused'], trip['distancewhilstconnectedtoobd'], trip['tripdate'], trip['profile'], trip['time'])
+	session.add(tt)
+	ntf = session.query(TorqFile).filter(TorqFile.id == torqfile.id).first()
+	ntf.tripid = tt.id
+	session.commit()
