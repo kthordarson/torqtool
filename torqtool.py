@@ -21,7 +21,7 @@ from sqlalchemy.orm.exc import DetachedInstanceError
 from datamodels import get_trip_profile, send_torqfiles, send_torq_trip, database_init, sqlite_db_init, send_trip_profile, send_torqtrips
 from datamodels import Torqdata, TorqFile, Torqtrips
 from updatetripdata import create_tripdata
-from utils import checkcsv, get_csv_files
+from utils import checkcsv, get_csv_files, convert_datetime
 from datamap import entry_datamap
 BADVALS = ['-', 'NaN', '0', 'â', r'0']
 
@@ -31,7 +31,8 @@ def read_buff(tf_csvfile, tf_fileid, tf_tripid):
 	start = timer()
 	csvfilefixed = tf_csvfile
 	datefields = ['gpstime', 'devicetime']
-	torqbuffer = read_csv(csvfilefixed, delimiter=',', na_values=BADVALS, low_memory=False, dtype=entry_datamap)
+	# torqbuffer = read_csv(csvfilefixed, delimiter=',', na_values=BADVALS, low_memory=False, dtype=entry_datamap)
+	torqbuffer = read_csv(csvfilefixed, delimiter=',', na_values=BADVALS, low_memory=False, parse_dates=datefields, converters={'gpstime': convert_datetime}, dtype=entry_datamap)
 	torqbuffer.fillna(0, inplace=True)
 	# insert fileid and tripid
 	torqbuffer.insert(1, "fileid", [tf_fileid for k in range(len(torqbuffer))])
@@ -55,7 +56,7 @@ def sqlsender(buffer=None, session=None):
 	try:
 		buffer['torqbuffer'].to_sql('torqlogs', con=session, if_exists='append', index=False)
 		results['status'] = 'success'
-	except (OperationalError, ProgrammingError) as e:
+	except (OperationalError, ProgrammingError, DataError) as e:
 		logger.error(f'[tosql] code={e.code} args={e.args[0]}')  # error:{e}
 		results['status'] = 'error'
 	except InternalError as e:
@@ -185,13 +186,16 @@ def main(args):
 		sys.exit(1)
 	else:
 		# get files from db that are not read
+		tripstart = timer()
 		dbtorqfiles = session.query(TorqFile).filter(TorqFile.read_flag == 0).all()
 		for torqfile in dbtorqfiles:
 			send_torqtrips(torqfile, session)
+		tripend = timer()
+		logger.debug(f'[send_torqtrips] done time={timedelta(seconds=tripend - tripstart)} starting read_process')
 		readstart = timer()
 		buffs = read_process(dbtorqfiles, session)
 		readend = timer()
-		logger.debug(f'[read] done time={timedelta(seconds=readend - readstart)} buffs:{len(buffs)}')
+		logger.debug(f'[read_process] done time={timedelta(seconds=readend - readstart)} buffs:{len(buffs)} starting send_process')
 		send_start = timer()
 		sendres = send_process(buffs, dburl)
 		for r in sendres:
@@ -201,9 +205,11 @@ def main(args):
 				ntf.send_flag = 1
 				session.commit()
 		send_end = timer()
-		logger.debug(f'[send] done time={timedelta(seconds=send_end - send_start)} ')
+		logger.debug(f'[send_process] done time={timedelta(seconds=send_end - send_start)} starting create_tripdata')
+		datastart = timer()
 		create_tripdata(engine, session, newfilelist)
-		logger.info(f'timers readtime={timedelta(seconds=readend - readstart)} sendtime={timedelta(seconds=send_end - send_start)} ')
+		dataend = timer()
+		logger.info(f'[*] timers readtime={timedelta(seconds=readend - readstart)} sendtime={timedelta(seconds=send_end - send_start)} triptime={timedelta(seconds=tripend - tripstart)} datatime={timedelta(seconds=dataend - datastart)}')
 		# fixtime={timedelta(seconds=fix_end - fix_start)} uptime={timedelta(seconds=up_end - up_start)}
 
 

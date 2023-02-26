@@ -452,54 +452,13 @@ def get_trip_profile(filename):
 
 
 def database_init(session, engine):
-	if engine.name == 'sqlite':
-		return
-	tables = ['torqtrips', 'torqlogs', 'torqfiles', 'torqdata']
-	for t in tables:
-		logger.warning(f'[dbprep] droping {t}')
-		if engine.name == 'mysql':
-			try:
-				session.execute(text('SET FOREIGN_KEY_CHECKS=0;'))
-				session.commit()
-				session.execute(text(f'DROP TABLE IF EXISTS {t} CASCADE;'))
-				session.commit()
-			except (InternalError, ProgrammingError) as e:
-				logger.error(f'[dbinit] {e}')
-				session.rollback()
-
-		if engine.name == 'mysql':
-			try:
-				session.execute(text('SET FOREIGN_KEY_CHECKS=1;'))
-				session.commit()
-			except (InternalError, ProgrammingError) as e:
-				logger.error(f'[dbinit] {e}')
-				session.rollback()
-	create_cmd = sqlcmds[engine.name]
-	for c in create_cmd:
-		logger.info(f'[dbprep] creating {c}')
-		session.execute(text(sqlcmds[engine.name][c]))
-		session.commit()
-	logger.info(f'[dbprep] create done')
-
-	# for tf in filelist:
-	# 	csvfile = tf['csvfilename']
-	# 	csvhash = tf['csvhash']
-	# 	csvfilefixed = tf['csvfilefixed']
-	# 	fixedhash = md5(open(csvfilefixed, 'rb').read()).hexdigest()
-	# 	sql = text(f"insert into torqfiles (csvfilename, csvhash, csvfilefixed, fixedhash) values ('{csvfile}','{csvhash}','{csvfilefixed}','{fixedhash}');")
-	# 	# logger.debug(sql)
-	# 	try:
-	# 		session.execute(sql)
-	# 		session.commit()
-	# 	except (OperationalError, ArgumentError) as e:
-	# 		logger.error(f'[i] {e}')
-	# 		session.rollback()
+	Base.metadata.drop_all(bind=engine)
+	Base.metadata.create_all(bind=engine)
 
 def sqlite_db_init(engine):
 	Base.metadata.create_all(bind=engine)
 
 def send_torqfiles(filelist=None, session=None):
-	logger.info(f'[send_torqfiles] files:{len(filelist)}')
 	#torqdbfiles = session.execute(text(f'select * from torqfiles;')).all()
 	torqdbfiles = session.query(TorqFile).all()
 	hlist = [k.csvhash for k in torqdbfiles]
@@ -524,6 +483,7 @@ def send_torqfiles(filelist=None, session=None):
 		else:
 			logger.warning(f'[send_torqfiles] {csvfile} already in db')
 	# newfiles = [k for k in filelist if k['csvhash'] not in hlist]
+	logger.info(f'[send_torqfiles] done files:{len(filelist)}')
 	return newfiles
 
 def send_torqtrips(torqfile, session):
