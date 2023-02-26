@@ -1,5 +1,6 @@
 # todo fix [IntegrityError] trip:63 gkpj pymysql.err.IntegrityError 1452 Cannot add or update a child row: a foreign key constraint fails (`torq`.`torqdata`, CONSTRAINT `torqdata_ibfk_1` FOREIGN KEY (`id`) REFERENCES `torqlogs` (`tripid`))') tripdate=2022-12-20 18:03:04
 # todo fix only create tripdata for new trips
+from psycopg2.errors import InvalidTextRepresentation
 
 from hashlib import md5
 from threading import Thread, active_count
@@ -14,7 +15,7 @@ from sqlalchemy.exc import (ArgumentError, CompileError, DataError, IntegrityErr
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.orm.session import close_all_sessions
 
-def create_tripdata(engine, newfilelist):
+def create_tripdata(engine, session, newfilelist):
 	selectfoo="""
 	SELECT     torqtrips.distance,
 					 torqtrips.fuelused,
@@ -413,12 +414,10 @@ from
 where
 	tripid =
 """
-	Session = sessionmaker(bind=engine)
-	session = Session()
 	#torqtrips = pd.read_sql(f'select id from torqtrips', session)
 	for newtrip in newfilelist:
 		# logger.debug(f'[updatetrip] id={trip}')
-		trip = newtrip.get('tripid')
+		trip = newtrip.id
 		if engine.name == 'postgresql':
 			sqlmagic = f'{selectfoo_psql}{trip} group by torqtrips.distance,torqtrips.fuelused,torqtrips.fuelcost,torqtrips.time,torqtrips.distancewhilstconnectedtoobd '
 		else:
@@ -429,29 +428,30 @@ where
 		try:
 			res = [k._asdict() for k in session.execute(text(sqlmagic)).all()]
 		except OperationalError as e:
-			logger.error(f'[createtripdata] OperationalError {e}  tripid={trip} newtrip={newtrip} ')
+			logger.error(f'[createtripdata] OperationalError tripid={trip} newtrip={newtrip} ')
+			logger.error(e)
+			logger.error(f'[e] {type(e)}')
 			continue
-		if res[0].get('distance') == None:
-			tripdate = pd.to_datetime(newtrip['csvtimestamp'])
-			logger.warning(f'[createtripdata] sqlmagic failed tripid={trip} has no data. tripdate set to {tripdate}')
-			continue
-		else:
-			sql_tripdate = text(f'select tripdate from torqtrips where id={trip}')
-			tripdate = [k._asdict() for k in session.execute(sql_tripdate).fetchall()]
-			# logger.debug(f'[createtripdata] res={len(res)} {type(res)} res0={type(res[0])} tripdate={tripdate}')
-			# res.insert(1, "tripdate", tripdate)
-			if engine.name == 'mysql':
-				try:
-					pd.DataFrame(res).to_sql('torqdata', engine, if_exists='append',  index_label='id')
-					#_ = [pd.DataFrame(r).to_sql('torqdata', session, if_exists='append',  index=False) for r in res]
-				except AttributeError as e:
-					logger.error(f'[createtripdata] {e}')
-				except IntegrityError as e:
-					emsg1 = e.args[0].split(') (')[0][1:]
-					emsg2 = e.args[0].split(') (')[1][0:4]
-					emsg3 = e.args[0].split(') (')[1][7:]
-					logger.error(f'[IntegrityError] trip:{trip} {e.code} {emsg1} {emsg2} {emsg3} tripdate={tripdate}')
-				except ValueError as e:
-					logger.error(f'[createtripdata] {e} {type(e)} trip:{trip} tripdate={tripdate}')
-			if engine.name == 'postgresql':
-				res.to_sql('torqdata', session, if_exists='append', index=False)
+		sql_tripdate = text(f'select tripdate from torqtrips where id={trip}')
+		tripdate = [k._asdict() for k in session.execute(sql_tripdate).fetchall()]
+		# logger.debug(f'[createtripdata] res={len(res)} {type(res)} res0={type(res[0])} tripdate={tripdate}')
+		# res.insert(1, "tripdate", tripdate)
+		if engine.name == 'mysql':
+			try:
+				pd.DataFrame(res).to_sql('torqdata', engine, if_exists='append',  index_label='id')
+				#_ = [pd.DataFrame(r).to_sql('torqdata', session, if_exists='append',  index=False) for r in res]
+			except AttributeError as e:
+				logger.error(f'[createtripdata] {e}')
+			except IntegrityError as e:
+				emsg1 = e.args[0].split(') (')[0][1:]
+				emsg2 = e.args[0].split(') (')[1][0:4]
+				emsg3 = e.args[0].split(') (')[1][7:]
+				logger.error(f'[IntegrityError] trip:{trip} {e.code} {emsg1} {emsg2} {emsg3} tripdate={tripdate}')
+			except ValueError as e:
+				logger.error(f'[createtripdata] {e} {type(e)} trip:{trip} tripdate={tripdate}')
+		if engine.name == 'postgresql':
+			try:
+				pd.DataFrame(res).to_sql('torqdata', engine, if_exists='append', index=False)
+			except InvalidTextRepresentation as e:
+				logger.error(f'[createtripdata] {e} {type(e)} trip:{trip} tripdate={tripdate}')
+

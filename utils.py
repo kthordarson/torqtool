@@ -25,7 +25,7 @@ from sqlalchemy.exc import (DataError, IntegrityError, OperationalError,
                             ProgrammingError)
 from sqlalchemy.ext.declarative import declarative_base
 
-MIN_FILESIZE = 2300
+MIN_FILESIZE = 2500
 
 
 def checkcsv(searchpath: Path):
@@ -77,68 +77,62 @@ def replace_all(text, dic):
 		text = text.replace(i, j)
 	return text
 
+def fix_csv_file(tf):
+	with open(tf['csvfilename'], 'r') as reader:
+		data = reader.readlines()
+	badvals = {
+		'∞': '0',
+		# '-' : '0',
+		'â': '0',
+		'₂': '',
+		'°': '',
+		'Â°': '0',
+		'Â': '0',
+		'612508207723425200000000000000000000000': '0',
+		'340282346638528860000000000000000000000': '0',
+		'-3402823618710077500000000000000000000': '0'}
+	lines0 = [k for k in data if not k.startswith('-')]
+	lines = [replace_all(b, badvals) for b in lines0]
+	orgcol = data[0].split(',')
+	newcolname = ','.join([re.sub(r'\W', '', col) for col in orgcol]).encode('ascii', 'ignore').decode()
+	newcolname += '\n'
+	newcolname = newcolname.lower()
+	if 'co0ingkmaveragegkm' in newcolname:
+		# logger.warning(f'co0ingkmaveragegkm in {tf["csvfilename"]}')
+		newcolname = newcolname.replace('co0ingkmaveragegkm', 'coingkmaveragegkm')
+	if 'co0ingkminstantaneousgkm' in newcolname:
+		# logger.warning(f'co0ingkminstantaneousgkm in {tf["csvfilename"]}')
+		newcolname = newcolname.replace('co0ingkminstantaneousgkm', 'coingkminstantaneousgkm')
+	lines[0] = newcolname
+	return lines
 
-def get_csv_files(searchpath: Path, recursive=True, dbmode=None):
+def save_fixed_csv(lines, nf):
+	# logger.debug(f"[f] {tf['csvfilename']} {nf} nclen:{len(newcolname)} og:{len(orgcol)} l:{len(lines)} l0:{len(lines[0])} dl0:{len(data[0])}")
+	with open(file=nf, mode='w', encoding='utf-8', newline='') as writer:
+		writer.writelines(lines)
+
+def get_csv_files(searchpath: Path,  dbmode=None):
 	# comma_counter = {}
-	if not isinstance(searchpath, Path):
-		searchpath = Path(searchpath)
-	if not isinstance(searchpath, Path):
-		logger.debug(f'[getcsv] err: searchpath {searchpath} is {type(searchpath)} need Path object')
-		return []
-	else:
-		# csvhash = md5(open(csv, 'rb').read()).hexdigest()
-		torqcsvfiles = [({'csvfilename': k, 'size': os.stat(k).st_size, 'csvhash': md5(open(k, 'rb').read()).hexdigest(), 'dbmode': dbmode}) for k in searchpath.glob("**/trackLog.csv") if k.stat().st_size >= MIN_FILESIZE]
-		for idx, tf in enumerate(torqcsvfiles):
-
-			with open(tf['csvfilename'], 'r') as reader:
-				data = reader.readlines()
-			badvals = {
-				'∞': '0',
-				# '-' : '0',
-				'â': '0',
-				'₂': '',
-				'°': '',
-				'Â°': '0',
-				'Â': '0',
-				'612508207723425200000000000000000000000': '0',
-				'340282346638528860000000000000000000000': '0',
-				'-3402823618710077500000000000000000000': '0'}
-			lines0 = [k for k in data if not k.startswith('-')]
-			lines = [replace_all(b, badvals) for b in lines0]
-			orgcol = data[0].split(',')
-			newcolname = ','.join([re.sub(r'\W', '', col) for col in orgcol]).encode('ascii', 'ignore').decode()
-			newcolname += '\n'
-			newcolname = newcolname.lower()
-			if 'co0ingkmaveragegkm' in newcolname:
-				logger.warning(f'co0ingkmaveragegkm in {tf["csvfilename"]}')
-				newcolname = newcolname.replace('co0ingkmaveragegkm', 'coingkmaveragegkm')
-			if 'co0ingkminstantaneousgkm' in newcolname:
-				logger.warning(f'co0ingkminstantaneousgkm in {tf["csvfilename"]}')
-				newcolname = newcolname.replace('co0ingkminstantaneousgkm', 'coingkminstantaneousgkm')
-			lines[0] = newcolname
-			nf = f"{tf['csvfilename']}.fixed.csv"
-			# logger.debug(f"[f] {tf['csvfilename']} {nf} nclen:{len(newcolname)} og:{len(orgcol)} l:{len(lines)} l0:{len(lines[0])} dl0:{len(data[0])}")
-			with open(file=nf, mode='w', encoding='utf-8', newline='') as writer:
-				writer.writelines(lines)
-			newcolname = newcolname.strip()
-			csvfilefixed = Path(nf)
-			cfile = str(tf['csvfilename'])
-			torqcsvfiles[idx] = {
-				'csvfilename': cfile,
-				'csvfilefixed': csvfilefixed,
-				'buflen': len(lines),
-				'csvsize': os.stat(cfile).st_size,
-				'fixedsize': os.stat(csvfilefixed).st_size,
-				'csvhash': md5(open(cfile, 'rb').read()).hexdigest(),
-				'fixedhash': md5(open(csvfilefixed, 'rb').read()).hexdigest(),
-				'csvtimestamp': f'{datetime.fromtimestamp(int(tf["csvfilename"].parts[-2][0:10]))}',
-				'dbmode': dbmode,
-				'newcolumns': newcolname,
-				# 'id' : 0,
-			}
-		logger.info(f'[getcsv] files:{len(torqcsvfiles)}')
-		# print(comma_counter)
-		return torqcsvfiles
+	torqcsvfiles = [({
+		'csvfilename': k,
+		'csvfilefixed': f'{k}.fixed.csv',
+		'size': os.stat(k).st_size,
+		'dbmode': dbmode}) for k in searchpath.glob("**/trackLog.csv") if k.stat().st_size >= MIN_FILESIZE]
+	logger.info(f'[getcsv] sending {len(torqcsvfiles)} files to fixer')
+	for idx, tf in enumerate(torqcsvfiles):
+		fixedlines = fix_csv_file(tf)
+		save_fixed_csv(fixedlines, tf['csvfilefixed'])
+		csvhash = md5(open(torqcsvfiles[idx]['csvfilename'], 'rb').read()).hexdigest()
+		fixedhash = md5(open(torqcsvfiles[idx]['csvfilefixed'], 'rb').read()).hexdigest()
+		torqcsvfiles[idx] = {
+			'csvfilename': tf['csvfilename'],
+			'csvfilefixed' : tf['csvfilefixed'],
+			'csvhash': csvhash,
+			'fixedhash': fixedhash,
+			'csvtimestamp': f'{datetime.fromtimestamp(int(tf["csvfilename"].parts[-2][0:10]))}',
+			'dbmode': dbmode,
+		}
+	return torqcsvfiles
 
 
 def size_format(b):
@@ -154,7 +148,7 @@ def size_format(b):
 		return '%.1f' % float(b / 1000000000000) + 'TB'
 
 
-def fix_csv_file(csvfile: str, replace_vals: dict, overwrite=False):
+def xfix_csv_file(csvfile: str, replace_vals: dict, overwrite=False):
 	with open(csvfile, 'r') as reader:
 		data = reader.read()
 	fixed = replace_all(data, replace_vals)
