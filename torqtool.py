@@ -134,7 +134,10 @@ def send_data_process(dbtorqfiles, dburl):
 		for idx, tf in enumerate(dbtorqfiles):
 			sendtasks.append(executor.submit(send_torqdata,tf.id,dburl))
 	for res in as_completed(sendtasks):
-		r = res.result()
+		try:
+			r = res.result()
+		except OperationalError as e:
+			logger.error(f'[sdp] OperationalError {e}')
 		if r:
 			sendres.append(r)
 	return sendres

@@ -69,7 +69,11 @@ def send_torqdata(tfid, dburl):
 
 	Session = sessionmaker(bind=engine)
 	session = Session()
-	tf = session.query(TorqFile).filter(TorqFile.id == tfid).first()
+	try:
+		tf = session.query(TorqFile).filter(TorqFile.id == tfid).first()
+	except OperationalError as e:
+		logger.error(f'[sendtd] OperationalError {e} tripid={tfid}')
+		return None
 	if engine.name == 'postgresql':
 		sqlmagic = f'{torqdatasql_psql}{tf.id} group by torqtrips.distance,torqtrips.fuelused,torqtrips.fuelcost,torqtrips.time,torqtrips.distancewhilstconnectedtoobd '
 	elif engine.name == 'mysql':
