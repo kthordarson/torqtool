@@ -191,11 +191,11 @@ def main(args):
 		for torqfile in dbtorqfiles:
 			send_torqtrips(torqfile, session)
 		tripend = timer()
-		logger.debug(f'[send_torqtrips] done time={timedelta(seconds=tripend - tripstart)} starting read_process')
+		logger.debug(f'[send_torqtrips] done t0={datetime.now()-t0} time={timedelta(seconds=tripend - tripstart)} starting read_process')
 		readstart = timer()
 		buffs = read_process(dbtorqfiles, session)
 		readend = timer()
-		logger.debug(f'[read_process] done time={timedelta(seconds=readend - readstart)} buffs:{len(buffs)} starting send_process')
+		logger.debug(f'[read_process] done t0={datetime.now()-t0} time={timedelta(seconds=readend - readstart)} buffs:{len(buffs)} starting send_process')
 		send_start = timer()
 		sendres = send_process(buffs, dburl)
 		for r in sendres:
@@ -205,11 +205,12 @@ def main(args):
 				ntf.send_flag = 1
 				session.commit()
 		send_end = timer()
-		logger.debug(f'[send_process] done time={timedelta(seconds=send_end - send_start)} starting create_tripdata')
+		logger.debug(f'[send_process] done t0={datetime.now()-t0} time={timedelta(seconds=send_end - send_start)} starting create_tripdata')
 		datastart = timer()
 		create_tripdata(engine, session, newfilelist)
 		dataend = timer()
-		logger.info(f'[*] timers readtime={timedelta(seconds=readend - readstart)} sendtime={timedelta(seconds=send_end - send_start)} triptime={timedelta(seconds=tripend - tripstart)} datatime={timedelta(seconds=dataend - datastart)}')
+
+		logger.info(f'[*] timers t0={datetime.now()-t0} readtime={timedelta(seconds=readend - readstart)} sendtime={timedelta(seconds=send_end - send_start)} triptime={timedelta(seconds=tripend - tripstart)} datatime={timedelta(seconds=dataend - datastart)}')
 		# fixtime={timedelta(seconds=fix_end - fix_start)} uptime={timedelta(seconds=up_end - up_start)}
 
 
