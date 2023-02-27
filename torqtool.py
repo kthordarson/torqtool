@@ -3,6 +3,7 @@ import asyncio
 import functools
 import sys
 from pathlib import Path
+import pymysql
 from sqlalchemy.exc import InternalError
 from psycopg2.errors import InvalidTextRepresentation
 from concurrent.futures import (ProcessPoolExecutor, ThreadPoolExecutor, as_completed)
@@ -60,7 +61,7 @@ def sqlsender(buffer=None, dburl=None):
 	try:
 		buffer['torqbuffer'].to_sql('torqlogs', con=engine, if_exists='append', index=False)
 		results['status'] = 'success'
-	except (OperationalError, ProgrammingError, DataError) as e:
+	except (OperationalError, ProgrammingError) as e:
 		logger.error(f'[tosql] code={e.code} args={e.args[0]} r={results}')  # error:{e}
 		results['status'] = 'error'
 	except InternalError as e:
@@ -71,14 +72,16 @@ def sqlsender(buffer=None, dburl=None):
 		results['status'] = 'error'
 		# logger.warning(f'[tosql] {e.statement} {e.params}')
 		# logger.warning(f'[tosql] {e}')
-	except DataError as e:
+	except (pymysql.err.DataError, DataError) as e:
 		errmsg = e.args[0]
-		# err_row = errmsg.split('row')[-1].strip()
+		err_row = errmsg.split('row')[-1].strip()
 		err_row = errmsg.split(',')[1].split('at row')[1].strip().strip('")')
 		err_col = errmsg.split(',')[1].split('at row')[0].split("'")[1]
-		logger.warning(f'[tosql] dataerr code:{e.code} err:{errmsg} err_row: {err_row} err_col:{err_col} r={results}')  # row:{err_row} {buffer.iloc[err_row]}')
-		buffer = buffer.drop(columns=[err_col])
-		buffer.to_sql('torqlogs', con=session, if_exists='append', index=False)
+		logger.error(f'[tosql] code={e.code} args={e.args[0]} r={results} err_row: {err_row} err_col:{err_col}')  # error:{e}
+		#logger.warning(f'[tosql] dataerr code:{e.code} err:{errmsg} err_row: {err_row} err_col:{err_col} r={results}')  # row:{err_row} {buffer.iloc[err_row]}')
+		# buffer = buffer.drop(columns=[err_col])
+		buffer['torqbuffer'] = buffer['torqbuffer'].drop(columns=[err_col])
+		buffer['torqbuffer'].to_sql('torqlogs', con=engine, if_exists='append', index=False)
 		results['status'] = 'warning'
 	except TypeError as e:
 		errmsg = e.args[0]
@@ -387,9 +390,10 @@ def main(args):
 				t = session.query(TorqFile).filter(TorqFile.id == tf.id).first()
 				tasks.append(executor.submit(torq_worker,t, dburl))
 				#logger.debug(f'{idx}/{len(dbtorqfiles)} {idx/len(dbtorqfiles):.0%} worker {tf} t={datetime.now() - t0}')
+		main_results = []
 		for res in as_completed(tasks):
-			r = res.result()
-			logger.debug(f'[w] r={r} done res={res} t={datetime.now() - t0}')
+			main_results.append(res.result())
+		logger.debug(f'[*] done t={datetime.now() - t0} mr={len(main_results)}')
 
 
 if __name__ == '__main__':
