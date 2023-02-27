@@ -88,18 +88,27 @@ def send_torqdata(tfid, dburl):
 		logger.error(f'[e] {type(e)}')
 		return None
 	sql_tripdate = text(f'select tripdate from torqtrips where id={tf.tripid}')
-	tripdate_ = session.execute(sql_tripdate).one()
-	tripdate = datetime.strptime(tripdate_[0][:-7],'%Y-%m-%d %H:%M:%S')
+	tripdate_ = session.execute(sql_tripdate).one()._asdict().get('tripdate')
+	if isinstance(tripdate_, str):
+		try:
+			tripdate = datetime.strptime(tripdate_[0][:-7],'%Y-%m-%d %H:%M:%S')
+		except TypeError as e:
+			logger.error(f'[sendtd] {e} {type(e)} trip:{tf} td={tripdate_} {type(tripdate_)}')
+	else:
+		tripdate = tripdate_
 	res.insert(1, "tripdate", [tripdate for k in range(len(res))])
+
 	# tripdate = datetime.strptime(pdata_date ,'%a %b %d %H:%M:%S %Z%z %Y')
 	# tripdate = datetime.strptime(tripdict['tripdate'],'%Y-%m-%d %H:%M:%S')
 	if engine.name == 'mysql' or engine.name == 'sqlite':
 		try:
 			pd.DataFrame(res).to_sql('torqdata', engine, if_exists='append',  index=False)
+		except OperationalError as e:
+			logger.error(f'[sendtd] {e} {type(e)} trip:{tf} tripdate={tripdate}')
 		except AttributeError as e:
-			logger.error(f'[sendtd] {e}')
+			logger.error(f'[sendtd] {e} {type(e)} trip:{tf} tripdate={tripdate}')
 		except IntegrityError as e:
-			logger.error(f'[sendtd] trip:{tf} {e}')
+			logger.error(f'[sendtd] {e} {type(e)} trip:{tf} tripdate={tripdate}')
 		except ValueError as e:
 			logger.error(f'[sendtd] {e} {type(e)} trip:{tf} tripdate={tripdate}')
 	elif engine.name == 'postgresql':

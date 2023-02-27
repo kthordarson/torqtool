@@ -62,6 +62,8 @@ def sqlsender(buffer=None, dburl=None):
 		buffer['torqbuffer'].to_sql('torqlogs', con=engine, if_exists='append', index=False)
 		results['status'] = 'success'
 	except (OperationalError, ProgrammingError) as e:
+		# todo handle db locks
+		# [tosql] code=e3q8 args=(sqlite3.OperationalError) database is locked r={'fileid': 156, 'tripid': 156, 'status': 'unknown'}
 		logger.error(f'[tosql] code={e.code} args={e.args[0]} r={results}')  # error:{e}
 		results['status'] = 'error'
 	except InternalError as e:
@@ -73,11 +75,13 @@ def sqlsender(buffer=None, dburl=None):
 		# logger.warning(f'[tosql] {e.statement} {e.params}')
 		# logger.warning(f'[tosql] {e}')
 	except (pymysql.err.DataError, DataError) as e:
+		# r={'fileid': 156, 'tripid': 156, 'status': 'unknown'}
+		tf_err = session.query(TorqFile).filter(TorqFile.id == results['fileid']).first()
 		errmsg = e.args[0]
 		err_row = errmsg.split('row')[-1].strip()
 		err_row = errmsg.split(',')[1].split('at row')[1].strip().strip('")')
 		err_col = errmsg.split(',')[1].split('at row')[0].split("'")[1]
-		logger.error(f'[tosql] code={e.code} args={e.args[0]} r={results} err_row: {err_row} err_col:{err_col}')  # error:{e}
+		logger.error(f'[tosql] code={e.code} args={e.args[0]} r={results} err_row: {err_row} err_col:{err_col} torqfile={tf_err}')  # error:{e}
 		#logger.warning(f'[tosql] dataerr code:{e.code} err:{errmsg} err_row: {err_row} err_col:{err_col} r={results}')  # row:{err_row} {buffer.iloc[err_row]}')
 		# buffer = buffer.drop(columns=[err_col])
 		buffer['torqbuffer'] = buffer['torqbuffer'].drop(columns=[err_col])
