@@ -4,7 +4,7 @@ from psycopg2.errors import InvalidTextRepresentation
 
 from hashlib import md5
 from threading import Thread, active_count
-
+from datetime import datetime
 import pandas as pd
 from loguru import logger
 from pandas import DataFrame
@@ -81,14 +81,18 @@ def send_torqdata(tfid, dburl):
 	elif engine.name == 'sqlite':
 		sqlmagic = f'{torqdatasql}{tf.id}'
 	try:
-		res = [k for k in session.execute(text(sqlmagic)).all()]
+		res = pd.DataFrame([k for k in session.execute(text(sqlmagic)).all()])
 	except OperationalError as e:
 		logger.error(f'[sendtd] OperationalError tripid={tf.tripid} newtrip={tf} ')
 		logger.error(e)
 		logger.error(f'[e] {type(e)}')
 		return None
 	sql_tripdate = text(f'select tripdate from torqtrips where id={tf.tripid}')
-	tripdate = [k._asdict() for k in session.execute(sql_tripdate).fetchall()]
+	tripdate_ = session.execute(sql_tripdate).one()
+	tripdate = datetime.strptime(tripdate_[0][:-7],'%Y-%m-%d %H:%M:%S')
+	res.insert(1, "tripdate", [tripdate for k in range(len(res))])
+	# tripdate = datetime.strptime(pdata_date ,'%a %b %d %H:%M:%S %Z%z %Y')
+	# tripdate = datetime.strptime(tripdict['tripdate'],'%Y-%m-%d %H:%M:%S')
 	if engine.name == 'mysql' or engine.name == 'sqlite':
 		try:
 			pd.DataFrame(res).to_sql('torqdata', engine, if_exists='append',  index=False)
@@ -103,4 +107,5 @@ def send_torqdata(tfid, dburl):
 			pd.DataFrame(res).to_sql('torqdata', engine, if_exists='append', index=False)
 		except InvalidTextRepresentation as e:
 			logger.error(f'[sendtd] {e} {type(e)} trip:{tf} tripdate={tripdate}')
+	# logger.info(f'[torqdata] tfid={tf.id} tripdate={tripdate}  tf={tf}')
 	engine.dispose()

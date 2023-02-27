@@ -382,18 +382,25 @@ def main(args):
 		for torqfile in dbtorqfiles:
 			send_torqtrips(torqfile, session)
 		tripend = timer()
-		logger.debug(f'[send_torqtrips] done t0={datetime.now()-t0} time={timedelta(seconds=tripend - tripstart)} starting read_process ')
+		logger.debug(f'[send_torqtrips] done t0={datetime.now()-t0} time={timedelta(seconds=tripend - tripstart)} starting read_process for {len(dbtorqfiles)} files mode={args.threadmode}')
 		#workers = get_torq_workers(torqfiles=dbtorqfiles, dburl=dburl, engine=engine, session=session)
 		tasks = []
-		with ProcessPoolExecutor(max_workers=CPU_COUNT) as executor:
-			for idx, tf in enumerate(dbtorqfiles):
-				t = session.query(TorqFile).filter(TorqFile.id == tf.id).first()
-				tasks.append(executor.submit(torq_worker,t, dburl))
-				#logger.debug(f'{idx}/{len(dbtorqfiles)} {idx/len(dbtorqfiles):.0%} worker {tf} t={datetime.now() - t0}')
+		if args.threadmode == 'ppe':
+			with ProcessPoolExecutor(max_workers=CPU_COUNT) as executor:
+				for idx, tf in enumerate(dbtorqfiles):
+					t = session.query(TorqFile).filter(TorqFile.id == tf.id).first()
+					tasks.append(executor.submit(torq_worker,t, dburl))
+				logger.debug(f't={datetime.now() - t0} tasks={len(tasks)} mode={args.threadmode}')
+		elif args.threadmode == 'tpe':
+			with ThreadPoolExecutor(max_workers=CPU_COUNT) as executor:
+				for idx, tf in enumerate(dbtorqfiles):
+					t = session.query(TorqFile).filter(TorqFile.id == tf.id).first()
+					tasks.append(executor.submit(torq_worker,t, dburl))
+				logger.debug(f't={datetime.now() - t0} tasks={len(tasks)} mode={args.threadmode}')
 		main_results = []
 		for res in as_completed(tasks):
 			main_results.append(res.result())
-		logger.debug(f'[*] done t={datetime.now() - t0} mr={len(main_results)}')
+		logger.debug(f'[*] done t={datetime.now() - t0} mr={len(main_results)} threadmode={args.threadmode}')
 
 
 if __name__ == '__main__':
@@ -417,6 +424,6 @@ if __name__ == '__main__':
 	parser.add_argument("--dbhost", default="", help="dbname", action="store")
 	parser.add_argument("--dbuser", default="", help="dbname", action="store")
 	parser.add_argument("--dbpass", default="", help="dbname", action="store")
-	#parser.add_argument('--threadmode', default='ppe', help='threadmode ppe/tpe', action='store')
+	parser.add_argument('--threadmode', default='ppe', help='threadmode ppe/tpe', action='store')
 	args = parser.parse_args()
 	main(args)

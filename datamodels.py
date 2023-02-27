@@ -60,9 +60,10 @@ class Torqtrips(Base):
 	tripdate = Column('tripdate', DateTime)
 	profile = Column('profile', String(255))
 	time = Column('time', BigInteger)
-	def __init__(self, fileid, csvfilenae, csvhash, distance, fuelcost, fuelused, distancewhilstconnectedtoobd, tripdate, profile, time):
+	#tt = Torqtrips(fileid=torqfile.id, csvfilename=str(torqfile.csvfilename), csvhash=torqfile.csvhash, distance=trip['distance'], fuelcost=trip['fuelcost'], fuelused=trip['fuelused'], distancewhilstconnectedtoobd=trip['distancewhilstconnectedtoobd'], tripdate=trip['tripdate'], profile=trip['profile'], triptime=trip['time'])
+	def __init__(self, fileid=None, csvfilename=None, csvhash=None, distance=None, fuelcost=None, fuelused=None, distancewhilstconnectedtoobd=None, tripdate=None, profile=None, triptime=None):
 		self.fileid = fileid
-		self.csvfilename = csvfilenae
+		self.csvfilename = csvfilename
 		self.csvhash = csvhash
 		self.distance = distance
 		self.fuelcost = fuelcost
@@ -70,7 +71,7 @@ class Torqtrips(Base):
 		self.distancewhilstconnectedtoobd = distancewhilstconnectedtoobd
 		self.tripdate = tripdate
 		self.profile = profile
-		self.time = time
+		self.time = triptime
 
 class Torqlogs(Base):
 	__tablename__ = 'torqlogs'
@@ -153,6 +154,7 @@ class Torqlogs(Base):
 class Torqdata(Base):
 	__tablename__ = 'torqdata'
 	id: Mapped[int] = mapped_column(primary_key=True)
+	tripdate = Column('tripdate', DateTime)
 	distance = Column('distance', Float)
 	fuelused = Column('fuelused', Float)
 	fuelcost = Column('fuelcost', Float)
@@ -364,28 +366,6 @@ def send_torq_trip(tf=None, tripdict=None, session=None, engine=None):
 	torqtrip = Torqtrips(fileid, csvfilename, csvhash, distance, fuelcost, fuelused, distancewhilstconnectedtoobd, tripdate, profile, time)
 	session.add(torqtrip)
 	session.commit()
-	# sql = ''
-	# if engine.name == 'mysql':
-	# 	session.execute(text('SET FOREIGN_KEY_CHECKS=0'))
-	# 	sql = f"""insert into torqtrips (csvfilename, csvhash, distance, fuelcost, fuelused, distancewhilstconnectedtoobd, tripdate, profile, time) values ("{csvfilename}", "{csvhash}", "{distance}", "{fuelcost}", "{fuelused}", "{distancewhilstconnectedtoobd}", "{tripdate}", "{profile}","{time}");"""
-	# if engine.name == 'sqlite':
-	# 	sql = f'insert into torqtrips (csvfilename, csvhash, distance, fuelcost, fuelused, distancewhilstconnectedtoobd, tripdate, profile, time) values ("{csvfilename}", "{csvhash}",  "{distance}", "{fuelcost}", "{fuelused}", "{distancewhilstconnectedtoobd}", "{tripdate}", "{profile}","{time}");'
-	# if engine.name == 'postgresql':
-	# 	sql = f"insert into torqtrips (csvfilename, csvhash, distance, fuelcost, fuelused, distancewhilstconnectedtoobd, tripdate, profile, time) values ('{csvfilename}', '{csvhash}', '{distance}', '{fuelcost}', '{fuelused}', '{distancewhilstconnectedtoobd}', '{tripdate}', '{profile}','{time}') returning id;"
-	# try:
-	# 	res = session.execute(text(sql))
-	# 	if engine.name == 'postgresql':
-	# 		id = res.fetchone()[0]
-	# 	elif engine.name == 'mysql':
-	# 		session.execute(text('SET FOREIGN_KEY_CHECKS=1'))
-	# 		id = res.lastrowid
-	# 	elif engine.name == 'sqlite':
-	# 		id = res.lastrowid
-	# 	session.commit()
-	# 	return id
-	# except (DataError, IntegrityError, OperationalError) as e:
-	# 	logger.error(f'[sql] errcode {e.code} errargs: {e.args[0]}')
-	# 	return None
 
 def send_trip_profile(torqfile, session):
 	filename = Path(torqfile.csvfilename)
@@ -397,10 +377,6 @@ def send_trip_profile(torqfile, session):
 		try:
 			pdata_date = str(pdata_[1][1:]).strip('\n')
 			tripdate = datetime.strptime(pdata_date ,'%a %b %d %H:%M:%S %Z%z %Y')
-			# strptime(d, '%a %b %d %H:%M:%S %Z%z %Y')
-			#tripdate = to_datetime(pdata_date)
-			#tripdate = tripdate.strftime('%Y-%m-%d %H:%M:%S')
-		# logger.info(f'[tripdate] {tripdate}')
 		except (OperationalError, Exception) as e:
 			logger.error(f'[readsend] {e}')
 			tripdate = None
@@ -413,7 +389,8 @@ def send_trip_profile(torqfile, session):
 		csvhash = md5(open(filename, 'rb').read()).hexdigest()
 		profile = trip_profile['profile']
 		# fileid, csvfilenae, csvhash, distance, fuelcost, fuelused, distancewhilstconnectedtoobd, tripdate, profile, time):
-		tt = Torqtrips(torqfile.id, str(filename), csvhash, distance, fuelcost, fuelused, distancewhilstconnectedtoobd, tripdate, profile, triptime)
+		tt = Torqtrips(fileid=torqfile.id, csvfilename=str(filename), csvhash=csvhash, distance=distance, fuelcost=fuelcost, fuelused=fuelused, distancewhilstconnectedtoobd=distancewhilstconnectedtoobd, tripdate=tripdate, profile=profile, triptime=triptime)
+		#tt = Torqtrips(fileid=torqfile.id, csvfilename=str(torqfile.csvfilename), csvhash=torqfile.csvhash, distance=trip['distance'], fuelcost=trip['fuelcost'], fuelused=trip['fuelused'], distancewhilstconnectedtoobd=trip['distancewhilstconnectedtoobd'], tripdate=trip['tripdate'], profile=trip['profile'], triptime=trip['time'])
 		session.add(tt)
 		session.commit()
 		return tt
@@ -490,7 +467,7 @@ def send_torqfiles(filelist=None, session=None):
 
 def send_torqtrips(torqfile, session):
 	trip = get_trip_profile(torqfile.csvfilename)
-	tt = Torqtrips(torqfile.id, str(torqfile.csvfilename), torqfile.csvhash, trip['distance'], trip['fuelcost'], trip['fuelused'], trip['distancewhilstconnectedtoobd'], trip['tripdate'], trip['profile'], trip['time'])
+	tt = Torqtrips(fileid=torqfile.id, csvfilename=str(torqfile.csvfilename), csvhash=torqfile.csvhash, distance=trip['distance'], fuelcost=trip['fuelcost'], fuelused=trip['fuelused'], distancewhilstconnectedtoobd=trip['distancewhilstconnectedtoobd'], tripdate=trip['tripdate'], profile=trip['profile'], triptime=trip['time'])
 	session.add(tt)
 	ntf = session.query(TorqFile).filter(TorqFile.id == torqfile.id).first()
 	ntf.tripid = tt.id
