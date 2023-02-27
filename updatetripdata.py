@@ -96,7 +96,10 @@ def send_torqdata(tfid, dburl):
 			logger.error(f'[sendtd] {e} {type(e)} trip:{tf} td={tripdate_} {type(tripdate_)}')
 	else:
 		tripdate = tripdate_
-	res.insert(1, "tripdate", [tripdate for k in range(len(res))])
+	try:
+		res.insert(1, "tripdate", [tripdate for k in range(len(res))])
+	except IndexError as e:
+		logger.error(f'[sendtd] {e} {type(e)} insert tripdate trip:{tf} tripdate={tripdate} res={type(res)} {len(res)}')
 
 	# tripdate = datetime.strptime(pdata_date ,'%a %b %d %H:%M:%S %Z%z %Y')
 	# tripdate = datetime.strptime(tripdict['tripdate'],'%Y-%m-%d %H:%M:%S')

@@ -85,7 +85,7 @@ def fix_csv_file(tf):
 		data = reader.readlines()
 	badvals = {
 		'∞': '0',
-		# '-' : '0',
+		#',-' : ',0',
 		'â': '0',
 		'₂': '',
 		'°': '',

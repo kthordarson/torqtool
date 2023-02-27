@@ -33,7 +33,7 @@ def read_buff(tf_csvfile, tf_fileid, tf_tripid):
 	start = timer()
 	csvfilefixed = tf_csvfile
 	datefields = ['gpstime', 'devicetime']
-	torqbuffer = read_csv(csvfilefixed, delimiter=',', na_values=BADVALS, low_memory=False, parse_dates=datefields, converters={'gpstime': convert_datetime}, dtype=entry_datamap)
+	torqbuffer = read_csv(csvfilefixed, delimiter=',', na_values=BADVALS, low_memory=False, parse_dates=datefields, converters={'gpstime': convert_datetime}, dtype=entry_datamap, on_bad_lines='skip')
 	torqbuffer.fillna(0, inplace=True)
 	# insert fileid and tripid
 	torqbuffer.insert(1, "fileid", [tf_fileid for k in range(len(torqbuffer))])
@@ -43,6 +43,7 @@ def read_buff(tf_csvfile, tf_fileid, tf_tripid):
 		'torqbuffer' : torqbuffer,
 		'fileid' : tf_fileid,
 		'tripid' : tf_tripid,
+		'tf_csvfile' : tf_csvfile,
 	}
 	return resultbuffer
 
@@ -56,6 +57,7 @@ def sqlsender(buffer=None, dburl=None):
 	results = {
 		'fileid': buffer['fileid'],
 		'tripid': buffer['tripid'],
+		'tf_csvfile': buffer['tf_csvfile'],
 		'status': 'unknown'
 	}
 	try:
@@ -64,13 +66,13 @@ def sqlsender(buffer=None, dburl=None):
 	except (OperationalError, ProgrammingError) as e:
 		# todo handle db locks
 		# [tosql] code=e3q8 args=(sqlite3.OperationalError) database is locked r={'fileid': 156, 'tripid': 156, 'status': 'unknown'}
-		logger.error(f'[tosql] code={e.code} args={e.args[0]} r={results}')  # error:{e}
+		logger.error(f'[tosql] code={e.code} args={e.args[0]} r={results} tf_csvfile={buffer["tf_csvfile"]}')  # error:{e}
 		results['status'] = 'error'
 	except InternalError as e:
-		logger.error(f'[tosql] InternalError {e} r={results}')
+		logger.error(f'[tosql] InternalError {e} r={results} tf_csvfile={buffer["tf_csvfile"]}')
 		results['status'] = 'error'
 	except (InvalidTextRepresentation,IntegrityError) as e:
-		logger.warning(f'[tosql] {type(e)} code={e.code} args={e.args[0]} r={results}')
+		logger.warning(f'[tosql] {type(e)} code={e.code} args={e.args[0]} r={results} tf_csvfile={buffer["tf_csvfile"]}')
 		results['status'] = 'error'
 		# logger.warning(f'[tosql] {e.statement} {e.params}')
 		# logger.warning(f'[tosql] {e}')
@@ -81,7 +83,7 @@ def sqlsender(buffer=None, dburl=None):
 		err_row = errmsg.split('row')[-1].strip()
 		err_row = errmsg.split(',')[1].split('at row')[1].strip().strip('")')
 		err_col = errmsg.split(',')[1].split('at row')[0].split("'")[1]
-		logger.error(f'[tosql] code={e.code} args={e.args[0]} r={results} err_row: {err_row} err_col:{err_col} torqfile={tf_err}')  # error:{e}
+		logger.error(f'[tosql] code={e.code} args={e.args[0]} r={results} err_row: {err_row} err_col:{err_col} torqfile={tf_err} tf_csvfile={buffer["tf_csvfile"]}')  # error:{e}
 		#logger.warning(f'[tosql] dataerr code:{e.code} err:{errmsg} err_row: {err_row} err_col:{err_col} r={results}')  # row:{err_row} {buffer.iloc[err_row]}')
 		# buffer = buffer.drop(columns=[err_col])
 		buffer['torqbuffer'] = buffer['torqbuffer'].drop(columns=[err_col])
@@ -90,7 +92,7 @@ def sqlsender(buffer=None, dburl=None):
 	except TypeError as e:
 		errmsg = e.args[0]
 		err_row = errmsg.split('row')[-1].strip()
-		logger.error(f'[tosql] code:{e.code} err:{errmsg} row:{err_row} {buffer.iloc[err_row]} r={results}')
+		logger.error(f'[tosql] code:{e.code} err:{errmsg} row:{err_row} {buffer.iloc[err_row]} r={results} tf_csvfile={buffer["tf_csvfile"]}')
 		results['status'] = 'error'
 	return results
 
