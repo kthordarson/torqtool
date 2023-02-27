@@ -44,6 +44,8 @@ class TorqFile(Base):
 		self.fixedhash = fixedhash
 		self.read_flag = 0
 		self.send_flag = 0
+	def __repr__(self):
+		return f'<TorqFile {self.csvfilename} r:{self.read_flag} s:{self.send_flag}>'
 
 class Torqtrips(Base):
 	__tablename__ = 'torqtrips'

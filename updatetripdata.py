@@ -67,8 +67,8 @@ def send_torqdata(tfid, dburl):
 	Session = sessionmaker(bind=engine)
 	session = Session()
 
-	Session = sessionmaker(bind=engine)
-	session = Session()
+	#Session = sessionmaker(bind=engine)
+	#session = Session()
 	try:
 		tf = session.query(TorqFile).filter(TorqFile.id == tfid).first()
 	except OperationalError as e:
@@ -103,3 +103,4 @@ def send_torqdata(tfid, dburl):
 			pd.DataFrame(res).to_sql('torqdata', engine, if_exists='append', index=False)
 		except InvalidTextRepresentation as e:
 			logger.error(f'[sendtd] {e} {type(e)} trip:{tf} tripdate={tripdate}')
+	engine.dispose()
