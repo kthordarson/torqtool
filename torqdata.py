@@ -35,6 +35,7 @@ if __name__ == '__main__':
 	toptrips = None
 	topdata = []
 	try:
+		# toptrips=session.query(Torqtrips.id, Torqtrips.distance).order_by(Torqtrips.distance.desc()).limit(10).all()
 		toptrips = pd.read_sql(f'select id from torqtrips order by distance desc limit {max_results}', engine)
 		for trip in toptrips.id:
 			td = get_trip_data(trip)

@@ -82,7 +82,11 @@ def fix_csv_file(tf):
 	# read csv file, replace badvals and fix column names
 	# returns a buff with the fixed csv file
 	with open(tf['csvfilename'], 'r') as reader:
-		data = reader.readlines()
+		try:
+			data = reader.readlines()
+		except UnicodeDecodeError as e:
+			logger.error(f'[fix] {e} {tf["csvfilename"]}')
+			return None
 	badvals = {
 		'∞': '0',
 		#',-' : ',0',
@@ -110,9 +114,12 @@ def fix_csv_file(tf):
 	return lines
 
 def save_fixed_csv(lines, nf):
-	# logger.debug(f"[f] {tf['csvfilename']} {nf} nclen:{len(newcolname)} og:{len(orgcol)} l:{len(lines)} l0:{len(lines[0])} dl0:{len(data[0])}")
-	with open(file=nf, mode='w', encoding='utf-8', newline='') as writer:
-		writer.writelines(lines)
+	if lines:
+		logger.debug(f"[f] saving fixed csv file {nf} lines:{len(lines)}")
+		with open(file=nf, mode='w', encoding='utf-8', newline='') as writer:
+			writer.writelines(lines)
+	else:
+		logger.warning(f'[s] no lines to save {nf}')
 
 def get_csv_files(searchpath: Path,  dbmode=None):
 	# scan searchpath for csv files
@@ -189,7 +196,7 @@ def convert_datetime(val):
 		logger.warning(f'[cd] v:{val} ')
 		return to_datetime('2000-01-01', errors='raise').to_numpy()
 	try:
-		newval = to_datetime(val, errors='raise', infer_datetime_format=False).to_numpy()
+		newval = to_datetime(val, errors='raise', format='mixed').to_numpy() # , infer_datetime_format=False
 	except AttributeError as e:
 		newval = val.strip()[2:]
 		logger.warning(f'[cd] {e} v:{val} n:{newval}')
@@ -201,7 +208,6 @@ def get_engine(args):
 		dburl = f"mysql+pymysql://{args.dbuser}:{args.dbpass}@{args.dbhost}/{args.dbname}?charset=utf8mb4"
 	# return create_engine(dburl, pool_size=200, max_overflow=0)
 	if args == 'postgresql':
-		# dburl = f"postgresql://postgres:foobar9999@{args.dbhost}/{args.dbname}"
 		dburl = f"postgresql://{args.dbuser}:{args.dbpass}@{args.dbhost}/{args.dbname}"
 	if args == 'sqlite':
 		dburl = f'sqlite:///torqfiskurdb'

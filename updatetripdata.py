@@ -74,6 +74,9 @@ def send_torqdata(tfid, dburl):
 	except OperationalError as e:
 		logger.error(f'[sendtd] OperationalError {e} tripid={tfid}')
 		return None
+	except ProgrammingError as e:
+		logger.error(f'[sendtd] ProgrammingError {e} tripid={tfid}')
+		return None
 	if engine.name == 'postgresql':
 		sqlmagic = f'{torqdatasql_psql}{tf.id} group by torqtrips.distance,torqtrips.fuelused,torqtrips.fuelcost,torqtrips.time,torqtrips.distancewhilstconnectedtoobd '
 	elif engine.name == 'mysql':
@@ -87,6 +90,9 @@ def send_torqdata(tfid, dburl):
 		logger.error(e)
 		logger.error(f'[e] {type(e)}')
 		return None
+	if len(res) == 0:
+		logger.warning(f'[sendtd] no data for tripid={tf.tripid} newtrip={tf} ')
+		return None
 	sql_tripdate = text(f'select tripdate from torqtrips where id={tf.tripid}')
 	tripdate_ = session.execute(sql_tripdate).one()._asdict().get('tripdate')
 	if isinstance(tripdate_, str):
@@ -99,7 +105,7 @@ def send_torqdata(tfid, dburl):
 	try:
 		res.insert(1, "tripdate", [tripdate for k in range(len(res))])
 	except IndexError as e:
-		logger.error(f'[sendtd] {e} {type(e)} insert tripdate trip:{tf} tripdate={tripdate} res={type(res)} {len(res)}')
+		logger.error(f'[sendtd] resinsert error:{e} insert tripdate trip:{tf} tripdate={tripdate} res={type(res)} {len(res)}')
 
 	# tripdate = datetime.strptime(pdata_date ,'%a %b %d %H:%M:%S %Z%z %Y')
 	# tripdate = datetime.strptime(tripdict['tripdate'],'%Y-%m-%d %H:%M:%S')

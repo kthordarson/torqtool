@@ -1,3 +1,4 @@
+#!/usr/bin/python3
 import argparse
 import asyncio
 import functools
@@ -14,13 +15,14 @@ from hashlib import md5
 from multiprocessing import cpu_count
 
 from loguru import logger
+from pandas.errors import EmptyDataError
 from pandas import (DataFrame, Index, Series, concat, read_csv, to_datetime, read_sql)
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import (ArgumentError, CompileError, DataError, IntegrityError, OperationalError, ProgrammingError)
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import (DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker)
 from sqlalchemy.orm.exc import DetachedInstanceError
-from datamodels import get_trip_profile, send_torqfiles, send_torq_trip, database_init, sqlite_db_init, send_trip_profile, send_torqtrips
+from datamodels import get_trip_profile, send_torqfiles, send_torq_trip, database_init, sqlite_db_init, send_trip_profile, send_torqtrips,database_dropall
 from datamodels import Torqdata, TorqFile, Torqtrips
 from updatetripdata import create_tripdata, send_torqdata
 from utils import checkcsv, get_csv_files, convert_datetime
@@ -33,7 +35,11 @@ def read_buff(tf_csvfile, tf_fileid, tf_tripid):
 	start = timer()
 	csvfilefixed = tf_csvfile
 	datefields = ['gpstime', 'devicetime']
-	torqbuffer = read_csv(csvfilefixed, delimiter=',', na_values=BADVALS, low_memory=False, parse_dates=datefields, converters={'gpstime': convert_datetime}, dtype=entry_datamap, on_bad_lines='skip')
+	try:
+		torqbuffer = read_csv(csvfilefixed, delimiter=',', na_values=BADVALS, low_memory=False, parse_dates=datefields, converters={'gpstime': convert_datetime}, dtype=entry_datamap, on_bad_lines='skip')
+	except ValueError as e:
+		logger.error(f'[read_buff] {e} tf_csvfile={tf_csvfile} csvfilefixed={csvfilefixed}')
+		return None
 	torqbuffer.fillna(0, inplace=True)
 	# insert fileid and tripid
 	torqbuffer.insert(1, "fileid", [tf_fileid for k in range(len(torqbuffer))])
@@ -83,7 +89,7 @@ def sqlsender(buffer=None, dburl=None):
 		err_row = errmsg.split('row')[-1].strip()
 		err_row = errmsg.split(',')[1].split('at row')[1].strip().strip('")')
 		err_col = errmsg.split(',')[1].split('at row')[0].split("'")[1]
-		logger.error(f'[tosql] code={e.code} args={e.args[0]} r={results} err_row: {err_row} err_col:{err_col} torqfile={tf_err} tf_csvfile={buffer["tf_csvfile"]}')  # error:{e}
+		logger.warning(f'\n[tosql] code={e.code}\nargs={e.args[0]}\nr={results}\nerr_row: {err_row}\nerr_col:{err_col}\ntorqfile={tf_err} tf_csvfile={buffer["tf_csvfile"]}\n')  # error:{e}
 		#logger.warning(f'[tosql] dataerr code:{e.code} err:{errmsg} err_row: {err_row} err_col:{err_col} r={results}')  # row:{err_row} {buffer.iloc[err_row]}')
 		# buffer = buffer.drop(columns=[err_col])
 		buffer['torqbuffer'] = buffer['torqbuffer'].drop(columns=[err_col])
@@ -220,14 +226,18 @@ class TorqWorker(Thread):
 
 	def run(self):
 		buffer = read_buff(self.tf.csvfilefixed, self.tf.id, self.tf.tripid)
-		try:
-			results = sqlsender(buffer, self.dburl)
-		except TypeError as e:
-			errmsg = f'[TW] {self} typeerror {e}'
-			logger.error(errmsg)
-			return errmsg
-		datares = send_torqdata(self.tf.id, self.dburl)
-		return datares
+		if buffer:
+			try:
+				results = sqlsender(buffer, self.dburl)
+			except TypeError as e:
+				errmsg = f'[TW] {self} typeerror {e}'
+				logger.error(errmsg)
+				return errmsg
+			datares = send_torqdata(self.tf.id, self.dburl)
+			return datares
+		else:
+			logger.error(f'[tw] no buffer from {self.tf.csvfilefixed}')
+			return None
 
 def get_torq_workers(torqfiles=None, dburl=None, engine=None, session=None):
 	workers = []
@@ -323,7 +333,11 @@ def mainold(args):
 		# fixtime={timedelta(seconds=fix_end - fix_start)} uptime={timedelta(seconds=up_end - up_start)}
 
 def torq_worker(tf, dburl):
-	buffer = read_buff(tf.csvfilefixed, tf.id, tf.tripid)
+	try:
+		buffer = read_buff(tf.csvfilefixed, tf.id, tf.tripid)
+	except EmptyDataError as e:
+		logger.error(e)
+		return None
 	results = sqlsender(buffer, dburl)
 	datares = send_torqdata(tf.id, dburl)
 	res = {
@@ -365,9 +379,10 @@ def main(args):
 		session = Session()
 		# session.execute(text('PRAGMA foreign_keys=OFF'))
 		sqlite_db_init(engine)
-	if args.init_db:
+	database_init(engine)
+	if args.database_dropall:
 		try:
-			database_init(session, engine)
+			database_dropall(engine)
 		except OperationalError as e:
 			logger.error(f'[database_init] {e}')
 
@@ -405,7 +420,16 @@ def main(args):
 				logger.debug(f't={datetime.now() - t0} tasks={len(tasks)} mode={args.threadmode}')
 		main_results = []
 		for res in as_completed(tasks):
-			main_results.append(res.result())
+			try:
+				r = res.result()
+			except ProgrammingError as e:
+				logger.error(f'[!] ProgrammingError {e} res:{res}')
+			except EmptyDataError as e:
+				logger.error(f'[!] EmptyDataError {e} res:{res}')
+			except TypeError as e:
+				logger.error(f'[!] TypeError {e} res:{res}')
+			else:
+				main_results.append(r)
 		logger.debug(f'[*] done t={datetime.now() - t0} mr={len(main_results)} threadmode={args.threadmode}')
 
 
@@ -415,6 +439,7 @@ if __name__ == '__main__':
 	parser.add_argument("--file", nargs="?", default=".", help="path to single csv file", action="store")
 	parser.add_argument("--gui", default=False, help="Run gui", action="store_true", dest='gui')
 	parser.add_argument("--init-db", default=False, help="init database", action="store_true", dest='init_db')
+	parser.add_argument("--database_dropall", default=False, help="drop database", action="store_true", dest='database_dropall')
 	parser.add_argument("--check-db", default=False, help="check database", action="store_true", dest='check_db')
 	parser.add_argument("--fixcsv", default=False, help="repair csv", action="store_true", dest='fixcsv')
 	parser.add_argument("--checkcsv", default=False, help="scan csv path", action="store_true", dest='checkcsv')

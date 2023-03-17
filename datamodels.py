@@ -429,9 +429,11 @@ def get_trip_profile(filename):
 	else:
 		logger.warning(f'[p] {filename} len={len(pdata_)}')
 
-
-def database_init(session, engine):
+def database_dropall(engine):
 	Base.metadata.drop_all(bind=engine)
+	Base.metadata.create_all(bind=engine)
+
+def database_init(engine):
 	Base.metadata.create_all(bind=engine)
 
 def sqlite_db_init(engine):
@@ -467,8 +469,11 @@ def send_torqfiles(filelist=None, session=None):
 
 def send_torqtrips(torqfile, session):
 	trip = get_trip_profile(torqfile.csvfilename)
-	tt = Torqtrips(fileid=torqfile.id, csvfilename=str(torqfile.csvfilename), csvhash=torqfile.csvhash, distance=trip['distance'], fuelcost=trip['fuelcost'], fuelused=trip['fuelused'], distancewhilstconnectedtoobd=trip['distancewhilstconnectedtoobd'], tripdate=trip['tripdate'], profile=trip['profile'], triptime=trip['time'])
-	session.add(tt)
-	ntf = session.query(TorqFile).filter(TorqFile.id == torqfile.id).first()
-	ntf.tripid = tt.id
-	session.commit()
+	if trip:
+		tt = Torqtrips(fileid=torqfile.id, csvfilename=str(torqfile.csvfilename), csvhash=torqfile.csvhash, distance=trip['distance'], fuelcost=trip['fuelcost'], fuelused=trip['fuelused'], distancewhilstconnectedtoobd=trip['distancewhilstconnectedtoobd'], tripdate=trip['tripdate'], profile=trip['profile'], triptime=trip['time'])
+		session.add(tt)
+		ntf = session.query(TorqFile).filter(TorqFile.id == torqfile.id).first()
+		ntf.tripid = tt.id
+		session.commit()
+	else:
+		logger.warning(f'[!] no trip profiles from {torqfile.csvfilename} ')

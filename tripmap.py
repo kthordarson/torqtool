@@ -119,7 +119,7 @@ def scale_to_imgold(lat_lon, h_w):
 	:return: Tuple containing x and y coordinates to draw on map image.
 	"""
 	# https://gamedev.stackexchange.com/questions/33441/how-to-convert-a-number-from-one-min-max-set-to-another-min-max-set/33445
-	
+
 	newy = (0, h_w[1])
 	y = ((lat_lon[0] ) * (newy[1] - newy[0])) + newy[0]
 
@@ -132,7 +132,7 @@ def scale_to_imgold(lat_lon, h_w):
 	logger.info(f'[s] l:{lat_lon} hw:{h_w} nx:{newx} x:{x} ny:{newy} y:{y} res:{res}')
 	return res
 
-def scale_to_img(lat_lon, h_w, points):	
+def scale_to_img(lat_lon, h_w, points):
 	# points: Upper-left, and lower-right GPS points of the map (lat1, lon1, lat2, lon2)
 	# y (self.points[2], self.points[0])
 	# x old = (self.points[1], self.points[3])
@@ -141,12 +141,12 @@ def scale_to_img(lat_lon, h_w, points):
 	# points = (43.4110, -2.1248, 43.2044, -1.5858)
 	oldy = (points[2], points[0]) #  (lat_lon[1], lat_lon[0])
 	newy = (0, h_w[1])
-	try:		
-		y = ((lat_lon[0] - oldy[0]) * (newy[1] - newy[0]) / (oldy[1] - oldy[0])) + newy[0]	
+	try:
+		y = ((lat_lon[0] - oldy[0]) * (newy[1] - newy[0]) / (oldy[1] - oldy[0])) + newy[0]
 	except ZeroDivisionError as e:
 		#print(f'err {e} p:{points} l:{lat_lon} hw:{h_w} oldy:{oldy} newy:{newy}')
 		y = 0
-	
+
 
 	oldx = (points[1], points[3]) # (lat_lon[1], lat_lon[0])
 	newx = (0, h_w[0])
@@ -168,8 +168,7 @@ if __name__ == '__main__':
 		'host' : 'elitedesk',
 		'database' : 'torq9',
 		'user' : 'torq',
-		# 'password' : 'foobar9999',
-		'password' : 'dzt3f5jCvMlbUvRG',
+		'password' : '',
 		'pool_size': 200,
 		'max_overflow':0,
 		'port': 3306
@@ -196,14 +195,14 @@ if __name__ == '__main__':
 	tripidlist = [k[0] for k in trips]
 	image = Image.open('map3w.png', 'r')  # Load map image.
 	pointlist_q = []
-	
+
 	pointlist_q.append(f"select min(Latitude), min(Longitude), max(Latitude), max(Longitude) from torqlogs where tripid=")
 	pointlist_q.append(f"select max(Latitude), min(Longitude), min(Latitude), max(Longitude) from torqlogs where tripid=")
 	pointlist_q.append(f"select max(Latitude), max(Longitude), min(Latitude), min(Longitude) from torqlogs where tripid=")
 	points_old = (43.4110, -2.1248, 43.2044, -1.5858)
-	
+
 	for tidx, tripid in enumerate(tripidlist):
-		pointlist = []	
+		pointlist = []
 		sql = f"SELECT Latitude,Longitude FROM torqlogs where tripid={tripid}"
 		gps_data = session.execute(sql).fetchall()
 		sql = f"SELECT GPSSpeedkmh FROM torqlogs where tripid={tripid}"
@@ -227,8 +226,8 @@ if __name__ == '__main__':
 		gps_speed_points = []
 		draw = ImageDraw.Draw(image)
 		print(f'tidx:{tidx} tripid:{tripid} p:{len(pointlist)} po:{points_old}')
-		
-		for idx,d in enumerate(gps_data):			
+
+		for idx,d in enumerate(gps_data):
 			img_points = []
 			#x1, y1 = scale_to_img(d, (image.size[0], image.size[1]), points_old)
 			#draw.point((x1,y1), fill=(255,0,0))
@@ -254,7 +253,7 @@ if __name__ == '__main__':
 			#draw.point((x1,y1), fill=gpsfill)
 			# draw.rounded_rectangle([(x1,y1), (x1+1,y1+1)], radius=int(GPSSpeedkmh[idx]), fill=(int(GPSSpeedkmh[idx]),idx,int(GPSSpeedkmh[idx])))
 			# gps_speed_points.append((x1,y1, GPSSpeedkmh[idx]))
-		
+
 		#draw.line(img_pointsold, fill=(155, 0, 0), width=1)  # Draw converted records to the map image.
 		# draw.point(img_points, f)
 
@@ -264,4 +263,4 @@ if __name__ == '__main__':
 	# 			points=(45.8357, 15.9645, 45.6806, 16.1557)) # Two coordinates of the map (upper left, lower right)
 
 	# vis.create_image(color=(0, 0, 255), width=3)  # Set the color and the width of the GNSS tracks.
-	# vis.plot_map(output='save')	
+	# vis.plot_map(output='save')
