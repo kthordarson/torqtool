@@ -16,7 +16,6 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import (DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker)
 from sqlalchemy_utils import create_database, database_exists
 
-from torqsqlstrings import sqlcmds
 
 class Base(DeclarativeBase):
     pass
