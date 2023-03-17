@@ -1,7 +1,6 @@
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy import create_engine, Table, MetaData, Column, Integer, String, inspect, select, Numeric, DateTime, text, BIGINT, BigInteger, Float
-from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.exc import OperationalError, DataError
 import pandas as pd
 from hashlib import md5

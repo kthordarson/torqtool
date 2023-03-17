@@ -24,7 +24,7 @@ from sqlalchemy.orm import (DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy.orm.exc import DetachedInstanceError
 from datamodels import get_trip_profile, send_torqfiles, send_torq_trip, database_init, sqlite_db_init, send_trip_profile, send_torqtrips,database_dropall
 from datamodels import Torqdata, TorqFile, Torqtrips
-from updatetripdata import create_tripdata, send_torqdata
+from updatetripdata import  send_torqdata
 from utils import checkcsv, get_csv_files, convert_datetime
 from datamap import entry_datamap
 BADVALS = ['-', 'NaN', '0', 'â', r'0']

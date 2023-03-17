@@ -6,7 +6,6 @@ from PIL import Image, ImageDraw
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy import create_engine, Table, MetaData, Column, Integer, String, inspect, select, Numeric, DateTime, text, BIGINT, BigInteger, Float
-from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.exc import OperationalError, DataError
 
 from hashlib import md5
@@ -14,8 +13,6 @@ from utils import get_csv_files
 from threading import Thread, active_count
 import psycopg2
 from datamodels import TorqTrip, TorqFile, TorqEntry
-
-Base = declarative_base()
 
 from loguru import logger
 
