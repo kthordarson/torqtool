@@ -16,7 +16,10 @@ from multiprocessing import cpu_count
 
 from loguru import logger
 from pandas.errors import EmptyDataError
-from pandas import (DataFrame, Index, Series, concat, read_csv, to_datetime, read_sql)
+from pandas import (DataFrame, Index, Series, concat, to_datetime, read_sql)
+from pandas import read_csv as read_csv_pandas
+import polars as pl
+from polars import read_csv as read_csv_polars
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import (ArgumentError, CompileError, DataError, IntegrityError, OperationalError, ProgrammingError)
 from sqlalchemy.ext.declarative import declarative_base
@@ -36,14 +39,20 @@ def read_buff(tf_csvfile, tf_fileid, tf_tripid):
 	csvfilefixed = tf_csvfile
 	datefields = ['gpstime', 'devicetime']
 	try:
-		torqbuffer = read_csv(csvfilefixed, delimiter=',', na_values=BADVALS, low_memory=False, parse_dates=datefields, converters={'gpstime': convert_datetime}, dtype=entry_datamap, on_bad_lines='skip')
+		#torqbuffer = read_csv_pandas(csvfilefixed, delimiter=',', na_values=BADVALS, low_memory=False, parse_dates=datefields, converters={'gpstime': convert_datetime}, dtype=entry_datamap, on_bad_lines='skip')
+		torqbuffer = read_csv_polars(csvfilefixed, ignore_errors=True)
 	except ValueError as e:
 		logger.error(f'[read_buff] {e} tf_csvfile={tf_csvfile} csvfilefixed={csvfilefixed}')
 		return None
-	torqbuffer.fillna(0, inplace=True)
+	# torqbuffer.fillna(0, inplace=True)
 	# insert fileid and tripid
-	torqbuffer.insert(1, "fileid", [tf_fileid for k in range(len(torqbuffer))])
-	torqbuffer.insert(2, "tripid", [tf_tripid for k in range(len(torqbuffer))])
+	#torqbuffer.insert(1, "fileid", [tf_fileid for k in range(len(torqbuffer))])
+	#torqbuffer.insert(2, "tripid", [tf_tripid for k in range(len(torqbuffer))])
+	fileid_series = pl.Series("fileid", [tf_fileid for k in range(len(torqbuffer))])
+	tripid_series = pl.Series("tripid", [tf_tripid for k in range(len(torqbuffer))])
+	torqbuffer.insert_at_idx(1, fileid_series)
+	torqbuffer.insert_at_idx(2, tripid_series)
+
 	end = timer()
 	resultbuffer = {
 		'torqbuffer' : torqbuffer,
@@ -67,7 +76,7 @@ def sqlsender(buffer=None, dburl=None):
 		'status': 'unknown'
 	}
 	try:
-		buffer['torqbuffer'].to_sql('torqlogs', con=engine, if_exists='append', index=False)
+		buffer['torqbuffer'].to_pandas().to_sql('torqlogs', con=engine, if_exists='append', index=False)
 		results['status'] = 'success'
 	except (OperationalError, ProgrammingError) as e:
 		# todo handle db locks
@@ -93,7 +102,7 @@ def sqlsender(buffer=None, dburl=None):
 		#logger.warning(f'[tosql] dataerr code:{e.code} err:{errmsg} err_row: {err_row} err_col:{err_col} r={results}')  # row:{err_row} {buffer.iloc[err_row]}')
 		# buffer = buffer.drop(columns=[err_col])
 		buffer['torqbuffer'] = buffer['torqbuffer'].drop(columns=[err_col])
-		buffer['torqbuffer'].to_sql('torqlogs', con=engine, if_exists='append', index=False)
+		buffer['torqbuffer'].to_pandas().to_pandas().to_sql('torqlogs', con=engine, if_exists='append', index=False)
 		results['status'] = 'warning'
 	except TypeError as e:
 		errmsg = e.args[0]
@@ -105,18 +114,28 @@ def sqlsender(buffer=None, dburl=None):
 
 
 def torq_worker(tf, dburl):
+	buffer = None
+	results = None
+	datares = None
 	try:
 		buffer = read_buff(tf.csvfilefixed, tf.id, tf.tripid)
-	except EmptyDataError as e:
+	except ValueError as e:
 		logger.error(e)
 		return None
-	results = sqlsender(buffer, dburl)
-	datares = send_torqdata(tf.id, dburl)
+	try:
+		results = sqlsender(buffer, dburl)
+	except ValueError as e:
+		logger.error(e)
+	try:
+		datares = send_torqdata(tf.id, dburl)
+	except ValueError as e:
+		logger.error(f'{type(e)} {e} in send_torqdata')
+
 	res = {
 		'tf': tf,
 		'bufferlen': len(buffer),
 		'results': results,
-		'datares': datares
+		'datares': datares if datares else None
 	}
 	return res
 
@@ -197,6 +216,8 @@ def main(args):
 				logger.error(f'[!] EmptyDataError {e} res:{res}')
 			except TypeError as e:
 				logger.error(f'[!] TypeError {e} res:{res}')
+			except ValueError as e:
+				logger.error(f'[!] TypeError {e} res:{res}')
 			else:
 				main_results.append(r)
 		logger.debug(f'[*] done t={datetime.now() - t0} mr={len(main_results)} threadmode={args.threadmode}')
@@ -227,3 +248,7 @@ if __name__ == '__main__':
 	parser.add_argument('--threadmode', default='ppe', help='threadmode ppe/tpe', action='store')
 	args = parser.parse_args()
 	main(args)
+
+
+# gps_startingspoints = [s.query(Torqlogs.latitude).filter(Torqlogs.tripid == k.id).first() for k in trips]
+# gps_endingpoints = [s.query(Torqlogs.latitude).filter(Torqlogs.tripid == k.id).order_by(Torqlogs.id.desc()).first() for k in trips]

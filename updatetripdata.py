@@ -5,6 +5,7 @@ from psycopg2.errors import InvalidTextRepresentation
 from hashlib import md5
 from threading import Thread, active_count
 from datetime import datetime
+import polars as pl
 import pandas as pd
 from loguru import logger
 from pandas import DataFrame
@@ -13,7 +14,7 @@ from sqlalchemy import (BIGINT, BigInteger, Column, DateTime, Float, Integer,
                         inspect, select, text)
 from sqlalchemy.exc import (ArgumentError, CompileError, DataError, IntegrityError, OperationalError, ProgrammingError)
 from sqlalchemy.orm import sessionmaker
-
+from sqlalchemy import inspect
 
 from datamodels import TorqFile
 
@@ -1364,8 +1365,8 @@ def create_tripdata(engine, session, newfilelist):
 		# res.insert(1, "tripdate", tripdate)
 		if engine.name == 'mysql' or engine.name == 'sqlite':
 			try:
-				pd.DataFrame(res).to_sql('torqdata', engine, if_exists='append',  index=False)
-				#_ = [pd.DataFrame(r).to_sql('torqdata', session, if_exists='append',  index=False) for r in res]
+				pl.DataFrame(res).to_pandas().to_sql('torqdata', engine, if_exists='append',  index=False)
+				#_ = [pl.DataFrame(r).to_sql('torqdata', session, if_exists='append',  index=False) for r in res]
 			except AttributeError as e:
 				logger.error(f'[createtripdata] {e}')
 			except IntegrityError as e:
@@ -1378,12 +1379,13 @@ def create_tripdata(engine, session, newfilelist):
 				logger.error(f'[createtripdata] {e} {type(e)} trip:{trip} tripdate={tripdate}')
 		elif engine.name == 'postgresql':
 			try:
-				pd.DataFrame(res).to_sql('torqdata', engine, if_exists='append', index=False)
+				pl.DataFrame(res).to_pandas().to_sql('torqdata', engine, if_exists='append', index=False)
 			except InvalidTextRepresentation as e:
 				logger.error(f'[createtripdata] {e} {type(e)} trip:{trip} tripdate={tripdate}')
 
 def send_torqdata(tfid, dburl):
 	engine = create_engine(dburl, echo=False)
+	insp = inspect(engine)
 	Session = sessionmaker(bind=engine)
 	session = Session()
 
@@ -1404,7 +1406,12 @@ def send_torqdata(tfid, dburl):
 	elif engine.name == 'sqlite':
 		sqlmagic = f'{torqdatasql}{tf.id}'
 	try:
-		res = pd.DataFrame([k for k in session.execute(text(sqlmagic)).all()])
+		# p = pd.DataFrame([f._mapping for f in foo])
+		# get columns
+		# insp.get_columns('torqfiles')
+		# res = pl.DataFrame([k for k in session.execute(text(sqlmagic)).all()])
+		# SELECT * FROM information_schema.columns WHERE TABLE_NAME = ''
+		res = pl.DataFrame(pd.DataFrame([k for k in session.execute(text(sqlmagic)).all()]))
 	except OperationalError as e:
 		logger.error(f'[sendtd] OperationalError tripid={tf.tripid} newtrip={tf} ')
 		logger.error(e)
@@ -1420,18 +1427,29 @@ def send_torqdata(tfid, dburl):
 			tripdate = datetime.strptime(tripdate_[0][:-7],'%Y-%m-%d %H:%M:%S')
 		except TypeError as e:
 			logger.error(f'[sendtd] {e} {type(e)} trip:{tf} td={tripdate_} {type(tripdate_)}')
+		except ValueError as e:
+			tripdate = datetime.strptime(tripdate_[:-7],'%Y-%m-%d %H:%M:%S')
+			#logger.warning(f'[sendtd] error:{type(e)} {e} tripdate trip:{tf} tripdate_={tripdate_} tripdate={tripdate}')
 	else:
 		tripdate = tripdate_
 	try:
-		res.insert(1, "tripdate", [tripdate for k in range(len(res))])
+		tripdateseries = pl.Series(name="tripdate", values=[tripdate for k in range(len(res))])
+		res.insert_at_idx(1, tripdateseries)
+		#res.insert(1, "tripdate", [tripdate for k in range(len(res))])
 	except IndexError as e:
 		logger.error(f'[sendtd] resinsert error:{e} insert tripdate trip:{tf} tripdate={tripdate} res={type(res)} {len(res)}')
+	except ValueError as e:
+		logger.error(f'[sendtd] resinsert error:{type(e)} {e} insert tripdate trip:{tf} tripdate={tripdate} res={type(res)} {len(res)}')
 
 	# tripdate = datetime.strptime(pdata_date ,'%a %b %d %H:%M:%S %Z%z %Y')
 	# tripdate = datetime.strptime(tripdict['tripdate'],'%Y-%m-%d %H:%M:%S')
+	# get colum names
+	# session.execute(text(sqlmagic)).keys()
+	# insp.get_columns('torqfiles')
 	if engine.name == 'mysql' or engine.name == 'sqlite':
 		try:
-			pd.DataFrame(res).to_sql('torqdata', engine, if_exists='append',  index=False)
+			#pl.DataFrame(res).to_pandas().to_sql('torqdata', engine, if_exists='append',  index=False)
+			res.to_pandas().to_sql('torqdata', engine, if_exists='append',  index=False)
 		except OperationalError as e:
 			logger.error(f'[sendtd] {e} {type(e)} trip:{tf} tripdate={tripdate}')
 		except AttributeError as e:
@@ -1442,7 +1460,9 @@ def send_torqdata(tfid, dburl):
 			logger.error(f'[sendtd] {e} {type(e)} trip:{tf} tripdate={tripdate}')
 	elif engine.name == 'postgresql':
 		try:
-			pd.DataFrame(res).to_sql('torqdata', engine, if_exists='append', index=False)
+			pl.DataFrame(res).to_pandas().to_sql('torqdata', engine, if_exists='append', index=False)
+		except ValueError as e:
+			logger.error(f'[!] {e}')
 		except InvalidTextRepresentation as e:
 			logger.error(f'[sendtd] {e} {type(e)} trip:{tf} tripdate={tripdate}')
 	# logger.info(f'[torqdata] tfid={tf.id} tripdate={tripdate}  tf={tf}')
