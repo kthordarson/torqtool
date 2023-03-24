@@ -200,6 +200,7 @@ def torq_worker(tf, dburl):
 	buffer = None
 	results = None
 	datares = None
+	t0 = datetime.now()
 	try:
 		buffer = read_buff(tf.csvfilefixed, tf.id, tf.tripid)
 	except (ValueError, TypeError, PicklingError, ComputeError) as e:
@@ -216,11 +217,13 @@ def torq_worker(tf, dburl):
 		logger.error(f'{type(e)} {e} in send_torqdata')
 		return None
 
+	tx = (datetime.now() - t0).total_seconds()
 	res = {
 		'tf': tf,
 		'bufferlen': len(buffer),
 		'results': results,
-		'datares': datares if datares else None
+		'datares': datares if datares else None,
+		'processing_time': tx,
 	}
 	return res
 
@@ -247,7 +250,7 @@ def main(args):
 		Session = sessionmaker(bind=engine)
 		session = Session()
 	elif args.dbmode == 'sqlite':
-		dburl = f'sqlite:///torqfiskurdb'
+		dburl = f'sqlite:///torqfiskur.db'
 		engine = create_engine(dburl, echo=False, connect_args={'check_same_thread': False})
 		Session = sessionmaker(bind=engine)
 		session = Session()
@@ -271,7 +274,6 @@ def main(args):
 		sys.exit(1)
 	else:
 		# get files from db that are not read
-		t0 = datetime.now()
 		tripstart = timer()
 		dbtorqfiles = session.query(TorqFile).filter(TorqFile.read_flag == 0).all()
 		for torqfile in dbtorqfiles:
@@ -284,13 +286,11 @@ def main(args):
 				for idx, tf in enumerate(dbtorqfiles):
 					t = session.query(TorqFile).filter(TorqFile.id == tf.id).first()
 					tasks.append(executor.submit(torq_worker,t, dburl))
-				logger.debug(f't={datetime.now() - t0} tasks={len(tasks)} mode={args.threadmode}')
 		elif args.threadmode == 'tpe':
 			with ThreadPoolExecutor(max_workers=CPU_COUNT) as executor:
 				for idx, tf in enumerate(dbtorqfiles):
 					t = session.query(TorqFile).filter(TorqFile.id == tf.id).first()
 					tasks.append(executor.submit(torq_worker,t, dburl))
-				logger.debug(f't={datetime.now() - t0} tasks={len(tasks)} mode={args.threadmode}')
 		main_results = []
 		for res in as_completed(tasks):
 			try:
@@ -305,7 +305,8 @@ def main(args):
 				logger.error(f'[!] TypeError {e} res:{res}')
 			else:
 				main_results.append(r)
-		logger.debug(f'[*] done t={datetime.now() - t0} mr={len(main_results)} threadmode={args.threadmode}')
+		total_time = sum([k['processing_time'] for k in main_results])
+		logger.debug(f'[*] done t={datetime.now() - t0} total_time={total_time} mr={len(main_results)} threadmode={args.threadmode}')
 
 
 if __name__ == '__main__':

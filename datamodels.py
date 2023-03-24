@@ -384,7 +384,7 @@ def send_trip_profile(torqfile, session):
 			pdata_date = str(pdata_[1][1:]).strip('\n')
 			tripdate = datetime.strptime(pdata_date ,'%a %b %d %H:%M:%S %Z%z %Y')
 		except (OperationalError, Exception) as e:
-			logger.error(f'[readsend] {e}')
+			logger.error(f'[readsend] code={e.code} args={e.args[0]}')
 			tripdate = None
 		trip_profile = dict([k.split('=') for k in pdata])
 		fuelcost = float(trip_profile['fuelcost'])
@@ -417,7 +417,7 @@ def get_trip_profile(filename):
 			#tripdate = tripdate.strftime('%Y-%m-%d %H:%M:%S')
 		# logger.info(f'[tripdate] {tripdate}')
 		except (OperationalError, Exception) as e:
-			logger.error(f'[readsend] {e}')
+			logger.error(f'[readsend] code={e.code} args={e.args[0]}')
 			tripdate = None
 		trip_profile = dict([k.split('=') for k in pdata])
 		torq_trip = {}
@@ -466,20 +466,20 @@ def send_torqfiles(filelist=None, session=None):
 				logger.error(f'[send_torqfiles] {e}')
 				session.rollback()
 			except OperationalError as e:
-				logger.error(f'[send_torqfiles] {e}')
+				logger.error(f'[send_torqfiles] code={e.code} args={e.args[0]}')
 				session.rollback()
 	session.commit()
 	# newfiles = [k for k in filelist if k['csvhash'] not in hlist]
 	logger.info(f'[send_torqfiles] done files:{len(filelist)}')
 	return newfiles
 
-def send_torqtrips(torqfile, session):
-	trip = get_trip_profile(torqfile.csvfilename)
+def send_torqtrips(torqfile:TorqFile, session:sessionmaker):
+	trip = get_trip_profile(torqfile.csvfilefixed)
 	if trip:
-		tt = Torqtrips(fileid=torqfile.id, csvfilename=str(torqfile.csvfilename), csvhash=torqfile.csvhash, distance=trip['distance'], fuelcost=trip['fuelcost'], fuelused=trip['fuelused'], distancewhilstconnectedtoobd=trip['distancewhilstconnectedtoobd'], tripdate=trip['tripdate'], profile=trip['profile'], triptime=trip['time'])
+		tt = Torqtrips(fileid=torqfile.id, csvfilename=str(torqfile.csvfilefixed), csvhash=torqfile.csvhash, distance=trip['distance'], fuelcost=trip['fuelcost'], fuelused=trip['fuelused'], distancewhilstconnectedtoobd=trip['distancewhilstconnectedtoobd'], tripdate=trip['tripdate'], profile=trip['profile'], triptime=trip['time'])
 		session.add(tt)
 		ntf = session.query(TorqFile).filter(TorqFile.id == torqfile.id).first()
 		ntf.tripid = tt.id
 		session.commit()
 	else:
-		logger.warning(f'[!] no trip profiles from {torqfile.csvfilename} ')
+		logger.warning(f'[!] no trip profiles from {torqfile.csvfilefixed} ')

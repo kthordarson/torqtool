@@ -1,3 +1,4 @@
+*.db
 test*
 torqfiskurdb*
 __pycache__/

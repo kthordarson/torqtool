@@ -1355,7 +1355,7 @@ def create_tripdata(engine, session, newfilelist):
 		try:
 			res = [k for k in session.execute(text(sqlmagic)).all()]
 		except OperationalError as e:
-			logger.error(f'[createtripdata] OperationalError tripid={trip} newtrip={newtrip} ')
+			logger.error(f'[createtripdata] OperationalError code={e.code} args={e.args[0]}  tripid={trip} newtrip={newtrip} ')
 			logger.error(e)
 			logger.error(f'[e] {type(e)}')
 			continue
@@ -1394,7 +1394,7 @@ def send_torqdata(tfid, dburl):
 	try:
 		tf = session.query(TorqFile).filter(TorqFile.id == tfid).first()
 	except OperationalError as e:
-		logger.error(f'[sendtd] OperationalError {e} tripid={tfid}')
+		logger.error(f'[sendtd] OperationalError code={e.code} args={e.args[0]} tripid={tfid}')
 		return None
 	except ProgrammingError as e:
 		logger.error(f'[sendtd] ProgrammingError {e} tripid={tfid}')
@@ -1413,9 +1413,7 @@ def send_torqdata(tfid, dburl):
 		# SELECT * FROM information_schema.columns WHERE TABLE_NAME = ''
 		res = pl.DataFrame(pd.DataFrame([k for k in session.execute(text(sqlmagic)).all()]))
 	except OperationalError as e:
-		logger.error(f'[sendtd] OperationalError tripid={tf.tripid} newtrip={tf} ')
-		logger.error(e)
-		logger.error(f'[e] {type(e)}')
+		logger.error(f'[sendtd] OperationalError code={e.code} args={e.args[0]} tripid={tf.tripid} newtrip={tf} ')
 		return None
 	if len(res) == 0:
 		logger.warning(f'[sendtd] no data for tripid={tf.tripid} newtrip={tf}\nres:{res}')
@@ -1451,7 +1449,7 @@ def send_torqdata(tfid, dburl):
 			#pl.DataFrame(res).to_pandas().to_sql('torqdata', engine, if_exists='append',  index=False)
 			res.to_pandas().to_sql('torqdata', engine, if_exists='append',  index=False)
 		except OperationalError as e:
-			logger.error(f'[sendtd] {e} {type(e)} trip:{tf} tripdate={tripdate}')
+			logger.error(f'[sendtd] code={e.code} args={e.args[0]} trip:{tf} tripdate={tripdate}')
 		except AttributeError as e:
 			logger.error(f'[sendtd] {e} {type(e)} trip:{tf} tripdate={tripdate}')
 		except IntegrityError as e:

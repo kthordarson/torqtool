@@ -135,7 +135,6 @@ def get_csv_files(searchpath: Path,  dbmode=None):
 		'csvfilefixed': f'{k}.fixed.csv', # fixed csv file
 		'size': os.stat(k).st_size,
 		'dbmode': dbmode}) for k in searchpath.glob("**/trackLog.csv") if k.stat().st_size >= MIN_FILESIZE] # and not os.path.exists(f'{k}.fixed.csv')]
-	logger.info(f'[getcsv] sending {len(torqcsvfiles)} files to fixer')
 	for idx, tf in enumerate(torqcsvfiles):
 		if os.path.exists(tf['csvfilefixed']):
 			# logger.warning(f'[g] {tf["csvfilefixed"]} exists')
@@ -143,7 +142,10 @@ def get_csv_files(searchpath: Path,  dbmode=None):
 				fixedlines = reader.readlines()
 		else:
 			fixedlines = fix_csv_file(tf)
-			save_fixed_csv(fixedlines, tf['csvfilefixed'])
+			with open(file=tf['csvfilefixed'], mode='w', encoding='utf-8', newline='') as writer:
+				writer.writelines(fixedlines)
+			logger.debug(f'[gcv] {tf["csvfilefixed"]} saved')
+
 		csvhash = md5(open(torqcsvfiles[idx]['csvfilename'], 'rb').read()).hexdigest()
 		fixedhash = md5(open(torqcsvfiles[idx]['csvfilefixed'], 'rb').read()).hexdigest()
 		torqcsvfiles[idx] = {
@@ -222,7 +224,7 @@ def get_engine(args):
 	if args == 'postgresql':
 		dburl = f"postgresql://{args.dbuser}:{args.dbpass}@{args.dbhost}/{args.dbname}"
 	if args == 'sqlite':
-		dburl = f'sqlite:///torqfiskurdb'
+		dburl = f'sqlite:///torqfiskur.db'
 	else:
 		dburl = 'none'
 	return create_engine(dburl)
