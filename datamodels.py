@@ -448,11 +448,12 @@ def send_torqfiles(filelist=None, session=None):
 		csvhash = tf['csvhash']
 		csvfilefixed = tf['csvfilefixed']
 		fixedhash = tf['fixedhash']
-		if csvhash not in [k.csvhash for k in torqdbfiles]:
+		if csvhash in [k.csvhash for k in torqdbfiles]:
+			logger.warning(f'[send_torqfiles] {csvfile} already in db')
+		else:
 			torqfile = TorqFile(str(csvfile), csvfilefixed, csvhash, fixedhash)
 			session.add(torqfile)
 			try:
-				session.commit()
 				newfiles.append(torqfile)
 			except ProgrammingError as e:
 				logger.error(f'[send_torqfiles] {e}')
@@ -460,8 +461,7 @@ def send_torqfiles(filelist=None, session=None):
 			except OperationalError as e:
 				logger.error(f'[send_torqfiles] {e}')
 				session.rollback()
-		else:
-			logger.warning(f'[send_torqfiles] {csvfile} already in db')
+	session.commit()
 	# newfiles = [k for k in filelist if k['csvhash'] not in hlist]
 	logger.info(f'[send_torqfiles] done files:{len(filelist)}')
 	return newfiles

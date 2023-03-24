@@ -114,12 +114,15 @@ def fix_csv_file(tf):
 	return lines
 
 def save_fixed_csv(lines, nf):
-	if lines:
-		logger.debug(f"[f] saving fixed csv file {nf} lines:{len(lines)}")
-		with open(file=nf, mode='w', encoding='utf-8', newline='') as writer:
-			writer.writelines(lines)
+	if not os.path.exists(nf):
+		if lines:
+			logger.debug(f"[f] saving fixed csv file {nf} lines:{len(lines)}")
+			with open(file=nf, mode='w', encoding='utf-8', newline='') as writer:
+				writer.writelines(lines)
+		else:
+			logger.warning(f'[s] no lines to save {nf}')
 	else:
-		logger.warning(f'[s] no lines to save {nf}')
+		logger.warning(f'[f] {nf} exists...')
 
 def get_csv_files(searchpath: Path,  dbmode=None):
 	# scan searchpath for csv files
@@ -127,16 +130,16 @@ def get_csv_files(searchpath: Path,  dbmode=None):
 		'csvfilename': k, # original csv file
 		'csvfilefixed': f'{k}.fixed.csv', # fixed csv file
 		'size': os.stat(k).st_size,
-		'dbmode': dbmode}) for k in searchpath.glob("**/trackLog.csv") if k.stat().st_size >= MIN_FILESIZE]
+		'dbmode': dbmode}) for k in searchpath.glob("**/trackLog.csv") if k.stat().st_size >= MIN_FILESIZE] # and not os.path.exists(f'{k}.fixed.csv')]
 	logger.info(f'[getcsv] sending {len(torqcsvfiles)} files to fixer')
 	for idx, tf in enumerate(torqcsvfiles):
-		if not os.path.exists(tf['csvfilefixed']):
-			fixedlines = fix_csv_file(tf)
-		else:
-			logger.debug(f'[g] {tf["csvfilefixed"]} exists')
+		if os.path.exists(tf['csvfilefixed']):
+			# logger.warning(f'[g] {tf["csvfilefixed"]} exists')
 			with open(tf['csvfilefixed'], 'r') as reader:
 				fixedlines = reader.readlines()
-		save_fixed_csv(fixedlines, tf['csvfilefixed'])
+		else:
+			fixedlines = fix_csv_file(tf)
+			save_fixed_csv(fixedlines, tf['csvfilefixed'])
 		csvhash = md5(open(torqcsvfiles[idx]['csvfilename'], 'rb').read()).hexdigest()
 		fixedhash = md5(open(torqcsvfiles[idx]['csvfilefixed'], 'rb').read()).hexdigest()
 		torqcsvfiles[idx] = {
