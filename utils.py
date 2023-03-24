@@ -130,7 +130,12 @@ def get_csv_files(searchpath: Path,  dbmode=None):
 		'dbmode': dbmode}) for k in searchpath.glob("**/trackLog.csv") if k.stat().st_size >= MIN_FILESIZE]
 	logger.info(f'[getcsv] sending {len(torqcsvfiles)} files to fixer')
 	for idx, tf in enumerate(torqcsvfiles):
-		fixedlines = fix_csv_file(tf)
+		if not os.path.exists(tf['csvfilefixed']):
+			fixedlines = fix_csv_file(tf)
+		else:
+			logger.debug(f'[g] {tf["csvfilefixed"]} exists')
+			with open(tf['csvfilefixed'], 'r') as reader:
+				fixedlines = reader.readlines()
 		save_fixed_csv(fixedlines, tf['csvfilefixed'])
 		csvhash = md5(open(torqcsvfiles[idx]['csvfilename'], 'rb').read()).hexdigest()
 		fixedhash = md5(open(torqcsvfiles[idx]['csvfilefixed'], 'rb').read()).hexdigest()
