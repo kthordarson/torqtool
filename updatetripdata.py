@@ -1418,7 +1418,7 @@ def send_torqdata(tfid, dburl):
 		logger.error(f'[e] {type(e)}')
 		return None
 	if len(res) == 0:
-		logger.warning(f'[sendtd] no data for tripid={tf.tripid} newtrip={tf} ')
+		logger.warning(f'[sendtd] no data for tripid={tf.tripid} newtrip={tf}\nres:{res}')
 		return None
 	sql_tripdate = text(f'select tripdate from torqtrips where id={tf.tripid}')
 	tripdate_ = session.execute(sql_tripdate).one()._asdict().get('tripdate')
