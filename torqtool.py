@@ -95,15 +95,18 @@ def sqlsender(buffer=None, dburl=None):
 		# r={'fileid': 156, 'tripid': 156, 'status': 'unknown'}
 		tf_err = session.query(TorqFile).filter(TorqFile.id == results['fileid']).first()
 		errmsg = e.args[0]
-		err_row = errmsg.split('row')[-1].strip()
-		err_row = errmsg.split(',')[1].split('at row')[1].strip().strip('")')
-		err_col = errmsg.split(',')[1].split('at row')[0].split("'")[1]
-		logger.warning(f'\n[tosql] code={e.code}\nargs={e.args[0]}\nr={results}\nerr_row: {err_row}\nerr_col:{err_col}\ntorqfile={tf_err} tf_csvfile={buffer["tf_csvfile"]}\n')  # error:{e}
-		#logger.warning(f'[tosql] dataerr code:{e.code} err:{errmsg} err_row: {err_row} err_col:{err_col} r={results}')  # row:{err_row} {buffer.iloc[err_row]}')
-		# buffer = buffer.drop(columns=[err_col])
-		buffer['torqbuffer'] = buffer['torqbuffer'].drop(columns=[err_col])
-		buffer['torqbuffer'].to_pandas().to_pandas().to_sql('torqlogs', con=engine, if_exists='append', index=False)
-		results['status'] = 'warning'
+		try:
+			err_row = errmsg.split('row')[-1].strip()
+			err_row = errmsg.split(',')[1].split('at row')[1].strip().strip('")')
+			err_col = errmsg.split(',')[1].split('at row')[0].split("'")[1]
+			logger.warning(f'\n[tosql] code={e.code}\nargs={e.args[0]}\nr={results}\nerr_row: {err_row}\nerr_col:{err_col}\ntorqfile={tf_err} tf_csvfile={buffer["tf_csvfile"]}\n')  # error:{e}
+			#logger.warning(f'[tosql] dataerr code:{e.code} err:{errmsg} err_row: {err_row} err_col:{err_col} r={results}')  # row:{err_row} {buffer.iloc[err_row]}')
+			# buffer = buffer.drop(columns=[err_col])
+			buffer['torqbuffer'] = buffer['torqbuffer'].drop(columns=[err_col])
+			buffer['torqbuffer'].to_pandas().to_pandas().to_sql('torqlogs', con=engine, if_exists='append', index=False)
+			results['status'] = 'warning'
+		except IndexError as ex:
+			logger.error(f'[!] {type(ex)} {ex}\n[!]{errmsg} tf_err={tf_err}\n{ex}\n{e}')
 	except TypeError as e:
 		errmsg = e.args[0]
 		err_row = errmsg.split('row')[-1].strip()

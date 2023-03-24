@@ -88,6 +88,10 @@ def fix_csv_file(tf):
 			logger.error(f'[fix] {e} {tf["csvfilename"]}')
 			return None
 	badvals = {
+		#'-': '0',
+		"'-'": '0',
+		'"-"': '0',
+		',-,': ',0,',
 		'∞': '0',
 		#',-' : ',0',
 		'â': '0',
