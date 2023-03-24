@@ -1460,9 +1460,9 @@ def send_torqdata(tfid, dburl):
 			logger.error(f'[sendtd] {e} {type(e)} trip:{tf} tripdate={tripdate}')
 	elif engine.name == 'postgresql':
 		try:
-			pl.DataFrame(res).to_pandas().to_sql('torqdata', engine, if_exists='append', index=False)
+			res.to_pandas().to_sql('torqdata', engine, if_exists='append', index=False)
 		except ValueError as e:
-			logger.error(f'[!] {e}')
+			logger.error(f'[!] {e} res:{type(res)} ')
 		except InvalidTextRepresentation as e:
 			logger.error(f'[sendtd] {e} {type(e)} trip:{tf} tripdate={tripdate}')
 	# logger.info(f'[torqdata] tfid={tf.id} tripdate={tripdate}  tf={tf}')
