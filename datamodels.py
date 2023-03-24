@@ -44,7 +44,7 @@ class TorqFile(Base):
 		self.read_flag = 0
 		self.send_flag = 0
 	def __repr__(self):
-		return f'<TorqFile {self.csvfilename} r:{self.read_flag} s:{self.send_flag}>'
+		return f'<TorqFile id:{self.id} {self.csvfilefixed} >'
 
 class Torqtrips(Base):
 	__tablename__ = 'torqtrips'
@@ -71,6 +71,8 @@ class Torqtrips(Base):
 		self.tripdate = tripdate
 		self.profile = profile
 		self.time = triptime
+	def __repr__(self):
+		return f'<Torqtrips id:{self.id} file:{self.fileid} {self.csvfilename}>'
 
 class Torqlogs(Base):
 	__tablename__ = 'torqlogs'
@@ -149,6 +151,8 @@ class Torqlogs(Base):
 		self.tripid = tripid
 		self.fileid = fileid
 
+	def __repr__(self):
+		return f'<Torqdata {self.id} trip:{self.tripid} file:{self.fileid}>'
 
 class Torqdata(Base):
 	__tablename__ = 'torqdata'
@@ -346,6 +350,9 @@ class Torqdata(Base):
 	minintakemanifoldpressurekpa = Column('minintakemanifoldpressurekpa', Float)
 	maxintakemanifoldpressurekpa = Column('maxintakemanifoldpressurekpa', Float)
 	avgintakemanifoldpressurekpa = Column('avgintakemanifoldpressurekpa', Float)
+
+	def __repr__(self):
+		return f'<Torqtrips id:{self.id} date:{self.tripdate} >'
 
 def send_torq_trip(tf=None, tripdict=None, session=None, engine=None):
 	# logger.debug(f'[stt] tf:{tf} `td:{tripdict} s:{session} e:{engine}')

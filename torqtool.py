@@ -1,5 +1,6 @@
 #!/usr/bin/python3
 import argparse
+from pickle import PicklingError
 import asyncio
 import functools
 import sys
@@ -10,6 +11,7 @@ from psycopg2.errors import InvalidTextRepresentation
 from concurrent.futures import (ProcessPoolExecutor, ThreadPoolExecutor, as_completed)
 from threading import Thread
 from datetime import datetime, timedelta
+from dateutil import parser as dateparser
 from timeit import default_timer as timer
 from hashlib import md5
 from multiprocessing import cpu_count
@@ -20,6 +22,7 @@ from pandas import (DataFrame, Index, Series, concat, to_datetime, read_sql)
 from pandas import read_csv as read_csv_pandas
 import polars as pl
 from polars import read_csv as read_csv_polars
+from polars import ComputeError
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import (ArgumentError, CompileError, DataError, IntegrityError, OperationalError, ProgrammingError)
 from sqlalchemy.ext.declarative import declarative_base
@@ -34,24 +37,78 @@ BADVALS = ['-', 'NaN', '0', 'â', r'0']
 
 CPU_COUNT = cpu_count()
 
+def replace(column: str, mapping: dict):
+	if not mapping:
+		raise Exception("Mapping can't be empty")
+	elif not isinstance(mapping, dict):
+		TypeError(f"mapping must be of type dict, but is type: {type(mapping)}")
+	if not isinstance(column, str):
+		raise TypeError(f"column must be of type str, but is type: {type(column)}")
+	branch = pl.when(pl.col(column) == list(mapping.keys())[0]).then(list(mapping.values())[0])
+	for from_value, to_value in mapping.items():
+		try:
+			branch = branch.when(pl.col(column) == from_value).then(to_value)
+		except ComputeError as e:
+			logger.error(e)
+	return branch.otherwise(pl.col(column)).alias(column)
+
+
+def data_replacer(column, from_, to_):
+	branch =  pl.when(pl.col(column) == from_[0]).then(to_[0])
+	# for every value add a `when.then`
+	for (from_value, to_value) in zip(from_, to_):
+		branch = branch.when(pl.col(column) == from_value).then(to_value)
+	return branch.otherwise(pl.col(column)).alias(column)
+	# finish with an `otherwise`
 def read_buff(tf_csvfile, tf_fileid, tf_tripid):
 	start = timer()
-	csvfilefixed = tf_csvfile
 	datefields = ['gpstime', 'devicetime']
+	if not 'fixed' in tf_csvfile:
+		logger.warning(f'[read_buff] {tf_csvfile} is not fixed')
 	try:
 		#torqbuffer = read_csv_pandas(csvfilefixed, delimiter=',', na_values=BADVALS, low_memory=False, parse_dates=datefields, converters={'gpstime': convert_datetime}, dtype=entry_datamap, on_bad_lines='skip')
-		torqbuffer = read_csv_polars(csvfilefixed, ignore_errors=True)
+		torqbuffer = read_csv_polars(tf_csvfile, ignore_errors=True, try_parse_dates=True, use_pyarrow=True)#, dtypes=entry_datamap)
 	except ValueError as e:
-		logger.error(f'[read_buff] {e} tf_csvfile={tf_csvfile} csvfilefixed={csvfilefixed}')
+		logger.error(f'[read_buff] {type(e)} {e} csvfile={tf_csvfile}')
+		return None
+	except ComputeError as e:
+		logger.error(f'[read_buff] {type(e)} {e} csvfile={tf_csvfile}')
 		return None
 	# torqbuffer.fillna(0, inplace=True)
 	# insert fileid and tripid
 	#torqbuffer.insert(1, "fileid", [tf_fileid for k in range(len(torqbuffer))])
 	#torqbuffer.insert(2, "tripid", [tf_tripid for k in range(len(torqbuffer))])
+	# [datetime.strptime(k,'%d-%b-%Y %H:%M:%S') for k in torqbuffer['devicetime']]
+	for k in torqbuffer.columns:
+		mapping = {'-': 0}
+		try:
+			if '-' in torqbuffer[k]:
+				torqbuffer = torqbuffer.with_columns(replace(k,mapping))
+		except ComputeError as e:
+			logger.error(f'[read_buff] {type(e)} {e} csvfile={tf_csvfile} column={k}')
 	fileid_series = pl.Series("fileid", [tf_fileid for k in range(len(torqbuffer))])
 	tripid_series = pl.Series("tripid", [tf_tripid for k in range(len(torqbuffer))])
 	torqbuffer.insert_at_idx(1, fileid_series)
 	torqbuffer.insert_at_idx(2, tripid_series)
+	try:
+		devicetime = pl.Series('devicetime', [datetime.strptime(k,'%d-%b-%Y %H:%M:%S') for k in torqbuffer['devicetime']])
+	except ValueError as e:
+		if 'unconverted data remains' in str(e):
+			devicetime = pl.Series('devicetime', [datetime.strptime(k,'%d-%b-%Y %H:%M:%S.%f') for k in torqbuffer['devicetime']])
+			#logger.warning(f'[read_buff] devicetime strptime {type(e)} {e} csvfile={tf_csvfile}')
+	#gpstime = pl.Series('gpstime', [datetime.strptime(k,'%d-%b-%Y %H:%M:%S') for k in torqbuffer['gpstime']])
+	#devtime = pl.Series('devicetime', [to_datetime(dateparser.parse(k)) for k in torqbuffer['devicetime']])
+	# 'Sun Oct 10 11:58:45 GMT+02:00 2021' does not match format '%d-%b-%Y %H:%M:%S' in read_buff
+	# 'Sun Oct 10 11:58:45 GMT+02:00 2021' does not match format '%a %b %d %H:%M:%S %Z+%z %Y' in read_buff
+	try:
+		#gpstime = pl.Series('gpstime', [dateparser.parse(k) for k in torqbuffer['gpstime']])
+		gpstime = pl.Series('gpstime', [datetime.strptime(k,'%a %b %d %H:%M:%S %Z%z %Y') for k in torqbuffer['gpstime']])
+		torqbuffer = torqbuffer.drop('devicetime')
+		torqbuffer = torqbuffer.drop('gpstime')
+		torqbuffer.insert_at_idx(3, gpstime)
+		torqbuffer.insert_at_idx(4, devicetime)
+	except ComputeError as e:
+		logger.error(f'[read_buff] {type(e)} {e}')
 
 	end = timer()
 	resultbuffer = {
@@ -68,7 +125,12 @@ def sqlsender(buffer=None, dburl=None):
 	engine = create_engine(dburl, echo=False)
 	Session = sessionmaker(bind=engine)
 	session = Session()
-
+	# if not buffer['torqbuffer']:
+	# 	logger.warning(f'[sqlsender] buffer is missing!')
+	# 	return None
+	# if buffer['torqbuffer'].is_empty():
+	# 	logger.warning(f'[sqlsender] buffer is empty {buffer["tf_csvfile"]}')
+	# 	return None
 	results = {
 		'fileid': buffer['fileid'],
 		'tripid': buffer['tripid'],
@@ -76,7 +138,13 @@ def sqlsender(buffer=None, dburl=None):
 		'status': 'unknown'
 	}
 	try:
-		buffer['torqbuffer'].to_pandas().to_sql('torqlogs', con=engine, if_exists='append', index=False)
+		tmpbuf = buffer['torqbuffer'].to_pandas()
+	except ValueError as e:
+		logger.error(f'[tosql] tmpbuf {type(e)} {e}')
+		raise ValueError(f'[tosql] tmpbuf {type(e)} {e}')
+	# logger.info(f'[tosql] tmpbuf.is_empty() {buffer["torqbuffer"].is_empty()} ')
+	try:
+		tmpbuf.to_sql('torqlogs', con=engine, if_exists='append', index=False)
 		results['status'] = 'success'
 	except (OperationalError, ProgrammingError) as e:
 		# todo handle db locks
@@ -93,25 +161,37 @@ def sqlsender(buffer=None, dburl=None):
 		# logger.warning(f'[tosql] {e}')
 	except (pymysql.err.DataError, DataError) as e:
 		# r={'fileid': 156, 'tripid': 156, 'status': 'unknown'}
-		tf_err = session.query(TorqFile).filter(TorqFile.id == results['fileid']).first()
-		errmsg = e.args[0]
-		try:
-			err_row = errmsg.split('row')[-1].strip()
-			err_row = errmsg.split(',')[1].split('at row')[1].strip().strip('")')
-			err_col = errmsg.split(',')[1].split('at row')[0].split("'")[1]
-			logger.warning(f'\n[tosql] code={e.code}\nargs={e.args[0]}\nr={results}\nerr_row: {err_row}\nerr_col:{err_col}\ntorqfile={tf_err} tf_csvfile={buffer["tf_csvfile"]}\n')  # error:{e}
-			#logger.warning(f'[tosql] dataerr code:{e.code} err:{errmsg} err_row: {err_row} err_col:{err_col} r={results}')  # row:{err_row} {buffer.iloc[err_row]}')
-			# buffer = buffer.drop(columns=[err_col])
-			buffer['torqbuffer'] = buffer['torqbuffer'].drop(columns=[err_col])
-			buffer['torqbuffer'].to_pandas().to_pandas().to_sql('torqlogs', con=engine, if_exists='append', index=False)
-			results['status'] = 'warning'
-		except IndexError as ex:
-			logger.error(f'[!] {type(ex)} {ex}\n[!]{errmsg} tf_err={tf_err}\n{ex}\n{e}')
-	except TypeError as e:
+		#logger.error(f'[!]{type(e)}\n{e}\n')
+		tf_csvfile = buffer['tf_csvfile'] # session.query(TorqFile).filter(TorqFile.id == results['fileid']).first()
 		errmsg = e.args[0]
 		err_row = errmsg.split('row')[-1].strip()
-		logger.error(f'[tosql] code:{e.code} err:{errmsg} row:{err_row} {buffer.iloc[err_row]} r={results} tf_csvfile={buffer["tf_csvfile"]}')
-		results['status'] = 'error'
+		err_row = errmsg.split(',')[1].split('at row')[1].strip().strip('")')
+		if 'Incorrect double value' in errmsg:
+			err_col = errmsg.split()[8].split('.')[2].strip("`")
+		else:
+			err_col = errmsg.split(',')[1].split('at row')[0].split("'")[1]
+		# logger.warning(f'\n[tosql] code={e.code}\nargs={e.args[0]}\nr={results}\nerr_row: {err_row}\nerr_col:{err_col}\ntorqfile={tf_err} tf_csvfile={buffer["tf_csvfile"]}\n')  # error:{e}
+		logger.warning(f'\n[tosql] code={e.code} err_row: {err_row} err_col:{err_col} torqfile={tf_csvfile} fileid:{buffer["fileid"]}')  # error:{e}
+		tmpbuf = tmpbuf.drop(columns=err_col)
+		try:
+			#logger.warning(f'[tosql] dataerr code:{e.code} err:{errmsg} err_row: {err_row} err_col:{err_col} r={results}')  # row:{err_row} {buffer.iloc[err_row]}')
+			# buffer = buffer.drop(columns=[err_col])
+			#tmpbuf = tmpbuf.drop([err_col])
+			tmpbuf.to_sql('torqlogs', con=engine, if_exists='append', index=False)
+			# buffer['torqbuffer'] = buffer['torqbuffer'].drop(columns=[err_col])
+			# buffer['torqbuffer'].to_pandas().to_pandas().to_sql('torqlogs', con=engine, if_exists='append', index=False)
+			results['status'] = 'warning'
+		except (IndexError, KeyError, DataError) as ex:
+			errmsg = ex.args[0]
+			logger.error(f'[!] {type(ex)}\nerrmsg: {errmsg}\n')
+	except TypeError as e:
+		logger.error(f'[!]{type(e)}\n{e}\n')
+	except ValueError as e:
+		logger.error(f'[!]{type(e)}\n{e}\n')
+		#errmsg = e.args[0]
+		#err_row = errmsg.split('row')[-1].strip()
+		#logger.error(f'[tosql] code:{e.code} err:{errmsg} row:{err_row} {buffer.iloc[err_row]} r={results} tf_csvfile={buffer["tf_csvfile"]}')
+		#results['status'] = 'error'
 	return results
 
 
@@ -122,17 +202,19 @@ def torq_worker(tf, dburl):
 	datares = None
 	try:
 		buffer = read_buff(tf.csvfilefixed, tf.id, tf.tripid)
-	except ValueError as e:
-		logger.error(e)
+	except (ValueError, TypeError, PicklingError, ComputeError) as e:
+		logger.error(f'[!] {type(e)} {e} in read_buff')
 		return None
 	try:
 		results = sqlsender(buffer, dburl)
-	except ValueError as e:
-		logger.error(e)
+	except (ValueError, TypeError, PicklingError) as e:
+		logger.error(f'[!] {type(e)} {e} in sqlsender buffer.is_empty() {buffer["torqbuffer"].is_empty()}')
+		return None
 	try:
 		datares = send_torqdata(tf.id, dburl)
-	except ValueError as e:
+	except (ValueError, TypeError, PicklingError) as e:
 		logger.error(f'{type(e)} {e} in send_torqdata')
+		return None
 
 	res = {
 		'tf': tf,
