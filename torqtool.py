@@ -67,7 +67,7 @@ def read_buff(tf_csvfile, tf_fileid, tf_tripid):
 		logger.warning(f'[read_buff] {tf_csvfile} is not fixed')
 	try:
 		#torqbuffer = read_csv_pandas(csvfilefixed, delimiter=',', na_values=BADVALS, low_memory=False, parse_dates=datefields, converters={'gpstime': convert_datetime}, dtype=entry_datamap, on_bad_lines='skip')
-		torqbuffer = read_csv_polars(tf_csvfile, ignore_errors=True, try_parse_dates=True, use_pyarrow=True)#, dtypes=entry_datamap)
+		torqbuffer = read_csv_polars(tf_csvfile, ignore_errors=True, try_parse_dates=True, use_pyarrow=True, null_values=['NaN','-','0\x88\x9e'])#, dtypes=entry_datamap)
 	except ValueError as e:
 		logger.error(f'[read_buff] {type(e)} {e} csvfile={tf_csvfile}')
 		return None
@@ -186,8 +186,13 @@ def sqlsender(buffer=None, dburl=None):
 		else:
 			err_col = errmsg.split(',')[1].split('at row')[0].split("'")[1]
 		# logger.warning(f'\n[tosql] code={e.code}\nargs={e.args[0]}\nr={results}\nerr_row: {err_row}\nerr_col:{err_col}\ntorqfile={tf_err} tf_csvfile={buffer["tf_csvfile"]}\n')  # error:{e}
-		logger.warning(f'\n[tosql] code={e.code} err_row: {err_row} err_col:{err_col} torqfile={tf_csvfile} fileid:{buffer["fileid"]}')  # error:{e}
-		tmpbuf = tmpbuf.drop(columns=err_col)
+		logger.warning(f'\n[tosql] {type(e)} code={e.code} err_row: {err_row} err_col:{err_col} torqfile={tf_csvfile} fileid:{buffer["fileid"]}')  # error:{e}
+		# tmpbuf = tmpbuf.drop(columns=err_col)
+		err_row = int(err_row)
+		try:
+			tmpbuf = tmpbuf.drop(index=err_row)
+		except Exception as exc:
+			logger.error(f'[torql] {type(exc)} {exc} err_row: {err_row} err_col:{err_col} torqfile={tf_csvfile} fileid:{buffer["fileid"]}')
 		try:
 			#logger.warning(f'[tosql] dataerr code:{e.code} err:{errmsg} err_row: {err_row} err_col:{err_col} r={results}')  # row:{err_row} {buffer.iloc[err_row]}')
 			# buffer = buffer.drop(columns=[err_col])
