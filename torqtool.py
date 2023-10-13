@@ -90,9 +90,18 @@ def read_buff(tf_csvfile, tf_fileid, tf_tripid):
 	tripid_series = pl.Series("tripid", [tf_tripid for k in range(len(torqbuffer))])
 	torqbuffer.insert_at_idx(1, fileid_series)
 	torqbuffer.insert_at_idx(2, tripid_series)
+	# fix datetime formatting for devicetime and gpstime
 	try:
-		devicetime = pl.Series('devicetime', [datetime.strptime(k,'%d-%b-%Y %H:%M:%S') for k in torqbuffer['devicetime']])
+		if len(torqbuffer['devicetime'][0]) == 28:
+			devicetime = pl.Series('devicetime', [datetime.strptime(k,'%a %b %d %H:%M:%S GMT %Y') for k in torqbuffer['devicetime']])
+		elif len(torqbuffer['devicetime'][0]) == 24:
+			devicetime = pl.Series('devicetime', [datetime.strptime(k,'%d-%b-%Y %H:%M:%S.%f') for k in torqbuffer['devicetime']])
+		elif len(torqbuffer['devicetime'][0]) == 20:
+			devicetime = pl.Series('devicetime', [datetime.strptime(k,'%d-%b-%Y %H:%M:%S') for k in torqbuffer['devicetime']])
+		else:
+			logger.error(f'[read_buff] devicetime format error {torqbuffer["devicetime"][0]}')
 	except ValueError as e:
+		logger.error(f'[read_buff] devicetime {type(e)} {e} csvfile: {tf_csvfile}')
 		if 'unconverted data remains' in str(e):
 			devicetime = pl.Series('devicetime', [datetime.strptime(k,'%d-%b-%Y %H:%M:%S.%f') for k in torqbuffer['devicetime']])
 			#logger.warning(f'[read_buff] devicetime strptime {type(e)} {e} csvfile={tf_csvfile}')
@@ -102,13 +111,19 @@ def read_buff(tf_csvfile, tf_fileid, tf_tripid):
 	# 'Sun Oct 10 11:58:45 GMT+02:00 2021' does not match format '%a %b %d %H:%M:%S %Z+%z %Y' in read_buff
 	try:
 		#gpstime = pl.Series('gpstime', [dateparser.parse(k) for k in torqbuffer['gpstime']])
-		gpstime = pl.Series('gpstime', [datetime.strptime(k,'%a %b %d %H:%M:%S %Z%z %Y') for k in torqbuffer['gpstime']])
-		torqbuffer = torqbuffer.drop('devicetime')
-		torqbuffer = torqbuffer.drop('gpstime')
-		torqbuffer.insert_at_idx(3, gpstime)
-		torqbuffer.insert_at_idx(4, devicetime)
-	except ComputeError as e:
-		logger.error(f'[read_buff] {type(e)} {e}')
+		if len(torqbuffer['gpstime'][0]) == 28:
+			gpstime = pl.Series('gpstime', [datetime.strptime(k,'%a %b %d %H:%M:%S GMT %Y') for k in torqbuffer['gpstime']])
+		elif len(torqbuffer['gpstime'][0]) == 34:
+			gpstime = pl.Series('gpstime', [datetime.strptime(k,'%a %b %d %H:%M:%S %Z%z %Y') for k in torqbuffer['gpstime']])
+		else:
+			logger.error(f'[read_buff] gpstime format error ex: {torqbuffer["gpstime"][0]} len: {len(torqbuffer["gpstime"][0])}')
+	except (ComputeError, ValueError) as e:
+		logger.error(f'[read_buff] {type(e)} {e} csvfile: {tf_csvfile}')
+
+	torqbuffer = torqbuffer.drop('devicetime')
+	torqbuffer = torqbuffer.drop('gpstime')
+	torqbuffer.insert_at_idx(3, gpstime)
+	torqbuffer.insert_at_idx(4, devicetime)
 
 	end = timer()
 	resultbuffer = {
@@ -261,7 +276,7 @@ def main(args):
 		try:
 			database_dropall(engine)
 		except OperationalError as e:
-			logger.error(f'[database_init] {e}')
+			logger.error(f'[database_dropall] {e}')
 
 	filelist = get_csv_files(searchpath=Path(args.path), dbmode=args.dbmode)
 	newfilelist = []
@@ -279,7 +294,7 @@ def main(args):
 		for torqfile in dbtorqfiles:
 			send_torqtrips(torqfile, session)
 		tripend = timer()
-		logger.debug(f'[send_torqtrips] done t0={datetime.now()-t0} time={timedelta(seconds=tripend - tripstart)} starting read_process for {len(dbtorqfiles)} files mode={args.threadmode}')
+		logger.debug(f'[main] sendtrips t0={datetime.now()-t0} time={timedelta(seconds=tripend - tripstart)} starting read_process for {len(dbtorqfiles)} files mode={args.threadmode}')
 		tasks = []
 		if args.threadmode == 'ppe':
 			with ProcessPoolExecutor(max_workers=CPU_COUNT) as executor:
@@ -292,7 +307,9 @@ def main(args):
 					t = session.query(TorqFile).filter(TorqFile.id == tf.id).first()
 					tasks.append(executor.submit(torq_worker,t, dburl))
 		main_results = []
+		res_complete = 0
 		for res in as_completed(tasks):
+			res_complete += 1
 			try:
 				r = res.result()
 			except ProgrammingError as e:
@@ -313,8 +330,8 @@ if __name__ == '__main__':
 	parser = argparse.ArgumentParser(description="torqtool")
 	parser.add_argument("--path", nargs="?", default=".", help="path to csv files", action="store")
 	parser.add_argument("--file", nargs="?", default=".", help="path to single csv file", action="store")
-	parser.add_argument("--gui", default=False, help="Run gui", action="store_true", dest='gui')
-	parser.add_argument("--init-db", default=False, help="init database", action="store_true", dest='init_db')
+	# parser.add_argument("--gui", default=False, help="Run gui", action="store_true", dest='gui')
+	# parser.add_argument("--init-db", default=False, help="init database", action="store_true", dest='init_db')
 	parser.add_argument("--database_dropall", default=False, help="drop database", action="store_true", dest='database_dropall')
 	parser.add_argument("--check-db", default=False, help="check database", action="store_true", dest='check_db')
 	parser.add_argument("--fixcsv", default=False, help="repair csv", action="store_true", dest='fixcsv')

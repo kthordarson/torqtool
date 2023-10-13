@@ -357,3 +357,5 @@ webtorq.py
 wheels/
 x64/
 x86/
+torqfiskur.db.old1
+torqfiskur.db.old2

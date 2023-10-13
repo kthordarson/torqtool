@@ -412,12 +412,16 @@ def get_trip_profile(filename):
 		pdata = [l.strip('\n').lower() for l in pdata_ if not l.startswith('#')]
 		try:
 			pdata_date = str(pdata_[1][1:]).strip('\n')
-			tripdate = datetime.strptime(pdata_date ,'%a %b %d %H:%M:%S %Z%z %Y')
+			if len(pdata_date) == 28:
+				pdata_date = pdata_date.replace('GMT ','')
+				tripdate = datetime.strptime(pdata_date ,'%a %b %d %H:%M:%S %Y')
+			else:
+				tripdate = datetime.strptime(pdata_date ,'%a %b %d %H:%M:%S %Z%z %Y')
 			#tripdate = to_datetime(pdata_date)
 			#tripdate = tripdate.strftime('%Y-%m-%d %H:%M:%S')
 		# logger.info(f'[tripdate] {tripdate}')
-		except (OperationalError, Exception) as e:
-			logger.error(f'[readsend] code={e.code} args={e.args[0]}')
+		except (OperationalError, Exception, ValueError) as e:
+			logger.error(f'[readsend] code={e} pdata_: {pdata_} filename: {filename}') #.code} args={e.args[0]}')
 			tripdate = None
 		trip_profile = dict([k.split('=') for k in pdata])
 		torq_trip = {}
@@ -436,6 +440,7 @@ def get_trip_profile(filename):
 		logger.warning(f'[p] {filename} len={len(pdata_)}')
 
 def database_dropall(engine):
+	logger.warning(f'[database_dropall] engine:{engine}')
 	Base.metadata.drop_all(bind=engine)
 	Base.metadata.create_all(bind=engine)
 
@@ -470,7 +475,7 @@ def send_torqfiles(filelist=None, session=None):
 				session.rollback()
 	session.commit()
 	# newfiles = [k for k in filelist if k['csvhash'] not in hlist]
-	logger.info(f'[send_torqfiles] done files:{len(filelist)}')
+	logger.info(f'[send_torqfiles] done sending filenames:{len(filelist)}')
 	return newfiles
 
 def send_torqtrips(torqfile:TorqFile, session:sessionmaker):
