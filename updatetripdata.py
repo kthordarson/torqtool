@@ -3,7 +3,7 @@
 from psycopg2.errors import InvalidTextRepresentation
 
 from hashlib import md5
-from threading import Thread, active_count
+
 from datetime import datetime
 import polars as pl
 import pandas as pd
@@ -12,7 +12,7 @@ from pandas import DataFrame
 from sqlalchemy import (BIGINT, BigInteger, Column, DateTime, Float, Integer,
                         MetaData, Numeric, String, Table, create_engine,
                         inspect, select, text)
-from sqlalchemy.exc import (ArgumentError, CompileError, DataError, IntegrityError, OperationalError, ProgrammingError)
+from sqlalchemy.exc import (IntegrityError, OperationalError, ProgrammingError)
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy import inspect
 

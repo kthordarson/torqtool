@@ -1,43 +1,30 @@
 #!/usr/bin/python3
 import argparse
 from pickle import PicklingError
-import asyncio
-import functools
 import sys
 from pathlib import Path
 import pymysql
 from sqlalchemy.exc import InternalError
 from psycopg2.errors import InvalidTextRepresentation
 from concurrent.futures import (ProcessPoolExecutor, ThreadPoolExecutor, as_completed)
-from threading import Thread
 from datetime import datetime, timedelta
-from dateutil import parser as dateparser
 from timeit import default_timer as timer
-from hashlib import md5
 from multiprocessing import cpu_count
+import polars as pl
 
 from loguru import logger
 from pandas.errors import EmptyDataError
-from pandas import (DataFrame, Index, Series, concat, to_datetime, read_sql)
-from pandas import read_csv as read_csv_pandas
-import polars as pl
 from polars import read_csv as read_csv_polars
 from polars import ComputeError
-from sqlalchemy import create_engine, text
-from sqlalchemy.exc import (ArgumentError, CompileError, DataError, IntegrityError, OperationalError, ProgrammingError)
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import (DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker)
-from sqlalchemy.orm.exc import DetachedInstanceError
-from datamodels import get_trip_profile, send_torqfiles, send_torq_trip, database_init, sqlite_db_init, send_trip_profile, send_torqtrips,database_dropall
-from datamodels import Torqdata, TorqFile, Torqtrips
-from updatetripdata import  send_torqdata
-from utils import checkcsv, get_csv_files, convert_datetime
-from datamap import entry_datamap
-BADVALS = ['-', 'NaN', '0', 'â', r'0']
+from sqlalchemy import create_engine
+from sqlalchemy.exc import (DataError, IntegrityError, OperationalError, ProgrammingError)
+from sqlalchemy.orm import sessionmaker
+from datamodels import send_torqfiles, database_init, send_torqtrips, database_dropall
+from datamodels import TorqFile
+from updatetripdata import send_torqdata
+from utils import get_csv_files
 
-CPU_COUNT = cpu_count()
-
-def replace(column: str, mapping: dict):
+def mapping_replace(column: str, mapping: dict):
 	if not mapping:
 		raise Exception("Mapping can't be empty")
 	elif not isinstance(mapping, dict):
@@ -52,38 +39,22 @@ def replace(column: str, mapping: dict):
 			logger.error(e)
 	return branch.otherwise(pl.col(column)).alias(column)
 
-
-def data_replacer(column, from_, to_):
-	branch =  pl.when(pl.col(column) == from_[0]).then(to_[0])
-	# for every value add a `when.then`
-	for (from_value, to_value) in zip(from_, to_):
-		branch = branch.when(pl.col(column) == from_value).then(to_value)
-	return branch.otherwise(pl.col(column)).alias(column)
-	# finish with an `otherwise`
 def read_buff(tf_csvfile, tf_fileid, tf_tripid):
-	start = timer()
-	datefields = ['gpstime', 'devicetime']
 	if not 'fixed' in tf_csvfile:
 		logger.warning(f'[read_buff] {tf_csvfile} is not fixed')
 	try:
-		#torqbuffer = read_csv_pandas(csvfilefixed, delimiter=',', na_values=BADVALS, low_memory=False, parse_dates=datefields, converters={'gpstime': convert_datetime}, dtype=entry_datamap, on_bad_lines='skip')
-		torqbuffer = read_csv_polars(tf_csvfile, ignore_errors=True, try_parse_dates=True, use_pyarrow=True, null_values=['NaN','-','0\x88\x9e'])#, dtypes=entry_datamap)
+		torqbuffer = read_csv_polars(tf_csvfile, ignore_errors=True, try_parse_dates=True, use_pyarrow=True, null_values=['NaN','-','0\x88\x9e'])
 	except ValueError as e:
 		logger.error(f'[read_buff] {type(e)} {e} csvfile={tf_csvfile}')
 		return None
 	except ComputeError as e:
 		logger.error(f'[read_buff] {type(e)} {e} csvfile={tf_csvfile}')
 		return None
-	# torqbuffer.fillna(0, inplace=True)
-	# insert fileid and tripid
-	#torqbuffer.insert(1, "fileid", [tf_fileid for k in range(len(torqbuffer))])
-	#torqbuffer.insert(2, "tripid", [tf_tripid for k in range(len(torqbuffer))])
-	# [datetime.strptime(k,'%d-%b-%Y %H:%M:%S') for k in torqbuffer['devicetime']]
-	for k in torqbuffer.columns:
+	for column in torqbuffer.columns: # replace - with 0
 		mapping = {'-': 0}
 		try:
 			if '-' in torqbuffer[k]:
-				torqbuffer = torqbuffer.with_columns(replace(k,mapping))
+				torqbuffer = torqbuffer.with_columns(mapping_replace(column,mapping))
 		except ComputeError as e:
 			logger.error(f'[read_buff] {type(e)} {e} csvfile={tf_csvfile} column={k}')
 	fileid_series = pl.Series("fileid", [tf_fileid for k in range(len(torqbuffer))])
@@ -104,13 +75,7 @@ def read_buff(tf_csvfile, tf_fileid, tf_tripid):
 		logger.error(f'[read_buff] devicetime {type(e)} {e} csvfile: {tf_csvfile}')
 		if 'unconverted data remains' in str(e):
 			devicetime = pl.Series('devicetime', [datetime.strptime(k,'%d-%b-%Y %H:%M:%S.%f') for k in torqbuffer['devicetime']])
-			#logger.warning(f'[read_buff] devicetime strptime {type(e)} {e} csvfile={tf_csvfile}')
-	#gpstime = pl.Series('gpstime', [datetime.strptime(k,'%d-%b-%Y %H:%M:%S') for k in torqbuffer['gpstime']])
-	#devtime = pl.Series('devicetime', [to_datetime(dateparser.parse(k)) for k in torqbuffer['devicetime']])
-	# 'Sun Oct 10 11:58:45 GMT+02:00 2021' does not match format '%d-%b-%Y %H:%M:%S' in read_buff
-	# 'Sun Oct 10 11:58:45 GMT+02:00 2021' does not match format '%a %b %d %H:%M:%S %Z+%z %Y' in read_buff
 	try:
-		#gpstime = pl.Series('gpstime', [dateparser.parse(k) for k in torqbuffer['gpstime']])
 		if len(torqbuffer['gpstime'][0]) == 28:
 			gpstime = pl.Series('gpstime', [datetime.strptime(k,'%a %b %d %H:%M:%S GMT %Y') for k in torqbuffer['gpstime']])
 		elif len(torqbuffer['gpstime'][0]) == 34:
@@ -125,7 +90,6 @@ def read_buff(tf_csvfile, tf_fileid, tf_tripid):
 	torqbuffer.insert_at_idx(3, gpstime)
 	torqbuffer.insert_at_idx(4, devicetime)
 
-	end = timer()
 	resultbuffer = {
 		'torqbuffer' : torqbuffer,
 		'fileid' : tf_fileid,
@@ -134,18 +98,10 @@ def read_buff(tf_csvfile, tf_fileid, tf_tripid):
 	}
 	return resultbuffer
 
-#def data_sender(buffer, session,)
-
 def sqlsender(buffer=None, dburl=None):
 	engine = create_engine(dburl, echo=False)
 	Session = sessionmaker(bind=engine)
 	session = Session()
-	# if not buffer['torqbuffer']:
-	# 	logger.warning(f'[sqlsender] buffer is missing!')
-	# 	return None
-	# if buffer['torqbuffer'].is_empty():
-	# 	logger.warning(f'[sqlsender] buffer is empty {buffer["tf_csvfile"]}')
-	# 	return None
 	results = {
 		'fileid': buffer['fileid'],
 		'tripid': buffer['tripid'],
@@ -194,24 +150,13 @@ def sqlsender(buffer=None, dburl=None):
 		except Exception as exc:
 			logger.error(f'[torql] {type(exc)} {exc} err_row: {err_row} err_col:{err_col} torqfile={tf_csvfile} fileid:{buffer["fileid"]}')
 		try:
-			#logger.warning(f'[tosql] dataerr code:{e.code} err:{errmsg} err_row: {err_row} err_col:{err_col} r={results}')  # row:{err_row} {buffer.iloc[err_row]}')
-			# buffer = buffer.drop(columns=[err_col])
-			#tmpbuf = tmpbuf.drop([err_col])
 			tmpbuf.to_sql('torqlogs', con=engine, if_exists='append', index=False)
-			# buffer['torqbuffer'] = buffer['torqbuffer'].drop(columns=[err_col])
-			# buffer['torqbuffer'].to_pandas().to_pandas().to_sql('torqlogs', con=engine, if_exists='append', index=False)
 			results['status'] = 'warning'
 		except (IndexError, KeyError, DataError) as ex:
 			errmsg = ex.args[0]
 			logger.error(f'[!] {type(ex)}\nerrmsg: {errmsg}\n')
-	except TypeError as e:
+	except (TypeError, ValueError) as e:
 		logger.error(f'[!]{type(e)}\n{e}\n')
-	except ValueError as e:
-		logger.error(f'[!]{type(e)}\n{e}\n')
-		#errmsg = e.args[0]
-		#err_row = errmsg.split('row')[-1].strip()
-		#logger.error(f'[tosql] code:{e.code} err:{errmsg} row:{err_row} {buffer.iloc[err_row]} r={results} tf_csvfile={buffer["tf_csvfile"]}')
-		#results['status'] = 'error'
 	return results
 
 
@@ -274,8 +219,7 @@ def main(args):
 		engine = create_engine(dburl, echo=False, connect_args={'check_same_thread': False})
 		Session = sessionmaker(bind=engine)
 		session = Session()
-		# session.execute(text('PRAGMA foreign_keys=OFF'))
-		sqlite_db_init(engine)
+
 	database_init(engine)
 	if args.database_dropall:
 		try:
@@ -286,11 +230,8 @@ def main(args):
 	filelist = get_csv_files(searchpath=Path(args.path), dbmode=args.dbmode)
 	newfilelist = []
 	newfilelist = send_torqfiles(filelist, session)
-	if newfilelist is None:
+	if newfilelist is None or len(newfilelist) == 0:
 		logger.warning(f'[main]	send_torqfiles returned None')
-		sys.exit(1)
-	elif len(newfilelist) == 0:
-		logger.warning(f'[main]	0 files from send_torqfiles....')
 		sys.exit(1)
 	else:
 		# get files from db that are not read
@@ -301,20 +242,18 @@ def main(args):
 		tripend = timer()
 		logger.debug(f'[main] sendtrips t0={datetime.now()-t0} time={timedelta(seconds=tripend - tripstart)} starting read_process for {len(dbtorqfiles)} files mode={args.threadmode}')
 		tasks = []
-		if args.threadmode == 'ppe':
-			with ProcessPoolExecutor(max_workers=CPU_COUNT) as executor:
+		if args.threadmode == 'ppe': # ProcessPoolExecutor
+			with ProcessPoolExecutor(max_workers=cpu_count()) as executor:
 				for idx, tf in enumerate(dbtorqfiles):
 					t = session.query(TorqFile).filter(TorqFile.id == tf.id).first()
 					tasks.append(executor.submit(torq_worker,t, dburl))
-		elif args.threadmode == 'tpe':
-			with ThreadPoolExecutor(max_workers=CPU_COUNT) as executor:
+		elif args.threadmode == 'tpe': # ThreadPoolExecutor
+			with ThreadPoolExecutor(max_workers=cpu_count()) as executor:
 				for idx, tf in enumerate(dbtorqfiles):
 					t = session.query(TorqFile).filter(TorqFile.id == tf.id).first()
 					tasks.append(executor.submit(torq_worker,t, dburl))
-		main_results = []
-		res_complete = 0
+		total_time = 0
 		for res in as_completed(tasks):
-			res_complete += 1
 			try:
 				r = res.result()
 			except ProgrammingError as e:
@@ -326,9 +265,8 @@ def main(args):
 			except ValueError as e:
 				logger.error(f'[!] TypeError {e} res:{res}')
 			else:
-				main_results.append(r)
-		total_time = sum([k['processing_time'] for k in main_results])
-		logger.debug(f'[*] done t={datetime.now() - t0} total_time={total_time} mr={len(main_results)} threadmode={args.threadmode}')
+				total_time += r['processing_time']
+		logger.debug(f'[*] done t={datetime.now() - t0} total_time={total_time} threadmode={args.threadmode}')
 
 
 if __name__ == '__main__':
@@ -340,7 +278,6 @@ if __name__ == '__main__':
 	parser.add_argument("--database_dropall", default=False, help="drop database", action="store_true", dest='database_dropall')
 	parser.add_argument("--check-db", default=False, help="check database", action="store_true", dest='check_db')
 	parser.add_argument("--fixcsv", default=False, help="repair csv", action="store_true", dest='fixcsv')
-	parser.add_argument("--checkcsv", default=False, help="scan csv path", action="store_true", dest='checkcsv')
 	parser.add_argument("--combinecsv", default=False, help="make big csv", action="store_true", dest='combinecsv')
 	parser.add_argument("--dump-db", nargs="?", default=None, help="dump database to file", action="store")
 	parser.add_argument("--check-file", default=False, help="check database", action="store_true", dest='check_file')

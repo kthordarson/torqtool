@@ -1,19 +1,13 @@
 import os
 import uuid
 from datetime import datetime
-from enum import unique
 from hashlib import md5
 from pathlib import Path
 
 from loguru import logger
-from numpy import nan
-from pandas import DataFrame, Series, concat, to_datetime
-from sqlalchemy import (BIGINT, DDL, BigInteger, Column, DateTime, Float,
-                        ForeignKey, Integer, MetaData, Numeric, String, Table,
-                        create_engine, inspect, select, text)
-from sqlalchemy.exc import (ArgumentError, DataError, IntegrityError, InternalError, OperationalError, ProgrammingError)
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import (DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker)
+from sqlalchemy import (BigInteger, Column, DateTime, Float, ForeignKey, Integer, String, Table, inspect, select, text)
+from sqlalchemy.exc import (OperationalError, ProgrammingError)
+from sqlalchemy.orm import (DeclarativeBase, Mapped, mapped_column, sessionmaker)
 from sqlalchemy_utils import create_database, database_exists
 
 
@@ -439,20 +433,17 @@ def get_trip_profile(filename):
 	else:
 		logger.warning(f'[p] {filename} len={len(pdata_)}')
 
-def database_dropall(engine):
+def database_dropall(engine): # drop all tables
 	logger.warning(f'[database_dropall] engine:{engine}')
 	Base.metadata.drop_all(bind=engine)
 	Base.metadata.create_all(bind=engine)
 
-def database_init(engine):
+def database_init(engine): # create tables
 	Base.metadata.create_all(bind=engine)
 
-def sqlite_db_init(engine):
-	Base.metadata.create_all(bind=engine)
-
-def send_torqfiles(filelist=None, session=None):
+def send_torqfiles(filelist=None, session=None): # returns list of new files
 	#torqdbfiles = session.execute(text(f'select * from torqfiles;')).all()
-	torqdbfiles = session.query(TorqFile).all()
+	torqdbfiles = session.query(TorqFile).all() # get list of files from db
 	hlist = [k.csvhash for k in torqdbfiles]
 	newfiles = []
 	for tf in filelist:
@@ -476,7 +467,7 @@ def send_torqfiles(filelist=None, session=None):
 	session.commit()
 	# newfiles = [k for k in filelist if k['csvhash'] not in hlist]
 	logger.info(f'[send_torqfiles] done sending filenames:{len(filelist)}')
-	return newfiles
+	return newfiles # return list of new files
 
 def send_torqtrips(torqfile:TorqFile, session:sessionmaker):
 	trip = get_trip_profile(torqfile.csvfilefixed)

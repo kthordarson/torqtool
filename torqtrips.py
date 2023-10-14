@@ -1,11 +1,5 @@
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.exc import OperationalError, ProgrammingError
-from sqlalchemy import create_engine, Table, MetaData, Column, Integer, String, inspect, select, Numeric, DateTime, text, BIGINT, BigInteger, Float
-from sqlalchemy.exc import OperationalError, DataError
+from sqlalchemy import create_engine
 import pandas as pd
-from hashlib import md5
-from utils import get_csv_files
-from threading import Thread, active_count
 
 # from datamodels import TorqFile
 
