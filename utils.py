@@ -47,6 +47,10 @@ def fix_csv_file(tf):
 	newcolname = ','.join([re.sub(r'\W', '', col) for col in orgcol]).encode('ascii', 'ignore').decode()
 	newcolname += '\n'
 	newcolname = newcolname.lower()
+	column_count = newcolname.count(',')
+	for idx,line in enumerate(lines):
+		if line.count(',') != column_count:
+			logger.warning(f'[csvfixer] column_count {tf["csvfilename"]} idx: {idx} line: {line.count(",")} != {column_count}')
 	if 'co0ingkmaveragegkm' in newcolname:
 		# logger.warning(f'co0ingkmaveragegkm in {tf["csvfilename"]}')
 		newcolname = newcolname.replace('co0ingkmaveragegkm', 'coingkmaveragegkm')
@@ -54,6 +58,8 @@ def fix_csv_file(tf):
 		# logger.warning(f'co0ingkminstantaneousgkm in {tf["csvfilename"]}')
 		newcolname = newcolname.replace('co0ingkminstantaneousgkm', 'coingkminstantaneousgkm')
 	lines[0] = newcolname
+	if len(data) != len(lines) or len(lines) != len(lines0):
+		logger.warning(f'[csvfixer] fn: {tf["csvfilename"]} data: {len(data)} l0: {len(lines0)} l: {len(lines)}')
 	return lines
 
 def get_csv_files(searchpath: Path,  dbmode=None):
@@ -72,7 +78,7 @@ def get_csv_files(searchpath: Path,  dbmode=None):
 			fixedlines = fix_csv_file(tf)
 			with open(file=tf['csvfilefixed'], mode='w', encoding='utf-8', newline='') as writer:
 				writer.writelines(fixedlines)
-			logger.debug(f'[gcv] {tf["csvfilefixed"]} saved')
+			logger.debug(f'[gcv] {idx}/{len(torqcsvfiles)} {tf["csvfilefixed"]} saved')
 
 		csvhash = md5(open(torqcsvfiles[idx]['csvfilename'], 'rb').read()).hexdigest()
 		fixedhash = md5(open(torqcsvfiles[idx]['csvfilefixed'], 'rb').read()).hexdigest()

@@ -53,10 +53,13 @@ def read_buff(tf_csvfile, tf_fileid, tf_tripid):
 	for column in torqbuffer.columns: # replace - with 0
 		mapping = {'-': 0}
 		try:
-			if '-' in torqbuffer[k]:
+			if '-' in torqbuffer[column]:
 				torqbuffer = torqbuffer.with_columns(mapping_replace(column,mapping))
 		except ComputeError as e:
 			logger.error(f'[read_buff] {type(e)} {e} csvfile={tf_csvfile} column={k}')
+	if torqbuffer.is_empty():
+		logger.error(f'[read_buff] torqbuffer is empty {tf_csvfile}')
+		return None
 	fileid_series = pl.Series("fileid", [tf_fileid for k in range(len(torqbuffer))])
 	tripid_series = pl.Series("tripid", [tf_tripid for k in range(len(torqbuffer))])
 	torqbuffer.insert_at_idx(1, fileid_series)
@@ -169,7 +172,7 @@ def torq_worker(tf, dburl):
 	try:
 		buffer = read_buff(tf.csvfilefixed, tf.id, tf.tripid)
 	except (ValueError, TypeError, PicklingError, ComputeError) as e:
-		logger.error(f'[!] {type(e)} {e} in read_buff')
+		logger.error(f'[!] {type(e)} {e} in read_buff {tf.csvfilefixed}')
 		return None
 	try:
 		results = sqlsender(buffer, dburl)
@@ -240,7 +243,7 @@ def main(args):
 		for torqfile in dbtorqfiles:
 			send_torqtrips(torqfile, session)
 		tripend = timer()
-		logger.debug(f'[main] sendtrips t0={datetime.now()-t0} time={timedelta(seconds=tripend - tripstart)} starting read_process for {len(dbtorqfiles)} files mode={args.threadmode}')
+		logger.debug(f'[main] t0={datetime.now()-t0} time={timedelta(seconds=tripend - tripstart)} starting read_process for {len(dbtorqfiles)} files mode={args.threadmode}')
 		tasks = []
 		if args.threadmode == 'ppe': # ProcessPoolExecutor
 			with ProcessPoolExecutor(max_workers=cpu_count()) as executor:
