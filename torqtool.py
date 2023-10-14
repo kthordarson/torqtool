@@ -1,28 +1,28 @@
 #!/usr/bin/python3
 import argparse
-from pickle import PicklingError
 import sys
-from pathlib import Path
-import pymysql
-from sqlalchemy.exc import InternalError
-from psycopg2.errors import InvalidTextRepresentation
 from concurrent.futures import (ProcessPoolExecutor, ThreadPoolExecutor, as_completed)
 from datetime import datetime, timedelta
-from timeit import default_timer as timer
 from multiprocessing import cpu_count
-import polars as pl
+from pathlib import Path
+from pickle import PicklingError
+from timeit import default_timer as timer
 
+import polars as pl
+import pymysql
 from loguru import logger
 from pandas.errors import EmptyDataError
-from polars import read_csv as read_csv_polars
 from polars import ComputeError
+from polars import read_csv as read_csv_polars
+from psycopg2.errors import InvalidTextRepresentation
 from sqlalchemy import create_engine
-from sqlalchemy.exc import (DataError, IntegrityError, OperationalError, ProgrammingError)
+from sqlalchemy.exc import (DataError, IntegrityError, InternalError, OperationalError, ProgrammingError)
 from sqlalchemy.orm import sessionmaker
-from datamodels import send_torqfiles, database_init, send_torqtrips, database_dropall
-from datamodels import TorqFile
+
+from datamodels import (TorqFile, database_dropall, database_init, send_torqfiles, send_torqtrips)
 from updatetripdata import send_torqdata
 from utils import get_csv_files
+
 
 def mapping_replace(column: str, mapping: dict):
 	if not mapping:
