@@ -9,9 +9,7 @@ import polars as pl
 import pandas as pd
 from loguru import logger
 from pandas import DataFrame
-from sqlalchemy import (BIGINT, BigInteger, Column, DateTime, Float, Integer,
-                        MetaData, Numeric, String, Table, create_engine,
-                        inspect, select, text)
+from sqlalchemy import (BIGINT, BigInteger, Column, DateTime, Float, Integer, MetaData, Numeric, String, Table, create_engine, inspect, select, text)
 from sqlalchemy.exc import (IntegrityError, OperationalError, ProgrammingError)
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy import inspect

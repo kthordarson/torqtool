@@ -140,6 +140,15 @@ class Torqlogs(Base):
 	costpermilekmtripkm = Column('costpermilekmtripkm', Float)
 	intakeairtemperaturef = Column('intakeairtemperaturef', Float)
 	intakemanifoldpressurekpa = Column('intakemanifoldpressurekpa', Float)
+	airfuelratiomeasured1 = Column('airfuelratiomeasured1', Float)
+	ambientairtempf = Column('ambientairtempf', Float)
+	barometricpressurefromvehiclekpa = Column('barometricpressurefromvehiclekpa', Float)
+	o2sensor1widerangecurrentma = Column('o2sensor1widerangecurrentma', Float)
+	o2bank1sensor1widerangeequivalenceratio = Column('o2bank1sensor1widerangeequivalenceratio', Float)
+	o2bank1sensor1widerangevoltagev = Column('o2bank1sensor1widerangevoltagev', Float)
+	positivekineticenergypkekmhr = Column('positivekineticenergypkekmhr', Float)
+	throttlepositionmanifold = Column('throttlepositionmanifold', Float)
+	voltagecontrolmodulev = Column('voltagecontrolmodulev', Float)
 
 	def __init__(self, tripid, fileid):
 		self.tripid = tripid
@@ -466,7 +475,7 @@ def send_torqfiles(filelist=None, session=None): # returns list of new files
 				session.rollback()
 	session.commit()
 	# newfiles = [k for k in filelist if k['csvhash'] not in hlist]
-	logger.info(f'[send_torqfiles] done sending filenames:{len(filelist)}')
+	logger.info(f'[send_torqfiles] done sending newfilelist: {len(newfiles)}')
 	return newfiles # return list of new files
 
 def send_torqtrips(torqfile:TorqFile, session:sessionmaker):
