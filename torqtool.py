@@ -117,15 +117,25 @@ def sqlsender(buffer=None, dburl=None):
 		logger.error(f'[tosql] tmpbuf {type(e)} {e}')
 		raise ValueError(f'[tosql] tmpbuf {type(e)} {e}')
 	# logger.info(f'[tosql] tmpbuf.is_empty() {buffer["torqbuffer"].is_empty()} ')
+	torqfile = session.query(TorqFile).filter(TorqFile.id == results['fileid']).first()
+	torqfile.read_flag = 1
+	session.commit() # set send_flag=1
 	try:
 		tmpbuf.to_sql('torqlogs', con=engine, if_exists='append', index=False)
 		results['status'] = 'success'
+		torqfile = session.query(TorqFile).filter(TorqFile.id == results['fileid']).first()
+		torqfile.send_flag = 1
+		session.commit() # set send_flag=1
 	except (OperationalError, ProgrammingError) as e:
 		# todo handle db locks
 		# todo handle unknown / new columns from csv files
 		# [tosql] code=e3q8 args=(sqlite3.OperationalError) database is locked r={'fileid': 156, 'tripid': 156, 'status': 'unknown'}
 		if e.code == 'e3q8' or 'Unknown column' in e.args[0]:
-			newcol = e.args[0].split()[4].replace("'",'')
+			try:
+				newcol = e.args[0].split()[4].replace("'",'')
+			except IndexError as iexpt:
+				logger.error(f'[tosql] {iexpt} while handling {e}')
+				newcol = 'unknown'
 			logger.warning(f'[tosql] Unknown column {newcol} code={e.code} args={e.args[0]} r={results} tf_csvfile={buffer["tf_csvfile"]}')  # error:{e}
 		else:
 			logger.error(f'[tosql] code={e.code} args={e.args[0]} r={results} tf_csvfile={buffer["tf_csvfile"]}')  # error:{e}
@@ -211,8 +221,10 @@ def main(args):
 	# 8. send csvdata to db
 	# todo: create worker thread for each file, worker reads and processes file and sends to db.
 	# todo: handle new columns from csv files, eg airfuelratiomeasured1
+	# todo: set read_flag and send_flag for processed files
 	t0 = datetime.now()
 	dburl = None
+	engine = None
 	if args.dbmode == 'mysql':
 		dburl = f"mysql+pymysql://{args.dbuser}:{args.dbpass}@{args.dbhost}/{args.dbname}?charset=utf8mb4"
 		engine = create_engine(dburl)
@@ -228,8 +240,14 @@ def main(args):
 		engine = create_engine(dburl, echo=False, connect_args={'check_same_thread': False})
 		Session = sessionmaker(bind=engine)
 		session = Session()
-
-	database_init(engine)
+	if not engine:
+		logger.error(f'no engine')
+		sys.exit(-1)
+	try:
+		database_init(engine)
+	except AssertionError as e:
+		logger.error(f'[maindbinit] {e}')
+		sys.exit(-1)
 	if args.database_dropall:
 		try:
 			database_dropall(engine)
@@ -250,7 +268,7 @@ def main(args):
 		for torqfile in dbtorqfiles:
 			send_torqtrips(torqfile, session)
 		tripend = timer()
-		logger.debug(f'[main] send_torqtrips done t0={datetime.now()-t0} time={timedelta(seconds=tripend - tripstart)} starting read_process for {len(dbtorqfiles)} files mode={args.threadmode}')
+		logger.debug(f'[main] send_torqtrips done t0={datetime.now()-t0} time={timedelta(seconds=tripend - tripstart)} starting read_process for {len(newfilelist)} files mode={args.threadmode}')
 		tasks = []
 		if args.threadmode == 'ppe': # ProcessPoolExecutor
 			with ProcessPoolExecutor(max_workers=cpu_count()) as executor:

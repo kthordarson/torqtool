@@ -1,3 +1,4 @@
+import sys
 import os
 import uuid
 from datetime import datetime
@@ -448,7 +449,11 @@ def database_dropall(engine): # drop all tables
 	Base.metadata.create_all(bind=engine)
 
 def database_init(engine): # create tables
-	Base.metadata.create_all(bind=engine)
+	try:
+		Base.metadata.create_all(bind=engine)
+	except (OperationalError, AssertionError) as e:
+		logger.error(f'[dbinit] {type(e)} {e}')
+		sys.exit(-1)
 
 def send_torqfiles(filelist=None, session=None): # returns list of new files
 	#torqdbfiles = session.execute(text(f'select * from torqfiles;')).all()
