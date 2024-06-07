@@ -19,7 +19,7 @@ def get_trip_data(trip, session):
 			resdata.append(res)
 		except OperationalError as e:
 			if e.code != 'e3q8':
-				logger.warning(f'[err] col={c} code={e.code} {e.statement}')
+				logger.warning(f'[err] col={c} code={e} {e.statement}')
 				res = None
 	logger.info(f'[trip] id:{trip} len={len(resdata)}')
 	return resdata
@@ -47,7 +47,7 @@ if __name__ == '__main__':
 			topdata.append(td)
 			logger.info(f'[td] trip={trip[0]} (len={len(td)} type={type(td)}) toptrips={len(toptrips)} {type(toptrips)} td={len(topdata)}')
 	except OperationalError as e:
-		logger.error(f'[e] code={e.code} args={e.args[0]} {type(toptrips)}')
+		logger.error(f'[e] code={e} args={e.args[0]} {type(toptrips)}')
 	for t in topdata:
 		for c in t:
 			logger.info(f'[topdata] {c} ') #{c.tripid} {c.name} {c.values}')

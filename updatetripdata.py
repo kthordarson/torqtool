@@ -1,6 +1,5 @@
 # todo fix [IntegrityError] trip:63 gkpj pymysql.err.IntegrityError 1452 Cannot add or update a child row: a foreign key constraint fails (`torq`.`torqdata`, CONSTRAINT `torqdata_ibfk_1` FOREIGN KEY (`id`) REFERENCES `torqlogs` (`tripid`))') tripdate=2022-12-20 18:03:04
 # todo fix only create tripdata for new trips
-from psycopg2.errors import InvalidTextRepresentation
 
 from hashlib import md5
 
@@ -1353,7 +1352,7 @@ def create_tripdata(engine, session, newfilelist):
 		try:
 			res = [k for k in session.execute(text(sqlmagic)).all()]
 		except OperationalError as e:
-			logger.error(f'[createtripdata] OperationalError code={e.code} args={e.args[0]}  tripid={trip} newtrip={newtrip} ')
+			logger.error(f'[createtripdata] OperationalError code={e} args={e.args[0]}  tripid={trip} newtrip={newtrip} ')
 			logger.error(e)
 			logger.error(f'[e] {type(e)}')
 			continue
@@ -1378,10 +1377,10 @@ def create_tripdata(engine, session, newfilelist):
 		elif engine.name == 'postgresql':
 			try:
 				pl.DataFrame(res).to_pandas().to_sql('torqdata', engine, if_exists='append', index=False)
-			except InvalidTextRepresentation as e:
+			except Exception as e:
 				logger.error(f'[createtripdata] {e} {type(e)} trip:{trip} tripdate={tripdate}')
 
-def send_torqdata(tfid, dburl):
+def send_torqdata(tfid, dburl, debug=False):
 	engine = create_engine(dburl, echo=False)
 	insp = inspect(engine)
 	Session = sessionmaker(bind=engine)
@@ -1391,8 +1390,10 @@ def send_torqdata(tfid, dburl):
 	#session = Session()
 	try:
 		tf = session.query(TorqFile).filter(TorqFile.id == tfid).first()
+		if debug:
+			logger.debug(f'{tfid=} {tf=}')
 	except OperationalError as e:
-		logger.error(f'[sendtd] OperationalError code={e.code} args={e.args[0]} tripid={tfid}')
+		logger.error(f'[sendtd] OperationalError code={e} args={e.args[0]} tripid={tfid}')
 		return None
 	except ProgrammingError as e:
 		logger.error(f'[sendtd] ProgrammingError {e} tripid={tfid}')
@@ -1411,7 +1412,7 @@ def send_torqdata(tfid, dburl):
 		# SELECT * FROM information_schema.columns WHERE TABLE_NAME = ''
 		res = pl.DataFrame(pd.DataFrame([k for k in session.execute(text(sqlmagic)).all()]))
 	except OperationalError as e:
-		logger.error(f'[sendtd] OperationalError code={e.code} args={e.args[0]} tripid={tf.tripid} newtrip={tf} ')
+		logger.error(f'[sendtd] OperationalError code={e} args={e.args[0]} tripid={tf.tripid} newtrip={tf} ')
 		return None
 	if len(res) == 0:
 		logger.warning(f'[sendtd] no data for tripid={tf.tripid} newtrip={tf}\nres:{res}')
@@ -1447,7 +1448,7 @@ def send_torqdata(tfid, dburl):
 			#pl.DataFrame(res).to_pandas().to_sql('torqdata', engine, if_exists='append',  index=False)
 			res.to_pandas().to_sql('torqdata', engine, if_exists='append',  index=False)
 		except OperationalError as e:
-			logger.error(f'[sendtd] code={e.code} args={e.args[0]} trip:{tf} tripdate={tripdate}')
+			logger.error(f'[sendtd] code={e} args={e.args[0]} trip:{tf} tripdate={tripdate}')
 		except AttributeError as e:
 			logger.error(f'[sendtd] {e} {type(e)} trip:{tf} tripdate={tripdate}')
 		except IntegrityError as e:
@@ -1459,7 +1460,73 @@ def send_torqdata(tfid, dburl):
 			res.to_pandas().to_sql('torqdata', engine, if_exists='append', index=False)
 		except ValueError as e:
 			logger.error(f'[!] {e} res:{type(res)} ')
-		except InvalidTextRepresentation as e:
+		except Exception as e:
 			logger.error(f'[sendtd] {e} {type(e)} trip:{tf} tripdate={tripdate}')
-	# logger.info(f'[torqdata] tfid={tf.id} tripdate={tripdate}  tf={tf}')
+	if debug:
+		logger.info(f'[torqdata] tfid={tf.id} tripdate={tripdate}  tf={tf}')
 	engine.dispose()
+
+
+
+
+def send_torqdata_ppe(tfid, session, debug=False):
+	tf = session.query(TorqFile).filter(TorqFile.id == tfid).first()
+	if debug:
+		logger.debug(f'{tfid=} {tf=}')
+	# if dbmode == 'postgresql':
+	# 	sqlmagic = f'{torqdatasql_psql}{tf.id} group by torqtrips.distance,torqtrips.fuelused,torqtrips.fuelcost,torqtrips.time,torqtrips.distancewhilstconnectedtoobd '
+	# elif dbmode == 'mysql':
+	# 	sqlmagic = f'{torqdatasql}{tf.id}'
+	# elif engine.name == 'sqlite':
+	# 	sqlmagic = f'{torqdatasql}{tf.id}'
+	sqlmagic = f'{torqdatasql}{tf.id}'
+	try:
+		res = pl.DataFrame(pd.DataFrame([k for k in session.execute(text(sqlmagic)).all()]))
+	except OperationalError as e:
+		logger.error(f'[sendtd] OperationalError code={e} args={e.args[0]} tripid={tf.tripid} newtrip={tf} ')
+		return None
+	if len(res) == 0:
+		logger.warning(f'[sendtd] no data for tripid={tf.tripid} newtrip={tf}\nres:{res}')
+		return None
+	sql_tripdate = text(f'select tripdate from torqtrips where id={tf.tripid}')
+	tripdate_ = session.execute(sql_tripdate).one()._asdict().get('tripdate')
+	if isinstance(tripdate_, str):
+		try:
+			tripdate = datetime.strptime(tripdate_[0][:-7],'%Y-%m-%d %H:%M:%S')
+		except TypeError as e:
+			logger.error(f'[sendtd] {e} {type(e)} trip:{tf} td={tripdate_} {type(tripdate_)}')
+		except ValueError as e:
+			tripdate = datetime.strptime(tripdate_[:-7],'%Y-%m-%d %H:%M:%S')
+			#logger.warning(f'[sendtd] error:{type(e)} {e} tripdate trip:{tf} tripdate_={tripdate_} tripdate={tripdate}')
+	else:
+		tripdate = tripdate_
+	try:
+		tripdateseries = pl.Series(name="tripdate", values=[tripdate for k in range(len(res))])
+		res.insert_at_idx(1, tripdateseries)
+		#res.insert(1, "tripdate", [tripdate for k in range(len(res))])
+	except IndexError as e:
+		logger.error(f'[sendtd] resinsert error:{e} insert tripdate trip:{tf} tripdate={tripdate} res={type(res)} {len(res)}')
+	except ValueError as e:
+		logger.error(f'[sendtd] resinsert error:{type(e)} {e} insert tripdate trip:{tf} tripdate={tripdate} res={type(res)} {len(res)}')
+
+	if session.connection().dialect.name == 'mysql' or session.connection().dialect.name == 'sqlite':
+		try:
+			#pl.DataFrame(res).to_pandas().to_sql('torqdata', engine, if_exists='append',  index=False)
+			res.to_pandas().to_sql('torqdata', session.get_bind(), if_exists='append',  index=False)
+		except OperationalError as e:
+			logger.error(f'[sendtd] code={e} args={e.args[0]} trip:{tf} tripdate={tripdate}')
+		except AttributeError as e:
+			logger.error(f'[sendtd] {e} {type(e)} trip:{tf} tripdate={tripdate}')
+		except IntegrityError as e:
+			logger.error(f'[sendtd] {e} {type(e)} trip:{tf} tripdate={tripdate}')
+		except ValueError as e:
+			logger.error(f'[sendtd] {e} {type(e)} trip:{tf} tripdate={tripdate}')
+	elif dbmode == 'postgresql':
+		try:
+			res.to_pandas().to_sql('torqdata', session.get_bind(), if_exists='append', index=False)
+		except ValueError as e:
+			logger.error(f'[!] {e} res:{type(res)} ')
+		except Exception as e:
+			logger.error(f'[sendtd] {e} {type(e)} trip:{tf} tripdate={tripdate}')
+	if debug:
+		logger.info(f'[torqdata] tfid={tf.id} tripdate={tripdate}  tf={tf}')

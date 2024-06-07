@@ -9,6 +9,7 @@ from loguru import logger
 from sqlalchemy import (BigInteger, Column, DateTime, Float, ForeignKey, Integer, String, Table, inspect, select, text)
 from sqlalchemy.exc import (OperationalError, ProgrammingError)
 from sqlalchemy.orm import (DeclarativeBase, Mapped, mapped_column, sessionmaker)
+from sqlalchemy.orm import Session
 from sqlalchemy_utils import create_database, database_exists
 
 
@@ -358,7 +359,7 @@ class Torqdata(Base):
 	def __repr__(self):
 		return f'<Torqtrips id:{self.id} date:{self.tripdate} >'
 
-def send_torq_trip(tf=None, tripdict=None, session=None, engine=None):
+def send_torq_trip(tf=None, tripdict=None, session=None, engine=None, debug=False):
 	# logger.debug(f'[stt] tf:{tf} `td:{tripdict} s:{session} e:{engine}')
 	if not tripdict:
 		logger.error(f'[stt] no tripdict tf={tf}')
@@ -377,7 +378,7 @@ def send_torq_trip(tf=None, tripdict=None, session=None, engine=None):
 	session.add(torqtrip)
 	session.commit()
 
-def send_trip_profile(torqfile, session):
+def send_trip_profile(torqfile, session, debug=False):
 	filename = Path(torqfile.csvfilename)
 	p_filename = os.path.join(filename.parent, 'profile.properties')
 	with open(p_filename, 'r') as f:
@@ -388,7 +389,7 @@ def send_trip_profile(torqfile, session):
 			pdata_date = str(pdata_[1][1:]).strip('\n')
 			tripdate = datetime.strptime(pdata_date ,'%a %b %d %H:%M:%S %Z%z %Y')
 		except (OperationalError, Exception) as e:
-			logger.error(f'[readsend] code={e.code} args={e.args[0]}')
+			logger.error(f'[readsend] code={e} args={e.args[0]}')
 			tripdate = None
 		trip_profile = dict([k.split('=') for k in pdata])
 		fuelcost = float(trip_profile['fuelcost'])
@@ -407,7 +408,7 @@ def send_trip_profile(torqfile, session):
 	else:
 		logger.warning(f'[p] {filename} len={len(pdata_)}')
 
-def get_trip_profile(filename):
+def get_trip_profile(filename, debug=False):
 	filename = Path(filename)
 	p_filename = os.path.join(filename.parent, 'profile.properties')
 	with open(p_filename, 'r') as f:
@@ -455,35 +456,40 @@ def database_init(engine): # create tables
 		logger.error(f'[dbinit] {type(e)} {e}')
 		sys.exit(-1)
 
-def send_torqfiles(filelist=None, session=None): # returns list of new files
+def send_torqfiles(filelist=[], session=None, debug=False): # returns list of new files
 	#torqdbfiles = session.execute(text(f'select * from torqfiles;')).all()
-	torqdbfiles = session.query(TorqFile).all() # get list of files from db
+	# torqdbfiles = session.query(TorqFile).all() # get list of files from db
+	torqdbfiles = session.query(TorqFile).filter(TorqFile.send_flag == 0).all() # get list of files from db
 	hlist = [k.csvhash for k in torqdbfiles]
 	newfiles = []
-	for tf in filelist:
+	for idx,tf in enumerate(filelist):
 		csvfile = tf['csvfilename']
 		csvhash = tf['csvhash']
 		csvfilefixed = tf['csvfilefixed']
 		fixedhash = tf['fixedhash']
 		if csvhash in [k.csvhash for k in torqdbfiles]:
-			logger.warning(f'[send_torqfiles] {csvfile} already in db')
+			if debug:
+				logger.warning(f'[st {idx}/{len(filelist)}] {csvfile=} already in db {tf}')
 		else:
+			if debug:
+				logger.info(f'[st {idx}/{len(filelist)}] {csvfile} not in db')
 			torqfile = TorqFile(str(csvfile), csvfilefixed, csvhash, fixedhash)
+			torqfile.send_flag = 1
 			session.add(torqfile)
 			try:
 				newfiles.append(torqfile)
 			except ProgrammingError as e:
-				logger.error(f'[send_torqfiles] {e}')
+				logger.error(f'[st {idx}/{len(filelist)}] {e}')
 				session.rollback()
 			except OperationalError as e:
-				logger.error(f'[send_torqfiles] code={e.code} args={e.args[0]}')
+				logger.error(f'[st {idx}/{len(filelist)}] code={e} args={e.args[0]}')
 				session.rollback()
 	session.commit()
 	# newfiles = [k for k in filelist if k['csvhash'] not in hlist]
-	logger.info(f'[send_torqfiles] done sending newfilelist: {len(newfiles)}')
+	logger.info(f'[st {idx}/{len(filelist)}] done sending newfilelist: {len(newfiles)}')
 	return newfiles # return list of new files
 
-def send_torqtrips(torqfile:TorqFile, session:sessionmaker):
+def send_torqtrips(torqfile:TorqFile, session:Session, debug=False):
 	trip = get_trip_profile(torqfile.csvfilefixed)
 	if trip:
 		tt = Torqtrips(fileid=torqfile.id, csvfilename=str(torqfile.csvfilefixed), csvhash=torqfile.csvhash, distance=trip['distance'], fuelcost=trip['fuelcost'], fuelused=trip['fuelused'], distancewhilstconnectedtoobd=trip['distancewhilstconnectedtoobd'], tripdate=trip['tripdate'], profile=trip['profile'], triptime=trip['time'])
@@ -491,5 +497,7 @@ def send_torqtrips(torqfile:TorqFile, session:sessionmaker):
 		ntf = session.query(TorqFile).filter(TorqFile.id == torqfile.id).first()
 		ntf.tripid = tt.id
 		session.commit()
+		if debug:
+			logger.debug(f"tripdate: {trip.get('tripdate')} dist: {trip.get('distance')} trip:{tt.fileid} file: {ntf.id} filetrip: {ntf.tripid} send: {ntf.send_flag} read: {ntf.read_flag}")
 	else:
 		logger.warning(f'[!] no trip profiles from {torqfile.csvfilefixed} ')

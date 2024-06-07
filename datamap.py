@@ -12,7 +12,7 @@ entry_datamap = {
 'androiddevicebatterylevel':np.float64,
 'averagetripspeedwhilststoppedormovingkmh':np.float64,
 'bearing':np.float64,
-'coingkmaveragegkm':np.float64, 
+'coingkmaveragegkm':np.float64,
 'coingkminstantaneousgkm':np.float64,
 'distancetoemptyestimatedkm':np.float64,
 'distancetravelledwithmilcellitkm':np.float64,
