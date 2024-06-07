@@ -1,229 +1,131 @@
-import argparse
+#!/usr/bin/python3
 import asyncio
-import functools
+from collections.abc import AsyncIterable
+import argparse
 import sys
-from concurrent.futures import (ProcessPoolExecutor, as_completed)
+from concurrent.futures import (ProcessPoolExecutor, ThreadPoolExecutor, as_completed)
 from datetime import datetime, timedelta
-from timeit import default_timer as timer
-from hashlib import md5
 from multiprocessing import cpu_count
+from pathlib import Path
+from pickle import PicklingError
+from timeit import default_timer as timer
 
+import polars as pl
+import pymysql
 from loguru import logger
-from pandas import (DataFrame, Index, Series, concat, read_csv, to_datetime, read_sql)
+from pandas.errors import EmptyDataError
+from polars import ComputeError
+from polars import read_csv as read_csv_polars
 from sqlalchemy import create_engine
-from sqlalchemy.exc import (ArgumentError, CompileError, DataError, IntegrityError, OperationalError, ProgrammingError)
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.exc import (DataError, IntegrityError, InternalError, OperationalError, ProgrammingError)
 from sqlalchemy.orm import sessionmaker
-
-from datamap import entry_datamap
-from datamodels import get_trip_profile, prepdb, send_torq_trip
-from updatetripdata import create_tripdata
-from utils import checkcsv, get_csv_files
-
-BADVALS = ['-', 'NaN', '0', 'â', r'0']
+from sqlalchemy.orm import Session
+from datamodels import (TorqFile, Torqtrips, Torqlogs, Torqdata, database_dropall, database_init, send_torqfiles, send_torqtrips)
+from updatetripdata import send_torqdata, send_torqdata_ppe
+from utils import get_csv_files, get_engine_session, mapping_replace, read_buff, sqlsender, sqlsender_ppe, torq_worker, torq_worker_ppe
 
 
-def convert_datetime(val):
-	newval = 0
-	if val == '-':
-		logger.warning(f'[cd] v:{val} ')
-		return to_datetime('2000-01-01', errors='raise').to_numpy()
-	try:
-		newval = to_datetime(val, errors='raise', infer_datetime_format=False).to_numpy()
-	except AttributeError as e:
-		newval = val.strip()[2:]
-		logger.warning(f'[cd] {e} v:{val} n:{newval}')
-		newval = to_datetime(newval)
-	return newval
+async def scanpath(engine, args):
+	t0 = datetime.now()
+	Session = sessionmaker(bind=engine)
+	session = Session()
 
+	filelist = get_csv_files(searchpath=Path(args.path), dbmode=args.dbmode, debug=args.debug)
+	newfilelist = send_torqfiles(filelist, session, debug=args.debug)
 
-async def read_buff(tf):
-	start = timer()
-	csvhash = tf['fixedhash']
-	csvfilefixed = tf['csvfilefixed']
-	tripid = tf['tripid']
-	datefields = ['gpstime', 'devicetime']
-	torqbuffer = read_csv(csvfilefixed, delimiter=',', na_values=BADVALS, low_memory=False, parse_dates=datefields, converters={'gpstime': convert_datetime}, dtype=entry_datamap)
-	torqbuffer.fillna(0, inplace=True)
-	torqbuffer.insert(1, "tripid", [tripid for k in range(len(torqbuffer))])
-	end = timer()
-	# logger.info(f'[read_buff] {csvfilefixed} tripid={tripid} t={timedelta(seconds=end-start)} csvs:{tf["csvsize"]} csvf:{tf["fixedsize"]} tb:{len(torqbuffer)}')
-	return torqbuffer
+	# get files from db that are not sent
+	tripstart = timer()
+	dbtorqfiles = session.query(TorqFile).filter(TorqFile.read_flag == 1).all() # type: ignore
+	if args.debug:
+		logger.info(f'found {len(dbtorqfiles)} unread files')
+	dbcols = None # session.execute(text('show columns from torqdata')).fetchall() # get column names
+	for torqfile in dbtorqfiles:
+		send_torqtrips(torqfile, session, debug=args.debug)
+		torqfile.send_flag = 1
+		torqfile.read_flag = 1
+		session.add(torqfile)
+		session.commit()
+	tripend = timer()
+	if args.debug:
+		logger.debug(f'[main] send_torqtrips done t0={datetime.now()-t0} time={timedelta(seconds=tripend - tripstart)} starting read_process for {len(newfilelist)} files mode={args.threadmode}')
+	tasks = []
+	loop = asyncio.new_event_loop()
+	async with asyncio.TaskGroup() as tg:
+		for idx, tf in enumerate(dbtorqfiles):
+			#asyncio.set_event_loop(loop)
+			t = session.query(TorqFile).filter(TorqFile.id == tf.id).first()
+			tg.create_task(torq_worker_ppe(t, session, args.debug))
+			#await asyncio.gather(*tasks)
 
+async def collect_info(session) -> AsyncIterable[str]:
+	yield session.query(Torqtrips).count()
+	yield session.query(TorqFile).count()
+	yield session.query(Torqlogs).count()
+	yield session.query(Torqdata).count()
 
-def get_engine(args):
-	if args == 'mysql':
-		dburl = f"mysql+pymysql://{args.dbuser}:{args.dbpass}@{args.dbhost}/{args.dbname}?charset=utf8mb4"
-	# return create_engine(dburl, pool_size=200, max_overflow=0)
-	if args == 'postgresql':
-		# dburl = f"postgresql://postgres:foobar9999@{args.dbhost}/{args.dbname}"
-		dburl = f"postgresql://{args.dbuser}:{args.dbpass}@{args.dbhost}/{args.dbname}"
-	if args == 'sqlite':
-		dburl = f'sqlite:///torqfiskurdb'
-	else:
-		dburl = 'none'
-	return create_engine(dburl)
-
-
-def chunks(l, n):
-	for i in range(0, len(l), n):
-		yield l.iloc[i:i + n]
-
-
-async def sqlsender(buffer=None, con=None, chsize=None, dburl=None):
-	con = create_engine(dburl)
-	try:
-		buffer.to_sql('torqlogs', con=con, if_exists='append', index=False)
-	except (OperationalError, ProgrammingError) as e:
-		logger.warning(f'[tosql] code={e.code} args={e.args[0]}')  # error:{e}
-	except IntegrityError as e:
-		logger.warning(f'[tosql] code={e.code} args={e.args[0]}')
-		# logger.warning(f'[tosql] {e.statement} {e.params}')
-		logger.warning(f'[tosql] {e}')
-	except DataError as e:
-		errmsg = e.args[0]
-		# err_row = errmsg.split('row')[-1].strip()
-		err_row = errmsg.split(',')[1].split('at row')[1].strip().strip('")')
-		err_col = errmsg.split(',')[1].split('at row')[0].split("'")[1]
-		logger.warning(f'[tosql] dataerr code:{e.code} err:{errmsg} err_row: {err_row} err_col:{err_col}')  # row:{err_row} {buffer.iloc[err_row]}')
-		buffer = buffer.drop(columns=[err_col])
-		buffer.to_sql('torqlogs', con=con, if_exists='append', index=False)
-	except TypeError as e:
-		errmsg = e.args[0]
-		err_row = errmsg.split('row')[-1].strip()
-		logger.error(f'[tosql] code:{e.code} err:{errmsg} row:{err_row} {buffer.iloc[err_row]}')
-
-	return f'[sqlsender] done'
-
-
-# tt = torqsendtask(loop=loop_, buffer=tchunk, con=engine, chsize=chsize)
-async def torqsendtask(loop=None, buffer=None, con=None, chsize=None):
-	sendres = await loop.run_in_executor(None, functools.partial(sqlsender, buffer=buffer, con=con, chsize=chsize))
-	logger.debug(f'[sendtask] done b:{len(buffer)} chsize:{chsize}')
-	return sendres
-
-
-async def torqreadtask(loop=None, tf=None):
-	buff = await loop.run_in_executor(None, functools.partial(read_buff, tf=tf))
-	logger.debug(f'[asyncread] done rb:{len(buff)} tf:{tf["csvfilefixed"]}')
-	return buff
-
-
-def fix_nulls(engine):
-	for k in entry_datamap:
-		df = read_sql(f'select {k} from torqlogs where {k} is null', engine)
-		if len(df) >= 1:
-			sqlcmd = f'update torqlogs set {k} = 0 where {k} IS NULL;'
-			engine.execute(sqlcmd)
-			# df0=read_sql(f'select {k} from torqlogs where {k} is null', engine)
-			logger.debug(f'fixnulls k:{k} l:{len(k)}')
-
+async def collect(async_iterable):
+    return [item async for item in async_iterable]
 
 async def main(args):
+	# 1. scan args.path for csv files
+	# 2. check if csv files are in db
+	# 3. if not in db, foreach run fixer, create TorqFile and send to db
+	# 4.
+	# 5. read profile.properties from csvfile folder, foreach, create Torqtrips and send to db
+	# 6. foreach new TorqFile, read fixed csv, create TorqLogs and send to db
+	# 7.
+	# 8. send csvdata to db
+	# todo: create worker thread for each file, worker reads and processes file and sends to db.
+	# todo: handle new columns from csv files, eg airfuelratiomeasured1
+	# todo: set read_flag and send_flag for processed files
 	t0 = datetime.now()
-	Base = declarative_base()
-	dburl = None
-	if args.dbmode == 'mysql':
-		dburl = f"mysql+pymysql://{args.dbuser}:{args.dbpass}@{args.dbhost}/{args.dbname}?charset=utf8mb4"
-	# engine = create_engine(dburl, pool_size=200, max_overflow=0)
-	elif args.dbmode == 'postgresql':
-		# dburl = f"postgresql://postgres:foobar9999@{args.dbhost}/{args.dbname}"
-		dburl = f"postgresql://{args.dbuser}:{args.dbpass}@{args.dbhost}/{args.dbname}"
-	elif args.dbmode == 'sqlite':
-		dburl = f'sqlite:///torqfiskurdb'
-	else:
-		engine = None
-	try:
-		engine = create_engine(dburl)
-		Session = sessionmaker(bind=engine)
-		session = Session()
-	except AttributeError as e:
-		logger.error(f'engine err {e} d:{dburl} {args}')
-		sys.exit(-1)
+	engine, session = get_engine_session(args)
+	if args.database_dropall:
+		try:
+			database_dropall(engine)
+			sys.exit(0)
+		except OperationalError as e:
+			logger.error(f'[main] database_dropall {e}')
+			sys.exit(2)
+		except Exception as e:
+			logger.error(f'[main] database_dropall {type(e)} {e}')
+			sys.exit(2)
+	if args.dbinfo:
+		#info = collect_info()
+		tasks = [
+        asyncio.create_task(collect(collect_info(session))),
+        #asyncio.create_task(collect(iterable())),
+        #asyncio.create_task(collect(iterable()))
+    	]
+		results = await asyncio.gather(*tasks)
+		print(results)
+		#files = session.query(Torqtrips).count()
+		#trips = session.query(Torqtrips).count()
+		#logs = session.query(Torqlogs).count()
+		#data = session.query(Torqdata).count()
+		#logger.info(f'[main] {files=} {trips=} {logs=:,} {data=}')
+		sys.exit(0)
+	if args.scanpath:
+		csvfiles = await scanpath(engine, args)
 
-	filelist_ = get_csv_files(searchpath=args.path, dbmode=args.dbmode)
-	# filelist = [k for k in reversed(sorted(filelist_, key=lambda d: d['fixedsize']) )]
-	filelist = [k for k in sorted(filelist_, key=lambda d: d['csvtimestamp'])]
-	newfilelist = prepdb(filelist, engine, args, dburl, Base)
-	if len(newfilelist) == 0:
-		sys.exit(1)
-	for tidx, f in enumerate(newfilelist):
-		csvfn = f['csvfilename']
-		tprofile = get_trip_profile(csvfn)
-		sendres = send_torq_trip(tf=f, tripdict=tprofile, session=session, engine=engine)
-		newfilelist[tidx]['tripid'] = sendres
-	# logger.debug(f"newfilelist[tidx]['tripid'] {newfilelist[tidx]['tripid']} = {sendres}")
-	# newfilelist = [k for k in reversed(sorted(newfilelist, key=lambda d: d['tripdate']) )]
-	totalbytes_fixed = sum([k['fixedsize'] for k in newfilelist])
-	totalbytes_csv = sum([k['csvsize'] for k in newfilelist])
-	totalbytes_lines = sum([k['buflen'] for k in newfilelist])
-	logger.info(f'[sizes] totalbytes_fixed:{totalbytes_fixed} totalbytes_csv:{totalbytes_csv} totalbytes_lines:{totalbytes_lines} fl:{len(filelist)} nfl:{len(newfilelist)}')
-
-	maxworkers = cpu_count()
-	loop_ = asyncio.get_event_loop()
-	read_tasks = []
-	buffs = []
-	readstart = timer()
-	with ProcessPoolExecutor(max_workers=maxworkers) as executor:
-		read_task_start = timer()
-		for tf in newfilelist:
-			rt = asyncio.create_task(read_buff(tf))
-			read_tasks.append(rt)
-		logger.debug(f'read_tasks:{len(read_tasks)}')
-		buffs = await asyncio.gather(*read_tasks)
-		read_task_end = timer()
-		logger.debug(f'buffs:{len(buffs)} t={timedelta(seconds=read_task_end - read_task_start)}')
-	# with ProcessPoolExecutor(max_workers=maxworkers) as executor:
-	# 	future_to_stuff = [executor.submit(read_buff, tf) for tf in newfilelist]
-	# 	for buffer in as_completed(future_to_stuff):
-	# 		buffres = buffer.result()
-	# 		buffs.append(buffres)
-	# logger.debug(f'[tpe] br:{len(buffres)} b:{len(buffs)}')
-	buffer = [b for b in buffs]
-	mb = concat([b for b in buffer])
-	dbmethod = None
-	chsize = 10000  # int(len(mb) / len(buffer)) # 10000 # int(len(mb) / maxworkers)
-	readend = timer()
-	logger.debug(f'[read] done time={timedelta(seconds=readend - readstart)} b:{len(buffer)} bs:{len(buffs)} mb:{len(mb)} chsize:{chsize}')
-	# chsize = (int(len(mb)/len(buffer))) #  int(totalbytes_lines/len(filelist)) #5000 # (int(len(mb)/len(buffer)))
-	# todo send chunks with threads or processpool
-	sendtasks = []
-	results = None
-	send_start = timer()
-	if args.combinecsv:
-		logger.debug(f'dump csv start')
-		mb.to_csv('torqdump.csv')
-		logger.debug(f'dump csv done')
-	else:
-		with ProcessPoolExecutor(max_workers=maxworkers) as executor:
-			# future_to_stuff = [executor.submit(sqlsender, chunk, engine) for chunk in enumerate(chunks(mb, chsize))]
-			for idx, tchunk in enumerate(chunks(mb, chsize)):
-				# logger.debug(f'[{idx}] sending...')
-				task = asyncio.create_task(sqlsender(buffer=tchunk, dburl=dburl))
-				sendtasks.append(task)
-			logger.debug(f'sendtasks = {len(sendtasks)}')
-			await asyncio.gather(*sendtasks)
-	send_end = timer()
-	fix_start = timer()
-	# fix_nulls(engine)
-	fix_end = timer()
-	up_start = timer()
-	create_tripdata(engine)
-	up_end = timer()
-	logger.info(f'timers readtime={timedelta(seconds=readend - readstart)} sendtime={timedelta(seconds=send_end - send_start)} fixtime={timedelta(seconds=fix_end - fix_start)} uptime={timedelta(seconds=up_end - up_start)}')
 
 
 if __name__ == '__main__':
 	parser = argparse.ArgumentParser(description="torqtool")
+	parser.add_argument('-d', '--debug', default=False, help="debugmode", action="store_true", dest='debug')
+
 	parser.add_argument("--path", nargs="?", default=".", help="path to csv files", action="store")
 	parser.add_argument("--file", nargs="?", default=".", help="path to single csv file", action="store")
-	parser.add_argument("--gui", default=False, help="Run gui", action="store_true", dest='gui')
-	parser.add_argument("--init-db", default=False, help="init database", action="store_true", dest='init_db')
+
+	parser.add_argument('-dbdrop', '--database_dropall', default=False, help="drop database", action="store_true", dest='database_dropall')
 	parser.add_argument("--check-db", default=False, help="check database", action="store_true", dest='check_db')
-	parser.add_argument("--fixcsv", default=False, help="repair csv", action="store_true", dest='fixcsv')
-	parser.add_argument("--checkcsv", default=False, help="scan csv path", action="store_true", dest='checkcsv')
-	parser.add_argument("--combinecsv", default=False, help="make big csv", action="store_true", dest='combinecsv')
 	parser.add_argument("--dump-db", nargs="?", default=None, help="dump database to file", action="store")
+	parser.add_argument("-i", "--info", default=False, help="show dbinfo", action="store_true", dest='dbinfo')
+
+	parser.add_argument("-s", "--scanpath", default=False, help="start scanpath", action="store_true", dest='scanpath')
+
+	parser.add_argument("--fixcsv", default=False, help="repair csv", action="store_true", dest='fixcsv')
+	parser.add_argument("--combinecsv", default=False, help="make big csv", action="store_true", dest='combinecsv')
 	parser.add_argument("--check-file", default=False, help="check database", action="store_true", dest='check_file')
 	parser.add_argument("--webstart", default=False, help="start web listener", action="store_true", dest='web')
 	parser.add_argument("--sqlchunksize", nargs="?", default="1000", help="sql chunk", action="store")
@@ -234,16 +136,11 @@ if __name__ == '__main__':
 	parser.add_argument("--dbhost", default="", help="dbname", action="store")
 	parser.add_argument("--dbuser", default="", help="dbname", action="store")
 	parser.add_argument("--dbpass", default="", help="dbname", action="store")
+	parser.add_argument('--threadmode', default='ppe', help='threadmode ppe/oldppe/tpe', action='store')
+
+	# parser.add_argument("--gui", default=False, help="Run gui", action="store_true", dest='gui')
+	# parser.add_argument("--init-db", default=False, help="init database", action="store_true", dest='init_db')
+
+
 	args = parser.parse_args()
-	t0 = datetime.now()
-	main_start = timer()
-	if args.checkcsv:
-		errchk = checkcsv(args.path)
-		print(f'err len:{len(errchk)}')
-	else:
-		asyncio.run(main(args))
-	main_end = timer()
-	timer1 = datetime.now() - t0
-	timer2 = timedelta(seconds=main_end - main_start)
-	td0 = timer1 - timer2
-	logger.info(f'[main] done time: {timer1} / {timer2} / {td0} dbmode:{args.dbmode}')
+	asyncio.run(main(args))
