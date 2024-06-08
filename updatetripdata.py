@@ -20,10 +20,8 @@ mysql_cmds = {
 					create table if not exists torqfiles
 					(
 						id int primary key not null auto_increment,
-						csvfilename  varchar(255),
-						csvhash varchar(255),
-						csvfilefixed varchar(255),
-						fixedhash varchar(255)
+						csvfile  varchar(255),
+						csvhash varchar(255)
 					);
  """,
 'createlogs' : """
@@ -105,7 +103,7 @@ mysql_cmds = {
 				create table if not exists torqtrips
 				(
 					id int primary key not null auto_increment,
-					csvfilename varchar(255),
+					csvfile varchar(255),
 					csvhash varchar(255),
 					distance double,
 					fuelcost double,
@@ -325,16 +323,14 @@ sqlite_cmds = {
 	create table if not exists torqfiles
 	(
 	id           integer primary key,
-	csvfilename  varchar(255),
-	csvhash      varchar(255),
-	csvfilefixed varchar(255),
-	fixedhash    varchar(255)
+	csvfile  varchar(255),
+	csvhash      varchar(255)
 	);
 """,
 'createtrips' : """
 	create table if not exists torqtrips	(
 	id int integer primary key,
-	csvfilename varchar(255),
+	csvfile varchar(255),
 	csvhash varchar(255),
 	distance int,
 	fuelcost int,
@@ -628,10 +624,9 @@ postgresql_cmds= {
  create table if not exists torqfiles
 (
 id int generated always as identity PRIMARY KEY,
-csvfilename  varchar(255),
-csvhash varchar(255),
-csvfilefixed varchar(255),
-fixedhash varchar(255)
+csvfile  varchar(255),
+csvhash varchar(255)
+
 );
 """,
 'createlogs' : """
@@ -714,7 +709,7 @@ create table if not exists torqlogs
 create table if not exists torqtrips
 (
 	id int generated always as identity PRIMARY KEY,
-	csvfilename varchar(255),
+	csvfile varchar(255),
 	csvhash varchar(255),
 	distance double precision,
 	fuelcost double precision,
@@ -1480,6 +1475,8 @@ def send_torqdata_ppe(tfid, session, debug=False):
 	# elif engine.name == 'sqlite':
 	# 	sqlmagic = f'{torqdatasql}{tf.id}'
 	sqlmagic = f'{torqdatasql}{tf.id}'
+	if debug:
+		print(f'\nsqlmagic={sqlmagic}\n')
 	try:
 		res = pl.DataFrame(pd.DataFrame([k for k in session.execute(text(sqlmagic)).all()]))
 	except OperationalError as e:
@@ -1489,7 +1486,11 @@ def send_torqdata_ppe(tfid, session, debug=False):
 		logger.warning(f'[sendtd] no data for tripid={tf.tripid} newtrip={tf}\nres:{res}')
 		return None
 	sql_tripdate = text(f'select tripdate from torqtrips where id={tf.tripid}')
-	tripdate_ = session.execute(sql_tripdate).one()._asdict().get('tripdate')
+	try:
+		tripdate_ = session.execute(sql_tripdate).one()._asdict().get('tripdate')
+	except OperationalError as e:
+		logger.error(f'{e} {tf=}')
+		raise e
 	if isinstance(tripdate_, str):
 		try:
 			tripdate = datetime.strptime(tripdate_[0][:-7],'%Y-%m-%d %H:%M:%S')
@@ -1521,12 +1522,12 @@ def send_torqdata_ppe(tfid, session, debug=False):
 			logger.error(f'[sendtd] {e} {type(e)} trip:{tf} tripdate={tripdate}')
 		except ValueError as e:
 			logger.error(f'[sendtd] {e} {type(e)} trip:{tf} tripdate={tripdate}')
-	elif dbmode == 'postgresql':
-		try:
-			res.to_pandas().to_sql('torqdata', session.get_bind(), if_exists='append', index=False)
-		except ValueError as e:
-			logger.error(f'[!] {e} res:{type(res)} ')
-		except Exception as e:
-			logger.error(f'[sendtd] {e} {type(e)} trip:{tf} tripdate={tripdate}')
-	if debug:
-		logger.info(f'[torqdata] tfid={tf.id} tripdate={tripdate}  tf={tf}')
+	# elif dbmode == 'postgresql':
+	# 	try:
+	# 		res.to_pandas().to_sql('torqdata', session.get_bind(), if_exists='append', index=False)
+	# 	except ValueError as e:
+	# 		logger.error(f'[!] {e} res:{type(res)} ')
+	# 	except Exception as e:
+	# 		logger.error(f'[sendtd] {e} {type(e)} trip:{tf} tripdate={tripdate}')
+	# if debug:
+	# 	logger.info(f'[torqdata] tfid={tf.id} tripdate={tripdate}  tf={tf}')

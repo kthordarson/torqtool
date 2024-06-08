@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from hashlib import md5
 from pathlib import Path
-
+import pandas as pd
 from loguru import logger
 from sqlalchemy import (BigInteger, Column, DateTime, Float, ForeignKey, Integer, String, Table, inspect, select, text)
 from sqlalchemy.exc import (OperationalError, ProgrammingError)
@@ -25,28 +25,28 @@ class TorqFile(Base):
 	id: Mapped[int] = mapped_column(primary_key=True)
 	tripid = Column('tripid', Integer)
 	# tripid: Mapped[int] = mapped_column(ForeignKey('torqtrips.id'))
-	csvfilename = Column('csvfilename', String(255))
-	csvfilefixed = Column('csvfilefixed', String(255))
+	csvfile = Column('csvfile', String(255))
 	csvhash = Column('csvhash', String(255))
-	fixedhash = Column('fixedhash', String(255))
 	read_flag = Column('read_flag', Integer)
 	send_flag = Column('send_flag', Integer)
+	fixed_flag = Column('fixed_flag', Integer)
 
-	def __init__(self, csvfilename, csvfilefixed, csvhash, fixedhash):
-		self.csvfilename = csvfilename
-		self.csvfilefixed = csvfilefixed
+	def __init__(self, csvfile, csvhash):
+		self.csvfile = csvfile
 		self.csvhash = csvhash
-		self.fixedhash = fixedhash
 		self.read_flag = 0
 		self.send_flag = 0
+		self.fixed_flag = 0
+
 	def __repr__(self):
-		return f'<TorqFile id:{self.id} {self.csvfilefixed} >'
+		fn = self.csvfile.split('/')[-1]
+		return f'<TorqFile id:{self.id} {fn} r:{self.read_flag} s:{self.send_flag} f:{self.fixed_flag} >'
 
 class Torqtrips(Base):
 	__tablename__ = 'torqtrips'
 	id: Mapped[int] = mapped_column(primary_key=True)
 	fileid: Mapped[int] = mapped_column(ForeignKey('torqfiles.id'))
-	csvfilename = Column('csvfilename', String(255))
+	csvfile = Column('csvfile', String(255))
 	csvhash = Column('csvhash', String(255))
 	distance = Column('distance', BigInteger)
 	fuelcost = Column('fuelcost', BigInteger)
@@ -55,10 +55,10 @@ class Torqtrips(Base):
 	tripdate = Column('tripdate', DateTime)
 	profile = Column('profile', String(255))
 	time = Column('time', BigInteger)
-	#tt = Torqtrips(fileid=torqfile.id, csvfilename=str(torqfile.csvfilename), csvhash=torqfile.csvhash, distance=trip['distance'], fuelcost=trip['fuelcost'], fuelused=trip['fuelused'], distancewhilstconnectedtoobd=trip['distancewhilstconnectedtoobd'], tripdate=trip['tripdate'], profile=trip['profile'], triptime=trip['time'])
-	def __init__(self, fileid=None, csvfilename=None, csvhash=None, distance=None, fuelcost=None, fuelused=None, distancewhilstconnectedtoobd=None, tripdate=None, profile=None, triptime=None):
+	#tt = Torqtrips(fileid=torqfile.id, csvfile=str(torqfile.csvfile), csvhash=torqfile.csvhash, distance=trip['distance'], fuelcost=trip['fuelcost'], fuelused=trip['fuelused'], distancewhilstconnectedtoobd=trip['distancewhilstconnectedtoobd'], tripdate=trip['tripdate'], profile=trip['profile'], triptime=trip['time'])
+	def __init__(self, fileid=None, csvfile=None, csvhash=None, distance=None, fuelcost=None, fuelused=None, distancewhilstconnectedtoobd=None, tripdate=None, profile=None, triptime=None):
 		self.fileid = fileid
-		self.csvfilename = csvfilename
+		self.csvfile = csvfile
 		self.csvhash = csvhash
 		self.distance = distance
 		self.fuelcost = fuelcost
@@ -68,7 +68,7 @@ class Torqtrips(Base):
 		self.profile = profile
 		self.time = triptime
 	def __repr__(self):
-		return f'<Torqtrips id:{self.id} file:{self.fileid} {self.csvfilename}>'
+		return f'<Torqtrips id:{self.id} file:{self.fileid} {self.csvfile}>'
 
 class Torqlogs(Base):
 	__tablename__ = 'torqlogs'
@@ -79,34 +79,25 @@ class Torqlogs(Base):
 	devicetime = Column('devicetime', DateTime)
 	longitude = Column('longitude', Float)
 	latitude = Column('latitude', Float)
-	gpsspeedkmh  = Column('gpsspeedkmh', Float)
 	horizontaldilutionofprecision = Column('horizontaldilutionofprecision', Float)
-	altitudem = Column('altitudem', Float)
 	bearing = Column('bearing', Float)
-	gravityxg = Column('gravityxg', Float)
-	gravityyg = Column('gravityyg', Float)
-	gravityzg = Column('gravityzg', Float)
+	coingkmaveragegkm = Column('coingkmaveragegkm', Float)
+	coingkminstantaneousgkm = Column('coingkminstantaneousgkm', Float)
+	fuelflowrateminuteccmin = Column('fuelflowrateminuteccmin', Float)
+	milespergalloninstantmpg = Column('milespergalloninstantmpg', Float)
+	milespergallonlongtermaveragempg = Column('milespergallonlongtermaveragempg', Float)
 	accelerationsensortotalg = Column('accelerationsensortotalg', Float)
 	accelerationsensorxaxisg = Column('accelerationsensorxaxisg', Float)
 	accelerationsensoryaxisg = Column('accelerationsensoryaxisg', Float)
 	accelerationsensorzaxisg = Column('accelerationsensorzaxisg', Float)
-	actualenginetorque = Column('actualenginetorque', Float)
 	androiddevicebatterylevel = Column('androiddevicebatterylevel', Float)
-	averagetripspeedwhilststoppedormovingkmh = Column('averagetripspeedwhilststoppedormovingkmh', Float)
-	coingkmaveragegkm = Column('coingkmaveragegkm', Float)
-	coingkminstantaneousgkm = Column('coingkminstantaneousgkm', Float)
 	distancetoemptyestimatedkm = Column('distancetoemptyestimatedkm', Float)
-	distancetravelledwithmilcellitkm = Column('distancetravelledwithmilcellitkm', Float)
-	enginecoolanttemperaturef = Column('enginecoolanttemperaturef', Float)
 	engineload = Column('engineload', Float)
 	enginerpmrpm = Column('enginerpmrpm', Float)
 	fuelcosttripcost = Column('fuelcosttripcost', Float)
 	fuelflowratehourlhr = Column('fuelflowratehourlhr', Float)
-	fuelflowrateminuteccmin = Column('fuelflowrateminuteccmin', Float)
-	fuelrailpressurekpa = Column('fuelrailpressurekpa', Float)
 	fuelremainingcalculatedfromvehicleprofile = Column('fuelremainingcalculatedfromvehicleprofile', Float)
 	fuelusedtripl = Column('fuelusedtripl', Float)
-	fuelpressurekpa = Column('fuelpressurekpa', Float)
 	gpsaccuracym = Column('gpsaccuracym', Float)
 	gpsaltitudem = Column('gpsaltitudem', Float)
 	gpsbearing = Column('gpsbearing', Float)
@@ -116,41 +107,64 @@ class Torqlogs(Base):
 	gpsvsobdspeeddifferencekmh = Column('gpsvsobdspeeddifferencekmh', Float)
 	horsepoweratthewheelshp = Column('horsepoweratthewheelshp', Float)
 	kilometersperlitreinstantkpl = Column('kilometersperlitreinstantkpl', Float)
-	kilometersperlitrelongtermaveragekpl = Column('kilometersperlitrelongtermaveragekpl', Float)
 	litresper100kilometerinstantl100km = Column('litresper100kilometerinstantl100km', Float)
-	litresper100kilometerlongtermaveragel100km = Column('litresper100kilometerlongtermaveragel100km', Float)
 	massairflowrategs = Column('massairflowrategs', Float)
-	milespergalloninstantmpg = Column('milespergalloninstantmpg', Float)
-	milespergallonlongtermaveragempg = Column('milespergallonlongtermaveragempg', Float)
-	speedgpskmh = Column('speedgpskmh', Float)
 	speedobdkmh = Column('speedobdkmh', Float)
-	torqueftlb = Column('torqueftlb', Float)
+	voltageobdadapterv = Column('voltageobdadapterv', Float)
+	volumetricefficiencycalculated = Column('volumetricefficiencycalculated', Float)
+	speedgpskmh = Column('speedgpskmh', Float)
+	actualenginetorque = Column('actualenginetorque', Float)
+	averagetripspeedwhilststoppedormovingkmh = Column('averagetripspeedwhilststoppedormovingkmh', Float)
+	distancetravelledwithmilcellitkm = Column('distancetravelledwithmilcellitkm', Float)
+	kilometersperlitrelongtermaveragekpl = Column('kilometersperlitrelongtermaveragekpl', Float)
+	litresper100kilometerlongtermaveragel100km = Column('litresper100kilometerlongtermaveragel100km', Float)
 	tripaveragekplkpl = Column('tripaveragekplkpl', Float)
 	tripaveragelitres100kml100km = Column('tripaveragelitres100kml100km', Float)
 	tripaveragempgmpg = Column('tripaveragempgmpg', Float)
 	tripdistancekm = Column('tripdistancekm', Float)
 	tripdistancestoredinvehicleprofilekm = Column('tripdistancestoredinvehicleprofilekm', Float)
-	triptimesincejourneystarts = Column('triptimesincejourneystarts', Float)
-	triptimewhilstmovings = Column('triptimewhilstmovings', Float)
-	triptimewhilststationarys = Column('triptimewhilststationarys', Float)
-	turboboostvacuumgaugebar = Column('turboboostvacuumgaugebar', Float)
-	voltageobdadapterv = Column('voltageobdadapterv', Float)
-	volumetricefficiencycalculated = Column('volumetricefficiencycalculated', Float)
-	enginekwatthewheelskw = Column('enginekwatthewheelskw', Float)
-	averagetripspeedwhilstmovingonlykmh = Column('averagetripspeedwhilstmovingonlykmh', Float)
-	costpermilekminstantkm = Column('costpermilekminstantkm', Float)
-	costpermilekmtripkm = Column('costpermilekmtripkm', Float)
+	triptimesincejourneystarts = Column('triptimesincejourneystarts', DateTime)
+	triptimewhilstmovings = Column('triptimewhilstmovings', DateTime)
+	triptimewhilststationarys = Column('triptimewhilststationarys', DateTime)
+	gpsspeedkmh = Column('gpsspeedkmh', Float)
+	altitudem = Column('altitudem', Float)
+	gravityxg = Column('gravityxg', Float)
+	gravityyg = Column('gravityyg', Float)
+	gravityzg = Column('gravityzg', Float)
+	enginecoolanttemperaturef = Column('enginecoolanttemperaturef', Float)
+	fuelrailpressurekpa = Column('fuelrailpressurekpa', Float)
 	intakeairtemperaturef = Column('intakeairtemperaturef', Float)
 	intakemanifoldpressurekpa = Column('intakemanifoldpressurekpa', Float)
+	torqueftlb = Column('torqueftlb', Float)
+	turboboostvacuumgaugebar = Column('turboboostvacuumgaugebar', Float)
+	enginekwatthewheelskw = Column('enginekwatthewheelskw', Float)
+	averagetripspeedwhilstmovingonlykmh = Column('averagetripspeedwhilstmovingonlykmh', Float)
 	airfuelratiomeasured1 = Column('airfuelratiomeasured1', Float)
-	ambientairtempf = Column('ambientairtempf', Float)
-	barometricpressurefromvehiclekpa = Column('barometricpressurefromvehiclekpa', Float)
 	o2sensor1widerangecurrentma = Column('o2sensor1widerangecurrentma', Float)
 	o2bank1sensor1widerangeequivalenceratio = Column('o2bank1sensor1widerangeequivalenceratio', Float)
 	o2bank1sensor1widerangevoltagev = Column('o2bank1sensor1widerangevoltagev', Float)
 	positivekineticenergypkekmhr = Column('positivekineticenergypkekmhr', Float)
 	throttlepositionmanifold = Column('throttlepositionmanifold', Float)
 	voltagecontrolmodulev = Column('voltagecontrolmodulev', Float)
+	costpermilekminstantkm = Column('costpermilekminstantkm', Float)
+	costpermilekmtripkm = Column('costpermilekmtripkm', Float)
+	gpsspeedmeterssecond = Column('gpsspeedmeterssecond', Float)
+	altitude = Column('altitude', Float)
+	gx = Column('gx', Float)
+	gy = Column('gy', Float)
+	gz = Column('gz', Float)
+	gcalibrated = Column('gcalibrated', Float)
+	enginecoolanttemperaturec = Column('enginecoolanttemperaturec', Float)
+	fuelrailpressurepsi = Column('fuelrailpressurepsi', Float)
+	intakeairtemperaturec = Column('intakeairtemperaturec', Float)
+	intakemanifoldpressurepsi = Column('intakemanifoldpressurepsi', Float)
+	torquenm = Column('torquenm', Float)
+	turboboostvacuumgaugepsi = Column('turboboostvacuumgaugepsi', Float)
+	barometricpressurefromvehiclekpa = Column('barometricpressurefromvehiclekpa', Float)
+	ambientairtempf = Column('ambientairtempf', Float)
+	barometricpressurefromvehiclepsi = Column('barometricpressurefromvehiclepsi', Float)
+	ambientairtempc = Column('ambientairtempc', Float)
+	fuelpressurekpa = Column('fuelpressurekpa', Float)
 
 	def __init__(self, tripid, fileid):
 		self.tripid = tripid
@@ -359,91 +373,6 @@ class Torqdata(Base):
 	def __repr__(self):
 		return f'<Torqtrips id:{self.id} date:{self.tripdate} >'
 
-def send_torq_trip(tf=None, tripdict=None, session=None, engine=None, debug=False):
-	# logger.debug(f'[stt] tf:{tf} `td:{tripdict} s:{session} e:{engine}')
-	if not tripdict:
-		logger.error(f'[stt] no tripdict tf={tf}')
-		return None
-	fileid = tf.id
-	distance = tripdict['distance']
-	fuelcost = tripdict['fuelcost']
-	fuelused = tripdict['fuelused']
-	distancewhilstconnectedtoobd = tripdict['distancewhilstconnectedtoobd']
-	time = tripdict['time']
-	tripdate = datetime.strptime(tripdict['tripdate'],'%Y-%m-%d %H:%M:%S')
-	profile = tripdict['profile']
-	csvfilename = str(tripdict['csvfilename'])
-	csvhash = tripdict['csvhash']
-	torqtrip = Torqtrips(fileid, csvfilename, csvhash, distance, fuelcost, fuelused, distancewhilstconnectedtoobd, tripdate, profile, time)
-	session.add(torqtrip)
-	session.commit()
-
-def send_trip_profile(torqfile, session, debug=False):
-	filename = Path(torqfile.csvfilename)
-	p_filename = os.path.join(filename.parent, 'profile.properties')
-	with open(p_filename, 'r') as f:
-		pdata_ = f.readlines()
-	if len(pdata_) == 8:
-		pdata = [l.strip('\n').lower() for l in pdata_ if not l.startswith('#')]
-		try:
-			pdata_date = str(pdata_[1][1:]).strip('\n')
-			tripdate = datetime.strptime(pdata_date ,'%a %b %d %H:%M:%S %Z%z %Y')
-		except (OperationalError, Exception) as e:
-			logger.error(f'[readsend] code={e} args={e.args[0]}')
-			tripdate = None
-		trip_profile = dict([k.split('=') for k in pdata])
-		fuelcost = float(trip_profile['fuelcost'])
-		fuelused = float(trip_profile['fuelused'])
-		distancewhilstconnectedtoobd = float(trip_profile['distancewhilstconnectedtoobd'])
-		distance = float(trip_profile['distance'])
-		triptime = float(trip_profile['time'])
-		csvhash = md5(open(filename, 'rb').read()).hexdigest()
-		profile = trip_profile['profile']
-		# fileid, csvfilenae, csvhash, distance, fuelcost, fuelused, distancewhilstconnectedtoobd, tripdate, profile, time):
-		tt = Torqtrips(fileid=torqfile.id, csvfilename=str(filename), csvhash=csvhash, distance=distance, fuelcost=fuelcost, fuelused=fuelused, distancewhilstconnectedtoobd=distancewhilstconnectedtoobd, tripdate=tripdate, profile=profile, triptime=triptime)
-		#tt = Torqtrips(fileid=torqfile.id, csvfilename=str(torqfile.csvfilename), csvhash=torqfile.csvhash, distance=trip['distance'], fuelcost=trip['fuelcost'], fuelused=trip['fuelused'], distancewhilstconnectedtoobd=trip['distancewhilstconnectedtoobd'], tripdate=trip['tripdate'], profile=trip['profile'], triptime=trip['time'])
-		session.add(tt)
-		session.commit()
-		return tt
-	else:
-		logger.warning(f'[p] {filename} len={len(pdata_)}')
-
-def get_trip_profile(filename, debug=False):
-	filename = Path(filename)
-	p_filename = os.path.join(filename.parent, 'profile.properties')
-	with open(p_filename, 'r') as f:
-		pdata_ = f.readlines()
-	if len(pdata_) == 8:
-		pdata = [l.strip('\n').lower() for l in pdata_ if not l.startswith('#')]
-		try:
-			pdata_date = str(pdata_[1][1:]).strip('\n')
-			if len(pdata_date) == 28:
-				pdata_date = pdata_date.replace('GMT ','')
-				tripdate = datetime.strptime(pdata_date ,'%a %b %d %H:%M:%S %Y')
-			else:
-				tripdate = datetime.strptime(pdata_date ,'%a %b %d %H:%M:%S %Z%z %Y')
-			#tripdate = to_datetime(pdata_date)
-			#tripdate = tripdate.strftime('%Y-%m-%d %H:%M:%S')
-		# logger.info(f'[tripdate] {tripdate}')
-		except (OperationalError, Exception, ValueError) as e:
-			logger.error(f'[readsend] code={e} pdata_: {pdata_} filename: {filename}') #.code} args={e.args[0]}')
-			tripdate = None
-		trip_profile = dict([k.split('=') for k in pdata])
-		torq_trip = {}
-		torq_trip['fuelcost'] = float(trip_profile['fuelcost'])
-		torq_trip['fuelused'] = float(trip_profile['fuelused'])
-		torq_trip['distancewhilstconnectedtoobd'] = float(trip_profile['distancewhilstconnectedtoobd'])
-		torq_trip['distance'] = float(trip_profile['distance'])
-		torq_trip['time'] = float(trip_profile['time'])
-		torq_trip['filename'] = p_filename
-		torq_trip['csvfilename'] = str(filename)
-		torq_trip['csvhash'] = md5(open(filename, 'rb').read()).hexdigest()
-		torq_trip['tripdate'] = tripdate
-		torq_trip['profile'] = trip_profile['profile']
-		return torq_trip
-	else:
-		logger.warning(f'[p] {filename} len={len(pdata_)}')
-
 def database_dropall(engine): # drop all tables
 	logger.warning(f'[database_dropall] engine:{engine}')
 	Base.metadata.drop_all(bind=engine)
@@ -457,23 +386,28 @@ def database_init(engine): # create tables
 		sys.exit(-1)
 
 def send_torqfiles(filelist=[], session=None, debug=False): # returns list of new files
+	"""
+	send list of files to db
+	returns list of TorqFile objects to be processed and sent to db
+	"""
 	#torqdbfiles = session.execute(text(f'select * from torqfiles;')).all()
 	# torqdbfiles = session.query(TorqFile).all() # get list of files from db
-	torqdbfiles = session.query(TorqFile).filter(TorqFile.send_flag == 0).all() # get list of files from db
-	hlist = [k.csvhash for k in torqdbfiles]
+	torqdbfiles = session.query(TorqFile).all() # get list of files from db
+	# hlist = pd.DataFrame([session.query(TorqFile.csvhash).all()])
+	hlist = pd.DataFrame(session.query(TorqFile.csvhash).all())
+	if debug:
+		logger.debug(f'filelist: {len(filelist)} dbfiles: {len(torqdbfiles)}  hashes: {len(hlist)}')
 	newfiles = []
 	for idx,tf in enumerate(filelist):
-		csvfile = tf['csvfilename']
+		csvfile = tf['csvfile']
 		csvhash = tf['csvhash']
-		csvfilefixed = tf['csvfilefixed']
-		fixedhash = tf['fixedhash']
-		if csvhash in [k.csvhash for k in torqdbfiles]:
+		if csvhash in hlist.values: #[k.csvhash for k in torqdbfiles]:
 			if debug:
-				logger.warning(f'[st {idx}/{len(filelist)}] {csvfile=} already in db {tf}')
+				logger.warning(f'[st {idx}/{len(filelist)}] {csvfile} already in db') # {tf}')
 		else:
 			if debug:
-				logger.info(f'[st {idx}/{len(filelist)}] {csvfile} not in db')
-			torqfile = TorqFile(str(csvfile), csvfilefixed, csvhash, fixedhash)
+				logger.info(f'[st {idx}/{len(filelist)}] {csvfile} not in db {tf}')
+			torqfile = TorqFile(str(csvfile),  csvhash)
 			torqfile.send_flag = 1
 			session.add(torqfile)
 			try:
@@ -486,18 +420,6 @@ def send_torqfiles(filelist=[], session=None, debug=False): # returns list of ne
 				session.rollback()
 	session.commit()
 	# newfiles = [k for k in filelist if k['csvhash'] not in hlist]
-	logger.info(f'[st {idx}/{len(filelist)}] done sending newfilelist: {len(newfiles)}')
+	logger.info(f'[st] done sending newfilelist: {len(newfiles)}')
 	return newfiles # return list of new files
 
-def send_torqtrips(torqfile:TorqFile, session:Session, debug=False):
-	trip = get_trip_profile(torqfile.csvfilefixed)
-	if trip:
-		tt = Torqtrips(fileid=torqfile.id, csvfilename=str(torqfile.csvfilefixed), csvhash=torqfile.csvhash, distance=trip['distance'], fuelcost=trip['fuelcost'], fuelused=trip['fuelused'], distancewhilstconnectedtoobd=trip['distancewhilstconnectedtoobd'], tripdate=trip['tripdate'], profile=trip['profile'], triptime=trip['time'])
-		session.add(tt)
-		ntf = session.query(TorqFile).filter(TorqFile.id == torqfile.id).first()
-		ntf.tripid = tt.id
-		session.commit()
-		if debug:
-			logger.debug(f"tripdate: {trip.get('tripdate')} dist: {trip.get('distance')} trip:{tt.fileid} file: {ntf.id} filetrip: {ntf.tripid} send: {ntf.send_flag} read: {ntf.read_flag}")
-	else:
-		logger.warning(f'[!] no trip profiles from {torqfile.csvfilefixed} ')
