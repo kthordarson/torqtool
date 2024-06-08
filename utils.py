@@ -374,6 +374,11 @@ def read_buff(csvfile, tf_fileid, tf_tripid, debug=False):
 	# 	except ComputeError as e:
 	# 		logger.error(f'[rb] {type(e)} {e} csvfile={csvfile}')
 	# 		logger.warning(f'{column=} rbcol: {torqbuffer[column]} {torqbuffer.columns=}')
+
+	# devtime = torqbuffer.devicetime
+	# if not devtime:
+	# 	logger.error(f'[rb] missing devicetime {csvfile}')
+	# 	return None
 	if torqbuffer.is_empty():
 		logger.error(f'[rb] torqbuffer is empty {csvfile}')
 		return None
@@ -382,34 +387,53 @@ def read_buff(csvfile, tf_fileid, tf_tripid, debug=False):
 	torqbuffer.insert_at_idx(1, fileid_series)
 	torqbuffer.insert_at_idx(2, tripid_series)
 	# fix datetime formatting for devicetime and gpstime
+	#if not isinstance(torqbuffer['devicetime'], pl.Series):
+	#	print(f"{csvfile} {torqbuffer['devicetime']}")
+	#if not torqbuffer['devicetime'].is_empty():
+	#	print(f"{csvfile} {torqbuffer}")
 	try:
-		if len(torqbuffer['devicetime'][0]) == 28:
-			devicetime = pl.Series('devicetime', [datetime.strptime(k,'%a %b %d %H:%M:%S GMT %Y') for k in torqbuffer['devicetime']])
-		elif len(torqbuffer['devicetime'][0]) == 24:
-			devicetime = pl.Series('devicetime', [datetime.strptime(k,'%d-%b-%Y %H:%M:%S.%f') for k in torqbuffer['devicetime']])
-		elif len(torqbuffer['devicetime'][0]) == 20:
-			devicetime = pl.Series('devicetime', [datetime.strptime(k,'%d-%b-%Y %H:%M:%S') for k in torqbuffer['devicetime']])
+		idx = len(torqbuffer['devicetime']) // 2 # get middle index to guess dateformat
+	except (ColumnNotFoundError, ComputeError, ValueError) as e:
+		logger.error(f'[rb] {type(e)} {e} csvfile: {csvfile}')
+		idx = 10
+	try:
+		if len(torqbuffer['devicetime'][idx]) == 28:
+			devicetime = pl.Series('devicetime', [datetime.strptime(k,'%a %b %d %H:%M:%S GMT %Y') for k in torqbuffer['devicetime'] if k])
+		elif len(torqbuffer['devicetime'][idx]) == 24:
+			devicetime = pl.Series('devicetime', [datetime.strptime(k,'%d-%b-%Y %H:%M:%S.%f') for k in torqbuffer['devicetime'] if k])
+		elif len(torqbuffer['devicetime'][idx]) == 20:
+			devicetime = pl.Series('devicetime', [datetime.strptime(k,'%d-%b-%Y %H:%M:%S') for k in torqbuffer['devicetime']if k])
 		else:
-			logger.error(f'[rb] devicetime format error {torqbuffer["devicetime"][0]}')
-	except (ColumnNotFoundError, ValueError) as e:
+			logger.error(f'[rb] devicetime format error {torqbuffer["devicetime"]}')
+	except (ColumnNotFoundError, ComputeError, ValueError) as e:
 		logger.error(f'[rb] devicetime {type(e)} {e} csvfile: {csvfile}')
 		if 'unconverted data remains' in str(e):
-			devicetime = pl.Series('devicetime', [datetime.strptime(k,'%d-%b-%Y %H:%M:%S.%f') for k in torqbuffer['devicetime']])
+			devicetime = pl.Series('devicetime', [datetime.strptime(k,'%d-%b-%Y %H:%M:%S.%f') for k in torqbuffer['devicetime'] if k])
 	try:
-		if len(torqbuffer['gpstime'][0]) == 28:
-			gpstime = pl.Series('gpstime', [datetime.strptime(k,'%a %b %d %H:%M:%S GMT %Y') for k in torqbuffer['gpstime']])
-		elif len(torqbuffer['gpstime'][0]) == 34:
-			gpstime = pl.Series('gpstime', [datetime.strptime(k,'%a %b %d %H:%M:%S %Z%z %Y') for k in torqbuffer['gpstime']])
+		if len(torqbuffer['gpstime'][idx]) == 28:
+			gpstime = pl.Series('gpstime', [datetime.strptime(k,'%a %b %d %H:%M:%S GMT %Y') for k in torqbuffer['gpstime'] if k])
+		elif len(torqbuffer['gpstime'][idx]) == 34:
+			gpstime = pl.Series('gpstime', [datetime.strptime(k,'%a %b %d %H:%M:%S %Z%z %Y') for k in torqbuffer['gpstime'] if k])
 		else:
-			logger.error(f'[rb] gpstime format error ex: {torqbuffer["gpstime"][0]} len: {len(torqbuffer["gpstime"][0])}')
+			logger.error(f'[rb] gpstime format error ex: {torqbuffer["gpstime"]} len: {len(torqbuffer["gpstime"])}')
 	except (ComputeError, ValueError) as e:
-		logger.error(f'[rb] {type(e)} {e} csvfile: {csvfile}')
+		logger.error(f'[rb] {type(e)} {e} csvfile: {csvfile} {torqbuffer["gpstime"]}')
+		raise e
 
-	torqbuffer = torqbuffer.drop('devicetime')
-	torqbuffer = torqbuffer.drop('gpstime')
-	torqbuffer.insert_at_idx(3, gpstime)
-	torqbuffer.insert_at_idx(4, devicetime)
-
+	# todo fix gpstime and devicetime
+	# drop rows where either values are null or missing
+	gpstime_err = [idx for idx, k in enumerate(torqbuffer['gpstime']) if not k ]
+	devicetime_err = [idx for idx, k in enumerate(torqbuffer['devicetime']) if not k ]
+	try:
+		torqbuffer = torqbuffer.drop('devicetime')
+		torqbuffer.insert_at_idx(4, devicetime)
+	except pl.exceptions.ShapeError as e:
+		logger.error(f'[rb] {type(e)} {e} csvfile: {csvfile} tblen={len(torqbuffer)} glen={len(gpstime)} dlen={len(devicetime)} {gpstime_err=} {devicetime_err=}')
+	try:
+		torqbuffer = torqbuffer.drop('gpstime')
+		torqbuffer.insert_at_idx(3, gpstime)
+	except pl.exceptions.ShapeError as e:
+		logger.error(f'[rb] {type(e)} {e} csvfile: {csvfile} tblen={len(torqbuffer)} glen={len(gpstime)} dlen={len(devicetime)} {gpstime_err=} {devicetime_err=}')
 	resultbuffer = {
 		'torqbuffer' : torqbuffer,
 		'fileid' : tf_fileid,
@@ -431,7 +455,10 @@ async def torq_worker_ppe(tf, session, debug=False):
 			logger.warning(f'[!] buffer is None tf={tf}')
 		elif debug:
 			pass # logger.debug(f'file {tf.csvfile} buffer: {len(buffer["torqbuffer"])}')
-	except (InvalidOperationError, ValueError, TypeError, PicklingError, ComputeError) as e:
+	except ( TypeError,) as e:
+		logger.error(f'[!] {type(e)} {e} in read_buff {tf.csvfile}')
+		raise e
+	except (InvalidOperationError, ValueError, PicklingError, ComputeError) as e:
 		logger.error(f'[!] {type(e)} {e} in read_buff {tf.csvfile}')
 		return None
 	try:
