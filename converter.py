@@ -65,9 +65,9 @@ def read_profile(profile_fn):
 
 def transfer_older_logs():
 	oldlogpath = Path('/home/kth/development/torq/tripLogs')
-	dest_log_path = Path('/home/kth/development/torq/torqueLogs') # where to put renamed log files
+	dest_log_path = Path('/home/kth/development/torq/tripLogsimport') # where to put renamed log files
 
-	old_dirs = old_dirs = [k for k in oldlogpath.glob('*') if k.is_dir() and len(str(k.name))==13]
+	old_dirs = [k for k in oldlogpath.glob('*') if k.is_dir() and len(str(k.name))==13]
 	# pick only directories with 13 digits
 
 	transfered_logs = []
@@ -459,6 +459,11 @@ def fix_bad_values(data, f):
 	"""
 	# fixed_data = pd.DataFrame()
 	# 'â\x88\x9e' found in tracklog-2021-jul-05_17-53-16.csv
+	# badhex
+	# C3 A2 C2 88 C2 9E
+	# C3 82 C2 B0
+	# C3 A2 C2 82 C2 82
+	# C3 82 C2 B0
 	try:
 		needs_fix = [k for k in data.columns if '-' in data[k].values]
 		fixcount = 0
@@ -702,6 +707,86 @@ def cli_main(args):
 		fixed = check_and_fix_logs(new_old_logs)
 		print(f'{fixed=}')
 		sys.exit(0)
+
+def convert_string_to_datetime(s):
+	"""
+	try to convert string to datetime, based on string length apply fmt
+	"""
+	fmt_selector = len(s)
+	datetimeobject = s
+	try:
+		match fmt_selector:
+			case 20:
+				datetimeobject = datetime.strptime(s,fmt_20).astimezone(pytz.timezone('UTC'))
+			case 24:
+				datetimeobject = datetime.strptime(s,fmt_24).astimezone(pytz.timezone('UTC'))
+			case 26:
+				datetimeobject = datetime.strptime(s,fmt_26).astimezone(pytz.timezone('UTC'))
+			case 28:
+				datetimeobject = datetime.strptime(s,fmt_28).astimezone(pytz.timezone('UTC'))
+			case 30:
+				datetimeobject = datetime.strptime(s,fmt_30).astimezone(pytz.timezone('UTC'))
+			case 34:
+				datetimeobject = datetime.strptime(s,fmt_34).astimezone(pytz.timezone('UTC'))
+			case 36:
+				datetimeobject = datetime.strptime(s,fmt_36).astimezone(pytz.timezone('UTC'))
+			case _:
+				pass # logger.warning(f'could not match format for fmt_selector {fmt_selector} for {datecol} {f=}.\n sample:first= {df0[datecol][0]} middle= {df0[datecol][len(data)//2]} last= {df0[datecol][len(df0)-1]}\n')
+	except (ValueError,TypeError,KeyError) as e:
+		logger.error(f'dateconverter {type(e)} {e} {s=}')
+	finally:
+		return datetimeobject
+
+
+def split_file(logfile, session=None):
+	"""
+	split a log file where multiple lines of column headers are present
+	param: logfile = full path and name of file
+	"""
+	with open(logfile, 'r') as f:
+		rawdata = f.readlines()
+
+	# find all lines with gps in them, skip first line
+	split_list = [{'linenumber':idx, 'linedata': k} for idx,k in enumerate(rawdata) if 'gps' in k.lower()][1:]
+
+	# grab timestamps of lines before and after split to determine if split is needed or not
+	# if timestamps are close, no split is needed, combine file and rescan else split into multiple files
+	logger.info(f'found {len(split_list)} split markers in {logfile}')
+	gpstime_diff = 0
+	devicetime_diff = 0
+	try:
+		for idx,marker in enumerate(split_list):
+			gpstime_before_split = convert_string_to_datetime(rawdata[marker.get('linenumber')-1].split(',')[0])
+			gpstime_after_split = convert_string_to_datetime(rawdata[marker.get('linenumber')+1].split(',')[0])
+			devicetime_before_split = convert_string_to_datetime(rawdata[marker.get('linenumber')-1].split(',')[1])
+			devicetime_after_split = convert_string_to_datetime(rawdata[marker.get('linenumber')+1].split(',')[1])
+
+			gpstime_diff += (gpstime_after_split - gpstime_before_split).seconds
+			devicetime_diff += (devicetime_after_split - devicetime_before_split).seconds
+
+		if gpstime_diff <= 5: # five seconds, combine file parts into one
+			logger.info(f'Remove extra header lines from {logfile} at line {marker.get("linenumber")} {gpstime_diff=} {devicetime_diff=} ') # \n\tgpsbefore: {gpstime_before_split} gpsafter: {gpstime_after_split}\n\tdevtimebefore: {devicetime_before_split} devtimeafter: {devicetime_after_split}' )
+			# remove lines that start with GPS, keep first line, write to file (overwrite)
+			skip_lines = [k.get('linenumber') for k in split_list]
+			with open(logfile, 'w') as f:
+				for idx, line in enumerate(rawdata):
+					if idx not in skip_lines:
+						f.write(line)
+			logger.debug(f'wrote fixed {logfile}')
+			# mark the file as fixed in the database, TorqFile.fixed_flag = 1 and TorqFile.error_flag = 0, read again
+			if session:
+				torqfile = session.query(TorqFile).filter(TorqFile.csvfile == logfile).one()
+				torqfile.fixed_flag = 1
+				torqfile.error_flag = 0
+				session.commit()
+				logger.debug(f'database updated for {logfile} torqfileid: {torqfile.id}')
+		elif gpstime_diff >= 5: # more that five seconds, split file
+			logger.warning(f'Splitting {logfile} {gpstime_diff=} {devicetime_diff=} ') # \n\tgpsbefore: {gpstime_before_split} gpsafter: {gpstime_after_split}\n\tdevtimebefore: {devicetime_before_split} devtimeafter: {devicetime_after_split}' )
+			# split file into multiple parts, keep first part of file, write rest to new files
+			# mark the file as fixed in the database, TorqFile.fixed_flag = 1 and TorqFile.error_flag = 1, read again
+			newbufferlen = len(rawdata[marker['linenumber']:])
+	except TypeError as e:
+		logger.error(f'splitter failed {e} {logfile=}')
 
 def main():
 	parser = argparse.ArgumentParser(description="converter ")

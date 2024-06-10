@@ -10,6 +10,9 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 #  select fileid,count(id) as entrycount from torqlogs group by fileid order by entrycount;
 # reg = registry()
 # SELECT (select count(*) from torqlogs where fileid=101) as count, (SELECT gpstime FROM torqlogs WHERE fileid=101 ORDER BY gpstime LIMIT 1) as 'first',(SELECT gpstime FROM torqlogs WHERE fileid=101 ORDER BY gpstime DESC LIMIT 1) as 'last';
+# select fileid,count(id) as entrycount from torqlogs group by fileid order by entrycount desc limit 10;
+# select fileid,gpstime,count(id) as entrycount from torqlogs group by fileid order by entrycount desc limit 10;
+# select (select count(*) from torqlogs) as logcount, (select count(*) from torqfiles) as filecount;
 class Base(DeclarativeBase):
     pass
 
