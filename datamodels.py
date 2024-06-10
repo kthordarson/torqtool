@@ -9,7 +9,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 #  select fileid,count(id) as entrycount from torqlogs group by fileid order by entrycount;
 # reg = registry()
-
+# SELECT (select count(*) from torqlogs where fileid=101) as count, (SELECT gpstime FROM torqlogs WHERE fileid=101 ORDER BY gpstime LIMIT 1) as 'first',(SELECT gpstime FROM torqlogs WHERE fileid=101 ORDER BY gpstime DESC LIMIT 1) as 'last';
 class Base(DeclarativeBase):
     pass
 
@@ -31,7 +31,7 @@ class TorqFile(Base):
 
 	error_flag = Column('error_flag', Integer, default=0, unique=False)
 	# 0 = no error, 1 = has error, 2 = need split
-	# 3 = header error, 4 = fixerror, 5 = senderror
+	# 3 = header error, 4 = fixerror, 5 = senderror, 6 = polarreaderror
 
 	def __init__(self, csvfile, csvhash):
 		self.csvfile = csvfile

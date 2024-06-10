@@ -23,6 +23,9 @@ from utils import get_engine_session, get_fixed_lines
 
 pd.set_option('future.no_silent_downcasting', True)
 
+class Polarsreaderror(Exception):
+	pass
+
 # tool to rename and import tripLogs from older versions of the app
 # get tripdate from profile.properties file and rename the log file to the new format
 # tripdate should match with foldername of each trip, named as unix timestamp (13 digits)
@@ -271,6 +274,7 @@ def new_polars_csv_reader(logfile):
 	param: schema to use
 	param: newcolumns = dict with sanatized column names, generated with new_column_collector
 	returns pandas dataframe, with sanatized column names
+	raises Polarsreaderror if something goes wrong
 	"""
 	so = {
     " Latitude": pl.Float64,
@@ -279,8 +283,13 @@ def new_polars_csv_reader(logfile):
     "Longitude": pl.Float64,
 	}
 	data = pl.read_csv(logfile, schema_overrides=so, ignore_errors=True, try_parse_dates=True,truncate_ragged_lines=True, n_threads=4, use_pyarrow=True)#, schema=schema)
-	ncren = {k:ncc[k] for k in data.columns} # get columns to rename
-	data = data.rename(ncren) # rename them
+	try:
+		ncren = {k:ncc[k] for k in data.columns} # get columns to rename
+		data = data.rename(ncren) # rename them
+	except KeyError as e:
+		msg = f'keyerror {type(e)} {e} {logfile}\ndatacols: {data.columns} \n'
+		logger.warning(msg)
+		raise Polarsreaderror(msg)
 	data = data.fill_null(0).fill_nan(0)
 	df = data.to_pandas()
 	df1 = df.rename(columns=ncc)
@@ -347,7 +356,7 @@ def send_filename_to_db(args, filename):
 	engine, session = get_engine_session(args)
 	with session.no_autoflush:
 		try:
-			csvhash = md5(open(filename, 'rb').read()).hexdigest(),
+			csvhash = md5(open(filename, 'rb').read()).hexdigest()
 			t = TorqFile(csvfile=filename,csvhash=csvhash)
 			session.add(t)
 			session.commit()
@@ -548,8 +557,11 @@ def db_set_file_flag(session, filename=None, flag=None, flagval=None):
 	try:
 		torqfile = session.query(TorqFile).filter(TorqFile.csvfile == filename).one()
 	except NoResultFound as e:
-		logger.warning(f'{e} {filename} {flag}')
-		return
+		logger.warning(f'{e} {filename} not found in db while trying to set {flag}, creating entry...')
+		csvhash = md5(open(filename, 'rb').read()).hexdigest()
+		torqfile = TorqFile(csvfile=filename, csvhash=csvhash)
+		session.add(torqfile)
+		torqfile.error_flag = 6
 	match flag:
 		case 'readok':
 			torqfile.read_flag = 1
@@ -571,6 +583,10 @@ def db_set_file_flag(session, filename=None, flag=None, flagval=None):
 			torqfile.send_flag = 0
 		case 'senderror':
 			torqfile.error_flag = 5
+			torqfile.read_flag = 0
+			torqfile.send_flag = 0
+		case 'polarreaderror':
+			torqfile.error_flag = 6
 			torqfile.read_flag = 0
 			torqfile.send_flag = 0
 		case _:
@@ -606,7 +622,13 @@ def cli_main(args):
 				db_set_file_flag(session, filename=errfile, flag='headfixerr')
 		for idx,f in enumerate(fixed_newfiles['files_to_read']):
 			logger.debug(f'[{idx}/{len(fixed_newfiles["files_to_read"])}] reading {f}')
-			data = new_polars_csv_reader(logfile=f)
+			try:
+				data = new_polars_csv_reader(logfile=f)
+			except Polarsreaderror as e:
+				logger.error(f'polarsreaderror {type(e)} {e} for {f}')
+				broken_files.append(f)
+				db_set_file_flag(session, filename=f, flag='polarreaderror')
+				continue
 			# if successful, make TorqFile entry in database
 			if send_filename_to_db(args, f):
 				db_set_file_flag(session, filename=f, flag='readok')
