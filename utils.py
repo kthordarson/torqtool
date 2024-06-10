@@ -28,9 +28,10 @@ from sqlalchemy.exc import (
 )
 from sqlalchemy.orm import sessionmaker
 
-from commonformats import *
+from commonformats import fmt_20, fmt_24, fmt_26, fmt_28, fmt_30, fmt_34, fmt_36
 from datamodels import TorqFile, database_init
 from updatetripdata import send_torqdata_ppe
+from torqtool_git.schemas import ncc
 
 MIN_FILESIZE = 2500
 

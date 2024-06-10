@@ -10,7 +10,7 @@ from timeit import default_timer as timer
 from loguru import logger
 from sqlalchemy.exc import OperationalError
 sys.path.append('/home/kth/development/torq/torqtool_git')
-from datamodels import (
+from torqtool_git.datamodels import (
 	Torqdata,
 	TorqFile,
 	Torqlogs,
@@ -18,7 +18,7 @@ from datamodels import (
 	database_dropall,
 	send_torqfiles,
 )
-from utils import (
+from torqtool_git.utils import (
 	fix_logfile,
 	generate_torqdata,
 	get_csv_files,
