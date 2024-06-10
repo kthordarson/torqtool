@@ -1,29 +1,32 @@
 #!/usr/bin/python3
-import asyncio
-import shutil
-from collections.abc import AsyncIterable
 import argparse
+import asyncio
 import sys
-from concurrent.futures import (ProcessPoolExecutor, ThreadPoolExecutor, as_completed)
-from datetime import datetime, timedelta
-from multiprocessing import cpu_count
+from collections.abc import AsyncIterable
+from datetime import datetime
 from pathlib import Path
-from pickle import PicklingError
 from timeit import default_timer as timer
 
-import polars as pl
-import pymysql
 from loguru import logger
-from pandas.errors import EmptyDataError
-from polars import ComputeError
-from polars import read_csv as read_csv_polars
-from sqlalchemy import create_engine
-from sqlalchemy.exc import (DataError, IntegrityError, InternalError, OperationalError, ProgrammingError)
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.orm import Session
-from datamodels import (TorqFile, Torqtrips, Torqlogs, Torqdata, database_dropall, database_init, send_torqfiles)
-from updatetripdata import send_torqdata, send_torqdata_ppe
-from utils import fix_logfile, get_csv_files, get_engine_session, mapping_replace,  sqlsender, sqlsender_ppe, torq_worker_ppe
+from sqlalchemy.exc import OperationalError
+sys.path.append('/home/kth/development/torq/torqtool_git')
+from datamodels import (
+	Torqdata,
+	TorqFile,
+	Torqlogs,
+	Torqtrips,
+	database_dropall,
+	send_torqfiles,
+)
+from utils import (
+	fix_logfile,
+	generate_torqdata,
+	get_csv_files,
+	get_engine_session,
+	send_torqtripdata,
+	torq_dataworker_ppe,
+	torq_worker_ppe,
+)
 
 # june2024 rewrite: log files are stored diffrently from previous versions
 # now the app stores the logs on the phone under /storage/emulated/0/Documents/torqueLogs
@@ -36,7 +39,26 @@ from utils import fix_logfile, get_csv_files, get_engine_session, mapping_replac
 # if a log files contains entries from more than 24h, check and split ???
 # more ....
 
-async def scanpath(engine, args):
+async def create_torqdata(session, args):
+	# dataworkders
+	return
+	t0 = datetime.now()
+	dbtorqfiles = session.query(TorqFile).all() # filter(TorqFile.data_flag == 0).all() # type: ignore
+	if args.debug:
+		logger.debug(f'[create_torqdata] t: {(datetime.now()-t0).seconds} starting {len(dbtorqfiles)} dataworkers')
+	async with asyncio.TaskGroup() as tg:
+		for idx, tf in enumerate(dbtorqfiles):
+			#asyncio.set_event_loop(loop)
+			t = session.query(TorqFile).filter(TorqFile.fileid == tf.fileid).first()
+			if args.debug:
+				logger.debug(f'[{idx}/{len(dbtorqfiles)}] t: {(datetime.now()-t0).seconds} starting dataworker {t=} for {tf=} tfid:{tf.fileid}')
+			tg.create_task(torq_dataworker_ppe(t, session, args.debug))
+			#await asyncio.gather(*tasks)
+	if args.debug:
+		logger.debug(f't: {(datetime.now()-t0).seconds} finished {len(dbtorqfiles)} dataworkers')
+
+
+async def scanpath(session, args):
 	"""
 	scan a path for log files
 	param: engine sqlalchemy engine
@@ -46,12 +68,11 @@ async def scanpath(engine, args):
 	'results' : {'unfixed' : list_of_unfixed_files}}
 	}
 	"""
-	results = {
-		'results': {'unfixed': []}
-	}
+	results = { 'results': {'unfixed': []}}
+	newfilelist = []
 	t0 = datetime.now()
-	Session = sessionmaker(bind=engine)
-	session = Session()
+	#Session = sessionmaker(bind=engine)
+	#session = Session()
 
 	filelist = get_csv_files(searchpath=Path(args.path), dbmode=args.dbmode, debug=args.debug)
 	filelist = sorted(filelist, key=lambda x: x['csvfile']) # sort by filename (date)
@@ -64,28 +85,52 @@ async def scanpath(engine, args):
 	except Exception as e:
 		logger.error(f'[!] unhandled {type(e)} {e}')
 		sys.exit(1)
+	finally:
+		return newfilelist
+
+async def check_unfixedfiles(session, args):
 
 	# get list of unfixed files from db
-	unfixedfiles = session.query(TorqFile).filter(TorqFile.fixed_flag == 0).all()
-	results['results']['unfixed'] = unfixedfiles
+	t0 = datetime.now()
+	unfixedfiles = session.query(TorqFile).filter(not TorqFile.fixed_flag).all()
+	results = { 'results': {'unfixed': []}}
+
 	if len(unfixedfiles)>0:
 		if args.debug:
-			logger.warning(f'found {len(unfixedfiles)} unfixed files')
-			return results
+			logger.warning(f't: {(datetime.now()-t0).seconds} found {len(unfixedfiles)} unfixed files')
+		for unfixed in unfixedfiles:
+			punfix = Path(unfixed.csvfile)
+			if args.debug:
+				logger.debug(f'sending {punfix} to fixer {unfixed=} {type(unfixed)}')
+			if fix_logfile(punfix):
+				unfixed.fixed_flag = 1
+				session.commit()
+				if args.debug:
+					logger.debug(f't: {(datetime.now()-t0).seconds} fixed {unfixed}')
+			else:
+				results['results']['unfixed'].append(unfixed)
+				if args.debug:
+					logger.warning(f't: {(datetime.now()-t0).seconds} fixer failed on {unfixed} unfixed: {len(results["results"]["unfixed"])}')
 
+async def send_torq_logs(filelist, session, args):
 	# get files from db that are fixed but not read or sent to db
 	tripstart = timer()
-	dbtorqfiles = session.query(TorqFile).filter(TorqFile.read_flag == 0).filter(TorqFile.fixed_flag == 1).all() # type: ignore
-	if args.debug:
-		logger.info(f'found {len(dbtorqfiles)} unread and unfixed files')
-	dbcols = None # session.execute(text('show columns from torqdata')).fetchall() # get column names
+	# dbtorqfiles = session.query(TorqFile).filter(TorqFile.read_flag == 1).filter(TorqFile.fixed_flag == 1).all() # type: ignore
 	tripend = timer()
+	t0 = datetime.now()
 	if args.debug:
-		logger.debug(f'[main] send_torqtrips done t0={datetime.now()-t0} time={timedelta(seconds=tripend - tripstart)} starting read_process for {len(newfilelist)} files mode={args.threadmode}')
-
-	if len(dbtorqfiles) == 0:
-		logger.info('no new files to process')
-		sys.exit(0)
+		logger.debug(f'sendtorqlogs  starting torq_worker_ppe for {len(filelist)} files mode={args.threadmode}')
+	async with asyncio.TaskGroup() as tg:
+		for idx, tf in enumerate(filelist):
+			#asyncio.set_event_loop(loop)
+			t = session.query(TorqFile).filter(TorqFile.fileid == tf.fileid).first()
+			if args.debug:
+				pass # logger.debug(f'[tw] t0={datetime.now()-t0} {tf=} {t}')
+			if t:
+				tg.create_task(torq_worker_ppe(t, session, args.debug))
+			else:
+				logger.warning(f'no t from {tf}')
+			#await asyncio.gather(*tasks)
 
 async def collect_info(session) -> AsyncIterable[str]:
 	yield session.query(Torqtrips).count()
@@ -110,6 +155,9 @@ async def main(args):
 	# todo: set read_flag and send_flag for processed files
 	t0 = datetime.now()
 	engine, session = get_engine_session(args)
+	if args.torqdata:
+		await create_torqdata(session, args)
+		sys.exit(0)
 	if args.database_dropall:
 		try:
 			database_dropall(engine)
@@ -128,55 +176,88 @@ async def main(args):
         #asyncio.create_task(collect(iterable()))
     	]
 		results = await asyncio.gather(*tasks)
-		print(f'dbinfo: {results}')
+		print(f'[dbinfo]  trips: {results[0][0]} files: {results[0][1]} logs: {results[0][2]} data: {results[0][3]}')
 		#files = session.query(Torqtrips).count()
 		#trips = session.query(Torqtrips).count()
 		#logs = session.query(Torqlogs).count()
 		#data = session.query(Torqdata).count()
 		#logger.info(f'[main] {files=} {trips=} {logs=:,} {data=}')
 		sys.exit(0)
+	if args.create_trips:
+		# create trips data from database
+		tf_ids = session.query(TorqFile.fileid).all()
+		for idx, tf in enumerate(tf_ids):
+			data = session.query(Torqlogs).filter(Torqlogs.fileid == tf.fileid).all()
+			if data:
+				tripdata = None
+				try:
+					tripdata = generate_torqdata(data, session, args.debug)
+				except Exception as e:
+					logger.error(f'[!] unhandled {type(e)} {e} {tf=}')
+					sys.exit(1)
+				if tripdata:
+					send_torqtripdata(tripdata, session, args.debug)
+		sys.exit(0)
 	if args.scanpath:
 		results = None
 		res = None
-		results = await scanpath(engine, args)
-		if results:
-			res = results.get('results', None)
-		if res:
-			unfixcount = len(res['unfixed'])
+		results = await scanpath(session, args)
+		if args.debug:
+			pass # logger.debug(f"t: {(datetime.now()-t0).seconds} scanpath returned {len(results)} files")
+		for csvfile in results:
+			if args.debug:
+				pass # logger.debug(f"t: {(datetime.now()-t0).seconds} fixing {csvfile.csvfile} ")
+			if fix_logfile(csvfile.csvfile): # attempt to fix file, returns True if fixed
+				dbf = session.query(TorqFile).filter(TorqFile.fileid == csvfile.fileid).first()
+				dbf.fixed_flag = 1
+				if args.debug:
+					logger.debug(f't: {(datetime.now()-t0).seconds} fixed {dbf}')
+			else:
+				logger.warning(f'fixer failed of {csvfile.csvfile}')
+
+		await send_torq_logs(results, session, args)
+
+	if args.foobar:
+			unfixcount = 0
 			fixcount = 0
-			logger.debug(f"found {unfixcount} unfixed files")
 			for idx,f in enumerate(res['unfixed']):
+				pcsv = Path(f.csvfile)
+				if args.debug:
+					logger.debug(f'[{idx}/{unfixcount}/{fixcount}] t: {(datetime.now()-t0).seconds} fixing {pcsv}')
 				try:
-					if fix_logfile(Path(f.csvfile)): # attempt to fix file, returns True if fixed
+					if fix_logfile(pcsv): # attempt to fix file, returns True if fixed
 						f.fixed_flag = 1 # fixed
-						dbf = session.query(TorqFile).filter(TorqFile.id == f.id).first()
+						dbf = session.query(TorqFile).filter(TorqFile.fileid == f.fileid).first()
 						dbf.fixed_flag = 1
 						if args.debug:
-							logger.debug(f'[{idx}/{unfixcount}/{fixcount}] fixed {f} {dbf}')
+							logger.debug(f'[{idx}/{unfixcount}/{fixcount}] t: {(datetime.now()-t0).seconds} fixed {dbf}')
 						fixcount += 1
 					else:
 						logger.warning(f'fixer failed of {f.csvfile}')
 				except Exception as e:
-					brokenfile = str(f.csvfile).replace('trackLog-', 'broken-')
+					# todo fix this
+					# brokenfile = str(f.csvfile).replace('trackLog-', 'broken-')
 					logger.error(f'[!] unhandled {type(e)} {e} {f} renaming')
 					# shutil.move(f.csvfile, brokenfile)
 				finally:
-					logger.info(f'fixed: {fixcount} ')
+					# logger.info(f'fixed: {fixcount} ')
 					session.commit()
 			if fixcount > 1:
 				# send fixed files to db
 				# read and process files
 				tasks = []
-				loop = asyncio.new_event_loop()
+				# loop = asyncio.new_event_loop()
 				dbtorqfiles = session.query(TorqFile).filter(TorqFile.read_flag == 0).filter(TorqFile.fixed_flag == 1).all() # type: ignore
 				async with asyncio.TaskGroup() as tg:
 					for idx, tf in enumerate(dbtorqfiles):
 						#asyncio.set_event_loop(loop)
-						t = session.query(TorqFile).filter(TorqFile.id == tf.id).first()
+						t = session.query(TorqFile).filter(TorqFile.fileid == tf.fileid).first()
 						tg.create_task(torq_worker_ppe(t, session, args.debug))
 						#await asyncio.gather(*tasks)
 
 
+def maincli():
+	print('hello world')
 
 if __name__ == '__main__':
 	parser = argparse.ArgumentParser(description="torqtool")
@@ -185,7 +266,9 @@ if __name__ == '__main__':
 	parser.add_argument("--path", nargs="?", default=".", help="path to csv files", action="store")
 	parser.add_argument("--file", nargs="?", default=".", help="path to single csv file", action="store")
 
+	parser.add_argument('--torqdata', default=False, help="create torqdata", action="store_true", dest='torqdata')
 	parser.add_argument('-dbdrop', '--database_dropall', default=False, help="drop database", action="store_true", dest='database_dropall')
+	parser.add_argument("--create-trips", default=False, help="create trip database", action="store_true", dest='create_trips')
 	parser.add_argument("--check-db", default=False, help="check database", action="store_true", dest='check_db')
 	parser.add_argument("--dump-db", nargs="?", default=None, help="dump database to file", action="store")
 	parser.add_argument("-i", "--info", default=False, help="show dbinfo", action="store_true", dest='dbinfo')
@@ -199,13 +282,13 @@ if __name__ == '__main__':
 	parser.add_argument("--sqlchunksize", nargs="?", default="1000", help="sql chunk", action="store")
 	parser.add_argument("--max_workers", nargs="?", default="4", help="max_workers", action="store")
 	parser.add_argument("--chunks", nargs="?", default="4", help="chunks", action="store")
-	parser.add_argument("--dbmode", default="", help="sqlmode mysql/postgresql/sqlite", action="store")
+	parser.add_argument("--dbmode", default="", help="sqlmode mysql/postgresql/sqlite/mariadb", action="store")
 	parser.add_argument("--dbname", default="", help="dbname", action="store")
 	parser.add_argument("--dbhost", default="", help="dbname", action="store")
 	parser.add_argument("--dbuser", default="", help="dbname", action="store")
 	parser.add_argument("--dbpass", default="", help="dbname", action="store")
 	parser.add_argument('--threadmode', default='ppe', help='threadmode ppe/oldppe/tpe', action='store')
-
+	parser.add_argument('--foobar', default=False, help='foobar', action='store_true')
 	# parser.add_argument("--gui", default=False, help="Run gui", action="store_true", dest='gui')
 	# parser.add_argument("--init-db", default=False, help="init database", action="store_true", dest='init_db')
 

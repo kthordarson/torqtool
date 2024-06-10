@@ -1,10 +1,10 @@
-from sqlalchemy.exc import OperationalError, ProgrammingError
-from sqlalchemy import create_engine, Table, MetaData, Column, Integer, String, inspect, select, Numeric, DateTime, text, BIGINT, BigInteger, Float
-from sqlalchemy.exc import OperationalError, DataError
-from sqlalchemy.orm import sessionmaker
-import pandas as pd
 from loguru import logger
+from sqlalchemy import create_engine, text
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.orm import sessionmaker
+
 from torqcols import allcols as cols
+
 #from datamodels import TorqFile
 
 

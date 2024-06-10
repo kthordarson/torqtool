@@ -11,15 +11,7 @@ from plotutils import MAP_CACHE, PLOT_DIR
 from plotutils import plot_trip, combine_map_plot, download_maps
 
 
-if __name__ == '__main__':
-	parser = argparse.ArgumentParser(description="plotmap")
-
-	parser.add_argument('-pi', '--plot-id', help="tripid to plot", action="store", dest='plotid')
-	parser.add_argument('-c', '--combine', help="combiner mapfile plotfile outfile", action="store", dest='combine', default="", nargs=3)
-	parser.add_argument('-pa', '--plot-all', help="plot all", action="store_true", dest='plotall', default=False)
-	parser.add_argument('-d', '--download-maps', help="download all maps from mapbox", action="store_true", default=False, dest='dlmaps')
-	args = parser.parse_args()
-
+def cli_main(args):
 	dburl = 'sqlite:///torqfiskur.db'
 	engine = create_engine(dburl, echo=False, connect_args={'check_same_thread': False})
 
@@ -43,7 +35,7 @@ if __name__ == '__main__':
 			logger.debug(f'[{idx}/{len(trips)}] plotting {trip}')
 			pltfilename = f'{PLOT_DIR}/tripmap-{trip:04d}-plotly.png' # padding
 			#tripid = str(trips.iloc[0].values[0])
-			df = pd.DataFrame([k for k in session.query(Torqlogs.latitude, Torqlogs.longitude).filter(Torqlogs.tripid==trip).all()])
+			df = pd.DataFrame([k for k in session.query(Torqlogs.latitude, Torqlogs.longitude).filter(Torqlogs.fileid==trip).all()])
 			px = 1/plt.rcParams['figure.dpi']  # pixel in inches
 			fig,ax1 = plt.subplots(figsize=(800*px,600*px))
 			plt.axis('off')
@@ -70,4 +62,15 @@ if __name__ == '__main__':
 			#
 			# plt.show(hold=False)
 			#plt.close(fig)
+
+
+if __name__ == '__main__':
+	parser = argparse.ArgumentParser(description="plotmap")
+
+	parser.add_argument('-pi', '--plot-id', help="tripid to plot", action="store", dest='plotid')
+	parser.add_argument('-c', '--combine', help="combiner mapfile plotfile outfile", action="store", dest='combine', default="", nargs=3)
+	parser.add_argument('-pa', '--plot-all', help="plot all", action="store_true", dest='plotall', default=False)
+	parser.add_argument('-d', '--download-maps', help="download all maps from mapbox", action="store_true", default=False, dest='dlmaps')
+	args = parser.parse_args()
+	cli_main(args)
 

@@ -25,3 +25,7 @@ for trip in toptrips.id:
 			print(f'[r] {res}')
 		else:
 			pass
+
+
+if __name__ == '__main__':
+	pass
