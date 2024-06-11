@@ -458,7 +458,7 @@ def get_files_to_send(session:sessionmaker, args):
 	"""
 	files_to_send = []
 	try:
-		unread_dbfiles = session.query(TorqFile).filter(TorqFile.read_flag==0).all()
+		unread_dbfiles = session.query(TorqFile).filter(TorqFile.read_flag==0).filter(TorqFile.error_flag==0).all()
 		read_dbfiles = session.query(TorqFile).filter(TorqFile.read_flag==1).all()
 		csvfiles = [str(k) for k in Path(args.logpath).glob('*.csv')]
 		files_to_send = set(csvfiles)-set([k.csvfile for k in read_dbfiles])
@@ -652,6 +652,10 @@ def db_set_file_flag(session, filename=None, flag=None, flagval=None):
 		torqfile = session.query(TorqFile).filter(TorqFile.csvhash == csvhash).one()
 	except MultipleResultsFound as e:
 		logger.error(f'{e} {filename} {csvhash} multiple entries in db, aborting...')
+		torqfiles = session.query(TorqFile).filter(TorqFile.csvhash == csvhash).all()
+		for t in torqfiles:
+			t.error_flag = 1
+		session.commit()
 		return None
 	except NoResultFound as e:
 		logger.warning(f'{e} {filename} not found in db while trying to set {flag}, creating entry...')
