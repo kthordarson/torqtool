@@ -322,8 +322,8 @@ def new_polars_csv_reader(logfile):
     "Latitude": pl.Float64,
     "Longitude": pl.Float64,
 	}
-	try:
-		data = pl.read_csv(logfile, schema_overrides=so, ignore_errors=True, try_parse_dates=True,truncate_ragged_lines=True, n_threads=4, use_pyarrow=True)#, schema=schema)
+	try: # schema_overrides=so,
+		data = pl.read_csv(logfile,  ignore_errors=True, try_parse_dates=True,truncate_ragged_lines=True, n_threads=4, use_pyarrow=True)#, schema=schema)
 	except pl.exceptions.NoDataError as e:
 		msg = f'NoDataError {type(e)} {e} {logfile}'
 		logger.error(msg)
@@ -338,6 +338,7 @@ def new_polars_csv_reader(logfile):
 		logger.warning(msg)
 		raise Polarsreaderror(msg)
 	for col in df.columns:
+		# df[col] = df[col].replace('.',',')
 		df[col] = df[col].replace('-',0)
 		df[col] = df[col].replace('Â','')
 		df[col] = df[col].replace('â','')
