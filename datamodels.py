@@ -85,7 +85,7 @@ class Torqlogs(Base):
 	gpstime = Column('gpstime', DateTime)
 	devicetime = Column('devicetime', DateTime)
 	longitude = Column('longitude', Float) # 'longitude':np.float64,
-	latitude = Column('latitude', VARCHAR(30))
+	latitude = Column('latitude', Float)
 	horizontaldilutionofprecision = Column('horizontaldilutionofprecision', VARCHAR(35))
 	bearing = Column('bearing', VARCHAR(35))
 	coingkmaveragegkm = Column('coingkmaveragegkm', VARCHAR(35))

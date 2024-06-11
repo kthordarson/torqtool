@@ -31,7 +31,7 @@ from sqlalchemy.orm import sessionmaker
 from commonformats import fmt_20, fmt_24, fmt_26, fmt_28, fmt_30, fmt_34, fmt_36
 from datamodels import TorqFile, database_init
 from updatetripdata import send_torqdata_ppe
-from torqtool_git.schemas import ncc
+from schemas import ncc
 
 MIN_FILESIZE = 2500
 
@@ -44,6 +44,24 @@ def replace_all(text, dic):
 	if text != textout:
 		logger.warning(f'{text} -> {textout}')
 	return textout
+
+def get_sanatized_column_names(orgcol):
+	"""
+	clean up column names, remove special characters and make lowercase
+	orgcol DataFrame.columns (list of column names) or str of column names
+	"""
+	if isinstance(orgcol, list):
+		newcolname = ','.join([re.sub(r'\W', '', col).lower() for col in orgcol]).encode('ascii', 'ignore').decode()
+		newcolname += '\n'
+		newcolname = newcolname.lower()
+		return newcolname
+	elif isinstance(orgcol, str):
+		newcolname = ','.join([re.sub(r'\W', '', col).lower() for col in orgcol.split(',')]).encode('ascii', 'ignore').decode()
+		newcolname += '\n'
+		return newcolname
+	else:
+		logger.warning(f'unknown type {type(orgcol)} {orgcol}')
+		return orgcol
 
 def get_fixed_lines(logfile, debug=True):
 	# read csv file, replace badvals and fix column names
@@ -78,9 +96,10 @@ def get_fixed_lines(logfile, debug=True):
 	#	lines = [re.sub(bv,'0,',k) for k in data]
 	# lines = [re.sub('∞','0',k) for k in data]
 	# lines = [re.sub(b,'0',k) for k in data for b in badvals]
-	newcolname = ','.join([re.sub(r'\W', '', col) for col in orgcol]).encode('ascii', 'ignore').decode()
-	newcolname += '\n'
-	newcolname = newcolname.lower()
+	#newcolname = ','.join([re.sub(r'\W', '', col) for col in orgcol]).encode('ascii', 'ignore').decode()
+	#newcolname += '\n'
+	#newcolname = newcolname.lower()
+	newcolname = get_sanatized_column_names(orgcol)
 	# column_count = newcolname.count(',')
 	lines[0] = newcolname
 	return lines
@@ -140,7 +159,7 @@ def get_csv_files(searchpath: str,  dbmode=None, debug=False):
 		'csvfile': k, # original csv file
 		'csvhash': md5(open(k, 'rb').read()).hexdigest(),
 		'size': os.stat(k).st_size,
-		'dbmode': dbmode}) for k in Path(searchpath).glob("**/tracklog-*.csv") if k.stat().st_size >= MIN_FILESIZE] # and not os.path.exists(f'{k}.fixed.csv')]
+		'dbmode': dbmode}) for k in Path(searchpath).glob("**/*.csv") if k.stat().st_size >= MIN_FILESIZE] # and not os.path.exists(f'{k}.fixed.csv')]
 	return torqcsvfiles
 
 
