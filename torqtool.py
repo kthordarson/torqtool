@@ -9,7 +9,7 @@ from timeit import default_timer as timer
 
 from loguru import logger
 from sqlalchemy.exc import OperationalError
-sys.path.append('/home/kth/development/torq/torqtool_git')
+# sys.path.append('c:/apps/torqtool/torqtool')
 from datamodels import (
 	Torqdata,
 	TorqFile,

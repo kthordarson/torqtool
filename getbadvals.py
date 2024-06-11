@@ -25,7 +25,7 @@ def get_bad_vals(csvfile: str):
 if __name__ == '__main__':
 	allbads = []
 	searchpath = Path('/home/kth/development/torqlogs0/')
-	csvfiles = [k for k in searchpath.glob("**/trackLog.csv")]
+	csvfiles = [k for k in searchpath.glob("**/*.csv")]
 	for csv in csvfiles:
 		bads = get_bad_vals(csv)
 		allbads.extend(bads)

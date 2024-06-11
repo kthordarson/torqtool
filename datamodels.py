@@ -6,7 +6,7 @@ from loguru import logger
 from sqlalchemy import VARCHAR, Column, DateTime, Float, ForeignKey, Integer, Text, text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-
+from sqlalchemy.sql.sqltypes import *
 #  select fileid,count(id) as entrycount from torqlogs group by fileid order by entrycount;
 # reg = registry()
 # SELECT (select count(*) from torqlogs where fileid=101) as count, (SELECT gpstime FROM torqlogs WHERE fileid=101 ORDER BY gpstime LIMIT 1) as 'first',(SELECT gpstime FROM torqlogs WHERE fileid=101 ORDER BY gpstime DESC LIMIT 1) as 'last';
@@ -84,8 +84,8 @@ class Torqlogs(Base):
 	# fileid = Column('fileid', Integer) # Mapped[int] = mapped_column(ForeignKey('torqfiles.fileid'))
 	gpstime = Column('gpstime', DateTime)
 	devicetime = Column('devicetime', DateTime)
-	longitude = Column('longitude', VARCHAR(30))
-	latitude = Column('latitude', VARCHAR(30))
+	longitude = Column('longitude', Float) # 'longitude':np.float64,
+	latitude = Column('latitude', Float)
 	horizontaldilutionofprecision = Column('horizontaldilutionofprecision', VARCHAR(35))
 	bearing = Column('bearing', VARCHAR(35))
 	coingkmaveragegkm = Column('coingkmaveragegkm', VARCHAR(35))
