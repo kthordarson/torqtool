@@ -104,7 +104,7 @@ def transfer_older_logs(args):
 					logger.error(f'Error {type(e)} {e} {old_log_name} -> {new_log_fn}')
 		else:
 			logger.warning(f'could not extract profiledata from {profile_fn}')
-	logger.info(f'transfered {len(transfered_logs)} of {len(old_dirs)} old tripLogs to {dest_log_path}')
+	logger.info(f'transfered {len(transfered_logs)} of {len(old_dirs)} old tripLogs to {args.logpath}')
 	return transfered_logs
 
 def check_and_fix_logs(logfiles, args):
@@ -334,6 +334,8 @@ def new_polars_csv_reader(logfile):
 		logger.error(msg)
 		raise Polarsreaderror(msg)
 	df = data.to_pandas()
+	df = fix_bad_values(df,logfile)
+
 	try:
 		ncren = {k:ncc[k] for k in df.columns if k in ncc} # get columns to rename
 		# df = df.rename(ncren) # rename them
@@ -458,7 +460,7 @@ def get_files_to_send(session:sessionmaker, args):
 	"""
 	files_to_send = []
 	try:
-		unread_dbfiles = session.query(TorqFile).filter(TorqFile.read_flag==0).all()
+		unread_dbfiles = session.query(TorqFile).filter(TorqFile.read_flag==0).filter(TorqFile.error_flag==0).all()
 		read_dbfiles = session.query(TorqFile).filter(TorqFile.read_flag==1).all()
 		csvfiles = [str(k) for k in Path(args.logpath).glob('*.csv')]
 		files_to_send = set(csvfiles)-set([k.csvfile for k in read_dbfiles])
@@ -535,7 +537,7 @@ def fix_bad_values(data:pd.DataFrame, f:str):
 		needs_fix = [k for k in data.columns if '-' in data[k].values]
 		fixcount = 0
 		for fix in needs_fix:
-			# data[fix] = data[fix].replace('-',0)
+			data[fix] = data[fix].replace('-',0)
 			data[fix] = data[fix].replace('340282346638528860000000000000000000000',0)
 			data[fix] = data[fix].replace('-3402823618710077500000000000000000000',0)
 			data[fix] = data[fix].replace('612508207723425200000000000000000000000',0)
@@ -593,7 +595,6 @@ def data_fixer(data:pd.DataFrame, f):
 		else:
 			logger.warning(f'empty column {col}')
 			# logger.info(f'fixed {col} in {f}')
-	#fixed_data = fix_bad_values(data,f)
 	return data # fixed_data  if not fixed_data.empty else data
 
 def fix_column_names(csvfile:str):
@@ -652,6 +653,10 @@ def db_set_file_flag(session, filename=None, flag=None, flagval=None):
 		torqfile = session.query(TorqFile).filter(TorqFile.csvhash == csvhash).one()
 	except MultipleResultsFound as e:
 		logger.error(f'{e} {filename} {csvhash} multiple entries in db, aborting...')
+		torqfiles = session.query(TorqFile).filter(TorqFile.csvhash == csvhash).all()
+		for t in torqfiles:
+			t.error_flag = 1
+		session.commit()
 		return None
 	except NoResultFound as e:
 		logger.warning(f'{e} {filename} not found in db while trying to set {flag}, creating entry...')
