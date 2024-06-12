@@ -21,7 +21,7 @@ from commonformats import fmt_20, fmt_24, fmt_26, fmt_28, fmt_30, fmt_34, fmt_36
 from datamodels import TorqFile, database_init
 from schemas import ncc, schema_datatypes
 from utils import get_engine_session, get_fixed_lines, get_sanatized_column_names,MIN_FILESIZE
-from fixers import split_file, test_pandas_csv_read, test_polars_csv_read, run_fixer, get_cols, check_and_fix_logs
+from fixers import split_file, test_pandas_csv_read, test_polars_csv_read, run_fixer, get_cols, check_and_fix_logs, fix_column_names, replace_headers
 
 pd.set_option('future.no_silent_downcasting', True)
 
