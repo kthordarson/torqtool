@@ -961,8 +961,12 @@ def main():
 	parser.add_argument('--fixer', default=False, help="run fixer, set --bakpath", action="store_true", dest='fixer')
 	parser.add_argument('--testnewreader', default=False, help="run testnewreader", action="store_true", dest='testnewreader')
 	parser.add_argument('--scanpath', default=False, help="run scanpath", action="store_true", dest='scanpath')
-	parser.add_argument("--dbmode", default="sqlite", help="sqlmode mysql/postgresql/sqlite/mariadb", action="store")
+	parser.add_argument("--dbmode", default="sqlite", help="sqlmode mysql/psql/sqlite/mariadb", action="store")
 	parser.add_argument('--dbfile', default='torqfiskur.db', help='database file', action='store')
+	parser.add_argument("--dbname", default="torq", help="dbname", action="store")
+	parser.add_argument("--dbhost", default="localhost", help="dbname", action="store")
+	parser.add_argument("--dbuser", default="torq", help="dbname", action="store")
+	parser.add_argument("--dbpass", default="qrot", help="dbname", action="store")
 	parser.add_argument('-d', '--debug', default=False, help="debugmode", action="store_true", dest='debug')
 
 	args = parser.parse_args()
