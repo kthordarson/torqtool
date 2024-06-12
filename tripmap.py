@@ -12,7 +12,7 @@ from plotutils import plot_trip, combine_map_plot, download_maps
 
 
 def cli_main(args):
-	dburl = 'sqlite:///torqfiskur.db'
+	dburl = args.dburl #'sqlite:///torqfiskur.db'
 	engine = create_engine(dburl, echo=False, connect_args={'check_same_thread': False})
 
 	Session = sessionmaker(bind=engine)
@@ -71,6 +71,7 @@ if __name__ == '__main__':
 	parser.add_argument('-c', '--combine', help="combiner mapfile plotfile outfile", action="store", dest='combine', default="", nargs=3)
 	parser.add_argument('-pa', '--plot-all', help="plot all", action="store_true", dest='plotall', default=False)
 	parser.add_argument('-d', '--download-maps', help="download all maps from mapbox", action="store_true", default=False, dest='dlmaps')
+	parser.add_argument('-db', '--dburl', help="database url", action="store", default='sqlite:///torqfiskur.db', dest='dburl')
 	args = parser.parse_args()
 	cli_main(args)
 

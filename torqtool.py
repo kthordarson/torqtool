@@ -6,7 +6,7 @@ from collections.abc import AsyncIterable
 from datetime import datetime
 from pathlib import Path
 from timeit import default_timer as timer
-
+import pandas as pd
 from loguru import logger
 from sqlalchemy.exc import OperationalError
 # sys.path.append('c:/apps/torqtool/torqtool')
@@ -74,11 +74,11 @@ async def scanpath(session, args):
 	#Session = sessionmaker(bind=engine)
 	#session = Session()
 
-	filelist = get_csv_files(searchpath=Path(args.path), dbmode=args.dbmode, debug=args.debug)
+	filelist = get_csv_files(searchpath=Path(args.logpath), dbmode=args.dbmode, debug=args.debug)
 	filelist = sorted(filelist, key=lambda x: x['csvfile']) # sort by filename (date)
 
 	if len(filelist) == 0:
-		logger.error(f'no csv files found in {args.path}')
+		logger.error(f'no csv files found in {args.logpath}')
 		sys.exit(1)
 	try:
 		newfilelist = send_torqfiles(filelist, session, debug=args.debug)
@@ -142,7 +142,7 @@ async def collect(async_iterable):
     return [item async for item in async_iterable]
 
 async def main(args):
-	# 1. scan args.path for csv files
+	# 1. scan args.logpath for csv files
 	# 2. check if csv files are in db
 	# 3. if not in db, foreach run fixer, create TorqFile and send to db
 	# 4.
@@ -186,16 +186,24 @@ async def main(args):
 	if args.create_trips:
 		# create trips data from database
 		tf_ids = session.query(TorqFile.fileid).all()
+		data = pd.DataFrame()
 		for idx, tf in enumerate(tf_ids):
-			data = session.query(Torqlogs).filter(Torqlogs.fileid == tf.fileid).all()
-			if data:
+			# data = session.query(Torqlogs).filter(Torqlogs.fileid == tf.fileid).all()
+			try:
+				data = pd.read_sql(session.query(Torqlogs).filter(Torqlogs.fileid==tf.fileid).statement,con=engine)
+			except OperationalError as e:
+				logger.error(f'{idx} {e} {tf=}')
+				continue
+			if not data.empty:
 				tripdata = None
+				logger.info(f'[{idx}/{len(tf_ids)}] Generating tripdata for fileid {tf.fileid} ')
 				try:
-					tripdata = generate_torqdata(data, session, args.debug)
+					tripdata = generate_torqdata(data, session, args)
 				except Exception as e:
 					logger.error(f'[!] unhandled {type(e)} {e} {tf=}')
 					sys.exit(1)
 				if tripdata:
+					logger.debug(f'[{idx}/{len(tf_ids)}] Sending {len(tripdata)} tripdata for fileid {tf.fileid} ')
 					send_torqtripdata(tripdata, session, args.debug)
 		sys.exit(0)
 	if args.scanpath:
@@ -263,7 +271,7 @@ if __name__ == '__main__':
 	parser = argparse.ArgumentParser(description="torqtool")
 	parser.add_argument('-d', '--debug', default=False, help="debugmode", action="store_true", dest='debug')
 
-	parser.add_argument("--path", nargs="?", default=".", help="path to csv files", action="store")
+	parser.add_argument("--logpath", nargs="?", default=".", help="path to csv files", action="store")
 	parser.add_argument("--file", nargs="?", default=".", help="path to single csv file", action="store")
 
 	parser.add_argument('--torqdata', default=False, help="create torqdata", action="store_true", dest='torqdata')
@@ -282,11 +290,12 @@ if __name__ == '__main__':
 	parser.add_argument("--sqlchunksize", nargs="?", default="1000", help="sql chunk", action="store")
 	parser.add_argument("--max_workers", nargs="?", default="4", help="max_workers", action="store")
 	parser.add_argument("--chunks", nargs="?", default="4", help="chunks", action="store")
-	parser.add_argument("--dbmode", default="", help="sqlmode mysql/postgresql/sqlite/mariadb", action="store")
-	parser.add_argument("--dbname", default="", help="dbname", action="store")
-	parser.add_argument("--dbhost", default="", help="dbname", action="store")
-	parser.add_argument("--dbuser", default="", help="dbname", action="store")
-	parser.add_argument("--dbpass", default="", help="dbname", action="store")
+	parser.add_argument("--dbmode", default="sqlite", help="sqlmode mysql/psql/sqlite/mariadb", action="store")
+	parser.add_argument('--dbfile', default='torqfiskur.db', help='database file', action='store')
+	parser.add_argument("--dbname", default="torq", help="dbname", action="store")
+	parser.add_argument("--dbhost", default="localhost", help="dbname", action="store")
+	parser.add_argument("--dbuser", default="torq", help="dbname", action="store")
+	parser.add_argument("--dbpass", default="qrot", help="dbname", action="store")
 	parser.add_argument('--threadmode', default='ppe', help='threadmode ppe/oldppe/tpe', action='store')
 	parser.add_argument('--foobar', default=False, help='foobar', action='store_true')
 	# parser.add_argument("--gui", default=False, help="Run gui", action="store_true", dest='gui')

@@ -104,7 +104,7 @@ def transfer_older_logs(args):
 					logger.error(f'Error {type(e)} {e} {old_log_name} -> {new_log_fn}')
 		else:
 			logger.warning(f'could not extract profiledata from {profile_fn}')
-	logger.info(f'transfered {len(transfered_logs)} of {len(old_dirs)} old tripLogs to {dest_log_path}')
+	logger.info(f'transfered {len(transfered_logs)} of {len(old_dirs)} old tripLogs to {args.logpath}')
 	return transfered_logs
 
 def check_and_fix_logs(logfiles, args):
@@ -333,7 +333,39 @@ def new_polars_csv_reader(logfile):
 		msg = f'NoDataError {type(e)} {e} {logfile}'
 		logger.error(msg)
 		raise Polarsreaderror(msg)
+	#filtered_data = data.drop_nulls() # drop columns with all null values
 	df = data.to_pandas()
+
+	# do the fixing here
+	infsymbs = [k for k in df.columns if '∞' in df[k].values]
+	for col in infsymbs:
+		df[col] = df[col].replace('∞',0)
+	dashfix = [k for k in df.columns if '-' in df[k].values]
+	for col in dashfix:
+		df[col] = df[col].replace('-',0)
+	nanfix = [k for k in df.columns if 'NaN' in df[k].values]
+	for col in nanfix:
+		df[col] = df[col].replace('NaN',0)
+
+	#subchars = [',Â','∞','Â°F','Â°','â°','â', '-', 'NaN',] # ', ',
+	#need_to_fix = [k for k in df.columns if df[k].values.any() in subchars]
+	#need_to_fix = [k[1] for k in df[col].items() if '-' in k for col in df.columns]
+	#for col in need_to_fix:
+	#	df[col] = df[col].replace(subchars,0)
+	#	logger.debug(f'fixes: {len(need_to_fix)} f:{logfile} {col}')
+	#if len(need_to_fix) > 0:
+		#logger.debug(f'fixes: {len(need_to_fix)} in {logfile}')
+	# drop columns with all null values
+	#df = df_.dropna(axis='columns', how='all')
+
+	# df = fix_bad_values(df,logfile) # fix bad values, broken maybe...
+	#pldrops = len(data.columns)-len(filtered_data.columns)
+	#pddrops = len(df_.columns)-len(df.columns)
+
+
+	#if pldrops != 0 or pddrops != 0:
+	#	logger.warning(f'filtered pl: {pldrops} pd:{pddrops} columns in {logfile}')
+
 	try:
 		ncren = {k:ncc[k] for k in df.columns if k in ncc} # get columns to rename
 		# df = df.rename(ncren) # rename them
@@ -342,6 +374,15 @@ def new_polars_csv_reader(logfile):
 		msg = f'keyerror {type(e)} {e} {logfile}\ndatacols: {df.columns} \n'
 		logger.warning(msg)
 		raise Polarsreaderror(msg)
+
+	# dfout = df.fillna(0)
+	return df
+
+def colreplacer(df):
+	# todo for checking try :
+	# test = [float(k) for k in data['enginecoolanttemperaturef'].values ] # raises exception if not float
+	# test = [float(k) for k in data[columntocheck].values ] # raises exception if not float
+
 	for col in df.columns:
 		# df[col] = df[col].replace('.',',')
 		df[col] = df[col].replace('-',0)
@@ -351,12 +392,25 @@ def new_polars_csv_reader(logfile):
 		df[col] = df[col].replace('₂','')
 		df[col] = df[col].replace('∞','')
 		df[col] = df[col].replace('£','')
+		df[col] = df[col].replace('\n','')
+		df[col] = df[col].replace('612508207723425200000000000000000000000',0)
+		df[col] = df[col].replace('340282346638528860000000000000000000000',0)
+		df[col] = df[col].replace('-3402823618710077500000000000000000000',0)
+		df[col] = df[col].replace('6.125082077234252e+38',0)
+		df[col] = df[col].replace('3.4028234663852886e+38',0)
+		df[col] = df[col].replace('-5.481e-05',0)
+		df[col] = df[col].replace('â\x88\x9e',0)
+		# â\x88\x9e
+		#-5.481e-05
+		#6.125082077234252e+38
+		#3.4028234663852886e+38
+		# 6.125082077234252e+38
+		# 612508207723425200000000000000000000000
 		# df[col] = rcol
 	# data = df.fill_null(0).fill_nan(0)
 	# df = data.to_pandas()
 	# df1 = df.rename(columns=ncc)
-	dfout = df.fillna(0)
-	return dfout
+
 
 def test_polars_csv_read(logdir,maxfiles=100):
 	dfx = pd.DataFrame()
@@ -438,18 +492,19 @@ def send_csv_data_to_db(args, data:pd.DataFrame, f:str):
 	fileid = session.query(TorqFile.fileid).filter(TorqFile.csvfile==f).one()[0]
 	# fileid_series = pl.Series("fileid", [fileid for k in range(len(data))])
 	data.insert(column='fileid', loc=0, value=fileid)
-	logger.debug(f'sending {len(data)} from {f} id:{fileid} to database {args.dbmode}')
+	fn = Path(f).name
+	logger.debug(f'sending {len(data)} from {fn} id:{fileid} to database {args.dbmode}')
 	try:
 		# data.to_sql('torqlogs', con=session.get_bind(), if_exists='append', index=False)
 		data.to_sql('torqlogs', con=engine, if_exists='append', index=False)
 	except (DataError, OperationalError) as e:
 		logger.warning(f'{type(e)} {e.args[0]} {f=}')
-		return False
+		return 0
 	except Exception as e:
 		logger.error(f'unhandled {type(e)} {e} ')
-		return False
+		return 0
 	session.close()
-	return True
+	return len(data)
 
 def get_files_to_send(session:sessionmaker, args):
 	"""
@@ -458,8 +513,10 @@ def get_files_to_send(session:sessionmaker, args):
 	"""
 	files_to_send = []
 	try:
-		unread_dbfiles = session.query(TorqFile).filter(TorqFile.read_flag==0).all()
+		all_db_files = session.query(TorqFile).count()
+		unread_dbfiles = session.query(TorqFile).filter(TorqFile.read_flag==0).filter(TorqFile.error_flag==0).all()
 		read_dbfiles = session.query(TorqFile).filter(TorqFile.read_flag==1).all()
+		error_dbfiles = session.query(TorqFile).filter(TorqFile.error_flag!=0).all()
 		csvfiles = [str(k) for k in Path(args.logpath).glob('*.csv')]
 		files_to_send = set(csvfiles)-set([k.csvfile for k in read_dbfiles])
 	except Exception as e:
@@ -467,7 +524,7 @@ def get_files_to_send(session:sessionmaker, args):
 	finally:
 		session.close()
 		if len(files_to_send) > 0:
-			logger.info(f'found {len(files_to_send)} files_to_send,  unread_dbfiles:{len(unread_dbfiles)} files to process and send...')
+			logger.info(f'found {len(files_to_send)} files_to_send,  unread_dbfiles:{len(unread_dbfiles)} error_dbfiles: {len(error_dbfiles)} all_db_files:{all_db_files}')
 		else:
 			logger.warning(f'no files found in {args.logpath} ! dbfiles:{len(unread_dbfiles)} ...')
 
@@ -532,17 +589,23 @@ def fix_bad_values(data:pd.DataFrame, f:str):
 	# C3 82 C2 B0
 	# Â°
 	try:
-		needs_fix = [k for k in data.columns if '-' in data[k].values]
-		fixcount = 0
-		for fix in needs_fix:
-			# data[fix] = data[fix].replace('-',0)
-			data[fix] = data[fix].replace('340282346638528860000000000000000000000',0)
-			data[fix] = data[fix].replace('-3402823618710077500000000000000000000',0)
-			data[fix] = data[fix].replace('612508207723425200000000000000000000000',0)
-			data[fix] = data[fix].replace('â\x88\x9e',0)
-			fixcount += 1
-		if fixcount>0:
-			logger.debug(f'fixed {fixcount} things in {f}')
+		#needs_fix = [k for k in data.columns if '-' in data[k].values]
+		for c in data:
+			data[c] = data[c].replace('-',0)
+			data[c] = data[c].replace('∞',0)
+			data[c] = data[c].replace('NaN',0)
+			data[c] = data[c].replace('6.125082077234252e+38',0)
+			#6.125082077234252e+38
+		# fixcount = 0
+		# for fix in needs_fix:
+
+		# 	data[fix] = data[fix].replace('340282346638528860000000000000000000000',0)
+		# 	data[fix] = data[fix].replace('-3402823618710077500000000000000000000',0)
+		# 	data[fix] = data[fix].replace('612508207723425200000000000000000000000',0)
+		# 	data[fix] = data[fix].replace('â\x88\x9e',0)
+		# 	fixcount += 1
+		# if fixcount>0:
+		# 	logger.debug(f'fixed {fixcount} things in {f}')
 		return data
 	except Exception as e:
 		logger.error(f'error in fixer: {type(e)} {e} for {f}')
@@ -593,7 +656,6 @@ def data_fixer(data:pd.DataFrame, f):
 		else:
 			logger.warning(f'empty column {col}')
 			# logger.info(f'fixed {col} in {f}')
-	#fixed_data = fix_bad_values(data,f)
 	return data # fixed_data  if not fixed_data.empty else data
 
 def fix_column_names(csvfile:str):
@@ -605,8 +667,8 @@ def fix_column_names(csvfile:str):
 	try:
 		with open(csvfile,'r') as f:
 			rawdata = f.readlines()
-		for badchar in subchars:
-			rawdata[0] = get_sanatized_column_names(rawdata[0]) #re.sub(badchar,',',rawdata[0])
+		#for badchar in subchars:
+		rawdata[0] = get_sanatized_column_names(rawdata[0]) #re.sub(badchar,',',rawdata[0])
 		# rawdata[0] = re.sub(', ',',',rawdata[0])
 		# rawdata[0] = re.sub('Â','',rawdata[0])
 		# rawdata[0] = re.sub('∞','',rawdata[0])
@@ -643,7 +705,7 @@ def replace_headers(newfiles:list):
 		logger.info(f'fixed {len(res["files_to_read"])} files')
 	return res
 
-def db_set_file_flag(session, filename=None, flag=None, flagval=None):
+def db_set_file_flag(session, filename=None, flag=None, flagval=None, sent_rows=None):
 	"""
 	set flag on file in database
 	"""
@@ -652,6 +714,10 @@ def db_set_file_flag(session, filename=None, flag=None, flagval=None):
 		torqfile = session.query(TorqFile).filter(TorqFile.csvhash == csvhash).one()
 	except MultipleResultsFound as e:
 		logger.error(f'{e} {filename} {csvhash} multiple entries in db, aborting...')
+		torqfiles = session.query(TorqFile).filter(TorqFile.csvhash == csvhash).all()
+		for t in torqfiles:
+			t.error_flag = 1
+		session.commit()
 		return None
 	except NoResultFound as e:
 		logger.warning(f'{e} {filename} not found in db while trying to set {flag}, creating entry...')
@@ -665,6 +731,7 @@ def db_set_file_flag(session, filename=None, flag=None, flagval=None):
 			torqfile.error_flag = 0
 			torqfile.send_flag = 1
 			torqfile.read_flag = 1
+			torqfile.sent_rows = sent_rows
 		case 'split':
 			torqfile.error_flag = 2
 			torqfile.read_flag = 0
@@ -752,10 +819,11 @@ def split_file(logfile:str, session=None):
 			# {marker.get("linenumber")}
 			# remove lines that start with GPS, keep first line, write to file (overwrite)
 			skip_lines = [k.get('linenumber') for k in split_list]
+			shutil.copy(logfile, f'{logfile}.bak')
 			with open(logfile, 'w') as f:
 				for idx, line in enumerate(rawdata):
 					if idx not in skip_lines:
-						f.write(line)
+						f.write(line.strip())
 			logger.debug(f'wrote fixed {logfile}')
 			# mark the file as fixed in the database, TorqFile.fixed_flag = 1 and TorqFile.error_flag = 0, read again
 			if session:
@@ -822,11 +890,12 @@ def cli_main(args):
 					db_set_file_flag(session, filename=f, flag='fixerror')
 					continue
 				try:
-					if send_csv_data_to_db(args, fixed_data, f):
+					sent_rows = send_csv_data_to_db(args, fixed_data, f)
+					if sent_rows>0:
 						# todo maybe update torqfile flags in database
-						db_set_file_flag(session, filename=f, flag='ok') # pass # logger.debug(f'Sent data from {f} to database')
+						db_set_file_flag(session, filename=f, flag='ok', sent_rows=sent_rows) # pass # logger.debug(f'Sent data from {f} to database')
 					else:
-						logger.warning(f'Could not send data from {f} to db...')
+						logger.warning(f'Could not send {sent_rows} data from {f} to db...')
 						db_set_file_flag(session, filename=f, flag='senderror')
 						broken_files.append(f)
 				except Exception as e:
@@ -892,8 +961,12 @@ def main():
 	parser.add_argument('--fixer', default=False, help="run fixer, set --bakpath", action="store_true", dest='fixer')
 	parser.add_argument('--testnewreader', default=False, help="run testnewreader", action="store_true", dest='testnewreader')
 	parser.add_argument('--scanpath', default=False, help="run scanpath", action="store_true", dest='scanpath')
-	parser.add_argument("--dbmode", default="sqlite", help="sqlmode mysql/postgresql/sqlite/mariadb", action="store")
-	parser.add_argument('--dburl', default='sqlite:///torqfiskur.db', help='database url', action='store')
+	parser.add_argument("--dbmode", default="sqlite", help="sqlmode mysql/psql/sqlite/mariadb", action="store")
+	parser.add_argument('--dbfile', default='torqfiskur.db', help='database file', action='store')
+	parser.add_argument("--dbname", default="torq", help="dbname", action="store")
+	parser.add_argument("--dbhost", default="localhost", help="dbname", action="store")
+	parser.add_argument("--dbuser", default="torq", help="dbname", action="store")
+	parser.add_argument("--dbpass", default="qrot", help="dbname", action="store")
 	parser.add_argument('-d', '--debug', default=False, help="debugmode", action="store_true", dest='debug')
 
 	args = parser.parse_args()
