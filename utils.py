@@ -839,6 +839,42 @@ def xdate_fixer_gpstime(data, f):
 		logger.warning(f'could not match format for fmt_selector {fmt_selector} for {datecol} {f=} {testdate=} .\n sample:first= {df0[datecol][0]} middle= {df0[datecol][len(data)//2]} ') # last= {df0[datecol][len(df0)-1]}\n')
 	return df0
 
+def Convert(lst):
+	# convert list to dict
+    res_dct = map(lambda i: (lst[i], lst[i+1]), range(len(lst)-1)[::2])
+    return dict(res_dct)
+
+def convert_string_to_datetime(s:str):
+	"""
+	try to convert string to datetime, based on string length apply fmt
+	param s string with datetime
+	returns datetime object
+	"""
+	fmt_selector = len(s)
+	datetimeobject = s
+	try:
+		match fmt_selector:
+			case 20:
+				datetimeobject = datetime.strptime(s,fmt_20).astimezone(pytz.timezone('UTC'))
+			case 24:
+				datetimeobject = datetime.strptime(s,fmt_24).astimezone(pytz.timezone('UTC'))
+			case 26:
+				datetimeobject = datetime.strptime(s,fmt_26).astimezone(pytz.timezone('UTC'))
+			case 28:
+				datetimeobject = datetime.strptime(s,fmt_28).astimezone(pytz.timezone('UTC'))
+			case 30:
+				datetimeobject = datetime.strptime(s,fmt_30).astimezone(pytz.timezone('UTC'))
+			case 34:
+				datetimeobject = datetime.strptime(s,fmt_34).astimezone(pytz.timezone('UTC'))
+			case 36:
+				datetimeobject = datetime.strptime(s,fmt_36).astimezone(pytz.timezone('UTC'))
+			case _:
+				pass # logger.warning(f'could not match format for fmt_selector {fmt_selector} for {datecol} {f=}.\n sample:first= {df0[datecol][0]} middle= {df0[datecol][len(data)//2]} last= {df0[datecol][len(df0)-1]}\n')
+	except (ValueError,TypeError,KeyError) as e:
+		logger.error(f'dateconverter {type(e)} {e} {s=}')
+	finally:
+		return datetimeobject
+
 
 if __name__ == '__main__':
 	pass
