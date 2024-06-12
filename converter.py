@@ -18,7 +18,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.exc import MultipleResultsFound
 from commonformats import fmt_20, fmt_24, fmt_26, fmt_28, fmt_30, fmt_34, fmt_36
 from datamodels import TorqFile, database_init
-from schemas import ncc
+from schemas import ncc, schema_datatypes
 from utils import get_engine_session, get_fixed_lines, get_sanatized_column_names
 
 pd.set_option('future.no_silent_downcasting', True)
@@ -320,14 +320,9 @@ def new_polars_csv_reader(logfile):
 	returns pandas dataframe, with sanatized column names
 	raises Polarsreaderror if something goes wrong
 	"""
-	so = {
-    " Latitude": pl.Float64,
-    " Longitude": pl.Float64,
-    "Latitude": pl.Float64,
-    "Longitude": pl.Float64,
-	}
+	
 	try: # schema_overrides=so,
-		data = pl.read_csv(logfile,  ignore_errors=True, try_parse_dates=True,truncate_ragged_lines=True, n_threads=4, use_pyarrow=True) # .to_pandas()
+		data = pl.read_csv(logfile, schema_overrides=schema_datatypes, ignore_errors=True, try_parse_dates=True,truncate_ragged_lines=True, n_threads=4, use_pyarrow=True) # .to_pandas()
 		#, schema=schema)
 	except pl.exceptions.NoDataError as e:
 		msg = f'NoDataError {type(e)} {e} {logfile}'
@@ -346,6 +341,42 @@ def new_polars_csv_reader(logfile):
 	nanfix = [k for k in df.columns if 'NaN' in df[k].values]
 	for col in nanfix:
 		df[col] = df[col].replace('NaN',0)
+	# bigvalfix = [k for k in df.columns if '340282346638528860000000000000000000000' in df[k].values or '612508207723425200000000000000000000000' in df[k].values]
+	#for col in bigvalfix:
+	#	df[col] = df[col].replace('340282346638528860000000000000000000000',0)
+	#	df[col] = df[col].replace('612508207723425200000000000000000000000',0)
+
+	# bigval check v2
+	for col in df.columns:
+		# must be longer than 13, must be str and not contain 'time'
+		# chk = [print(f'{col} {k} {type(k)}') for k in df[col]  if isinstance(k,str) and len(k) > 13 and 'time' not in col]
+		longcheck = None
+		if not 'time' in col:
+			longcheck = [k for k in df[col] if isinstance(k,str) and len(k) > 18]
+			if longcheck:
+				# remove the long bad values
+				df[col] = df[col].replace(longcheck,0)
+				logger.warning(f'replaced {len(longcheck)} long values in {logfile} column: {col} lc:  {longcheck[0:1]}')
+
+	# todo ....
+	# find strings in dataframe
+	# should be converted to float or number
+	string_check = []
+	for col in df.columns:
+		if 'time' not in col:
+			string_check.extend([{'col':col, 'value': k, 'idx': idx} for idx,k in enumerate(df[col]) if isinstance(k,str)])
+			# string_check.extend([print(f'col:{col} value: {k} {type(k)}') for k in df[col] if isinstance(k,str)])
+	columns_with_wrong_dtype = set([k['col'] for k in string_check])
+	if len(columns_with_wrong_dtype) > 0:
+		logger.warning(f'found {len(string_check)} string values in {logfile} columns: {columns_with_wrong_dtype=} ')
+
+	# for col in df.columns:
+	#	if 'time' not in col:
+	#		string_check = [print(f'col:{col} value: {k} {type(k)}') for k in df[col] if not isinstance(k,str)]
+
+	# bignumbers:
+	# 340282346638528860000000000000000000000
+	# 612508207723425200000000000000000000000
 
 	#subchars = [',Â','∞','Â°F','Â°','â°','â', '-', 'NaN',] # ', ',
 	#need_to_fix = [k for k in df.columns if df[k].values.any() in subchars]
