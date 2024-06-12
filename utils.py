@@ -8,6 +8,7 @@ from datetime import datetime
 from hashlib import md5
 from pathlib import Path
 from pickle import PicklingError
+import random
 import argparse
 import pandas as pd
 import polars as pl
@@ -17,7 +18,7 @@ from loguru import logger
 from polars import ComputeError
 from polars import read_csv as read_csv_polars
 from polars.exceptions import ColumnNotFoundError, InvalidOperationError
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.exc import (
 	ArgumentError,
 	DataError,
@@ -134,18 +135,16 @@ def fix_logfile(logfile: Path, debug=False):
 			# make backup of original file before overwriting
 			backupfile = f'{logfile}.bak'
 			if Path(backupfile).exists():
-				pass # logger.warning(f'backupfile {backupfile} exists, skipping ')
-				# todo verify backupfile before returing ok.....
-				# assume file is fixed return ok
-				return True
-			else:
-				shutil.move(logfile, backupfile)
-				# write to fixed csv file
-				with open(file=logfile, mode='w', encoding='utf-8', newline='') as writer:
-					writer.writelines(fixedlines)
-				if debug:
-					logger.debug(f'[gcv] saved {len(fixedlines)} fixed lines to {logfile}')
-				return True
+				rx = ''.join([str(random.randint(1,100)) for k in range(4)])
+				newbakname = f'{logfile}.{rx}.bak'
+				logger.warning(f'backupfile {backupfile} exists, backing up to {newbakname} ')
+			shutil.copy(logfile, backupfile)
+			# write to fixed csv file
+			with open(file=logfile, mode='w', encoding='utf-8', newline='') as writer:
+				writer.writelines(fixedlines)
+			if debug:
+				logger.debug(f'[gcv] saved {len(fixedlines)} fixed lines to {logfile}')
+			return True
 	except FileNotFoundError as e:
 		logger.error(f'[gcv] {type(e)} {e} in {logfile=} ')
 		return False
@@ -677,6 +676,87 @@ def get_temp_stats(temp_cols):
 			f'{c.name}.max':c.max(),
 		   }
 	return stats
+
+def check_database_columns(session, args=None, limit=1000):
+	"""
+	collect some info about database columns
+	"""
+	skip_cols = ['id', 'fileid', 'devicetime', 'gpstime','time', 'csvfile', 'csvhash', 'read_flag', 'error_flag', 'send_flag', 'send_flag', 'data_flag', 'distance']
+	df = pd.DataFrame(session.execute(text('select column_name from information_schema.columns where table_name = "torqlogs" order by table_name,ordinal_position')).all())
+	# df = pd.DataFrame(session.execute(text('select column_name from information_schema.columns where table_schema = "torq" order by table_name,ordinal_position')).all())
+	# df2 = pd.DataFrame(session.execute(text('SELECT id,fileid,o2sensor1widerangecurrentma FROM torqlogs WHERE o2sensor1widerangecurrentma IS NULL  OR o2sensor1widerangecurrentma=";" ')).all())
+	column_names = sorted([k for k in set([k[0] for k in df.values]) if k not in skip_cols])
+	logger.info(f'found {len(column_names)} columns in database, limit:{limit}')
+	maxnlen = max([len(k) for k in column_names]) # longest name, for formatting
+	for col in column_names:
+		if args.debug:
+			logger.debug(f'checking {col} limit:{limit} ')
+		if not limit:
+			df = pd.DataFrame(session.execute(text(f'select {col} from torqlogs')).all())
+		else:
+			df = pd.DataFrame(session.execute(text(f'select {col} from torqlogs limit {limit}')).all()) #  where {col} > 0
+		try:
+			nulls = df.isnull().sum().values[0]
+		except (IndexError,AttributeError) as e:
+			logger.error(f'{type(e)} {e} {col=} ')
+			nulls = 0.0
+		# nullratio = len(df)/df.isnull().sum().values[0]
+		nr = 0.0
+		if nulls>0:
+			try:
+				nr = len(df)/nulls
+			except (Exception, RuntimeError, ZeroDivisionError) as e:
+				logger.error(f'{type(e)} {e} {col=} {df.describe()}')
+
+			#if nr == 1.0:
+		minval = df.min().values[0] or 0.0
+		mednval = df.median().values[0] or 0.0
+		meannval = df.mean().values[0] or 0.0
+		maxnval = df.max().values[0] or 0.0
+		print(f'  {col:<{maxnlen}} nulls: {nulls:>3} nr: {nr:>3.3} {minval:>3.3} {mednval:>3.3} {meannval:>3.3} {maxnval:>3.3}')
+		# nullratio: {nullratio}
+# ;
+# df = pd.DataFrame(session.execute(text(f'select id,distance,fuelcost,fuelused,tripdate,time from torqtrips')).all())
+
+
+def get_tripfile_stats(fileid, session, args=None, limit=1000):
+	"""
+	collect some info about database columns
+	"""
+	skip_cols = ['id', 'fileid', 'devicetime', 'gpstime','time', 'csvfile', 'csvhash', 'read_flag', 'error_flag', 'send_flag', 'send_flag', 'data_flag', 'distance']
+	df = pd.DataFrame(session.execute(text('select column_name from information_schema.columns where table_name = "torqlogs" order by table_name,ordinal_position')).all())
+	# df = pd.DataFrame(session.execute(text('select column_name from information_schema.columns where table_schema = "torq" order by table_name,ordinal_position')).all())
+	# df2 = pd.DataFrame(session.execute(text('SELECT id,fileid,o2sensor1widerangecurrentma FROM torqlogs WHERE o2sensor1widerangecurrentma IS NULL  OR o2sensor1widerangecurrentma=";" ')).all())
+	column_names = sorted([k for k in set([k[0] for k in df.values]) if k not in skip_cols])
+	logger.info(f'checking {fileid=} found {len(column_names)} columns in database, limit:{limit}')
+	maxnlen = max([len(k) for k in column_names]) # longest name, for formatting
+	for col in column_names:
+		if args.debug:
+			logger.debug(f'checking {col} limit:{limit} ')
+		if not limit:
+			df = pd.DataFrame(session.execute(text(f'select {col} from torqlogs where fileid={fileid}')).all())
+		else:
+			df = pd.DataFrame(session.execute(text(f'select {col} from torqlogs where fileid={fileid} limit {limit}')).all()) #  where {col} > 0
+		try:
+			nulls = df.isnull().sum().values[0]
+		except (IndexError,AttributeError) as e:
+			logger.error(f'{type(e)} {e} {col=} ')
+			nulls = 0.0
+		# nullratio = len(df)/df.isnull().sum().values[0]
+		nr = 0.0
+		if nulls>0:
+			try:
+				nr = len(df)/nulls
+			except (Exception, RuntimeError, ZeroDivisionError) as e:
+				logger.error(f'{type(e)} {e} {col=} {df.describe()}')
+
+			#if nr == 1.0:
+		minval = df.min().values[0] or 0.0
+		mednval = df.median().values[0] or 0.0
+		meannval = df.mean().values[0] or 0.0
+		maxnval = df.max().values[0] or 0.0
+		print(f'  {col:<{maxnlen}} nulls: {nulls:>3} nr: {nr:>3.3} {minval:>3.3} {mednval:>3.3} {meannval:>3.3} {maxnval:>3.3}')
+
 
 def generate_torqdata(df:pd.DataFrame, session:sessionmaker=None, args:argparse.Namespace=None):
 	# generate torqdata from torqlogs

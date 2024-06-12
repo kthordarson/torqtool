@@ -21,7 +21,7 @@ from commonformats import fmt_20, fmt_24, fmt_26, fmt_28, fmt_30, fmt_34, fmt_36
 from datamodels import TorqFile, database_init
 from schemas import ncc, schema_datatypes
 from utils import get_engine_session, get_fixed_lines, get_sanatized_column_names,MIN_FILESIZE
-from fixers import split_file, test_pandas_csv_read, test_polars_csv_read, run_fixer, get_cols, check_and_fix_logs
+from fixers import split_file, test_pandas_csv_read, test_polars_csv_read, run_fixer, get_cols, check_and_fix_logs, fix_column_names, replace_headers
 
 pd.set_option('future.no_silent_downcasting', True)
 
@@ -78,7 +78,7 @@ def transfer_older_logs(args):
 	logger.debug(f'found {len(old_dirs)} old tripLogs')
 	for od in old_dirs:
 		profile_fn = os.path.join(od, 'profile.properties')
-		old_timestamp = datetime.fromtimestamp(int(od.name)/1000).strftime("%Y-%b-%d_%H-%M-%S")
+		# old_timestamp = datetime.fromtimestamp(int(od.name)/1000).strftime("%Y-%b-%d_%H-%M-%S")
 		if Path(profile_fn).exists():
 			# read profile.properties file, to extract some data
 			profiledata = read_profile(profile_fn)
@@ -443,52 +443,7 @@ def data_fixer(data:pd.DataFrame, f):
 			# logger.info(f'fixed {col} in {f}')
 	return data # fixed_data  if not fixed_data.empty else data
 
-def fix_column_names(csvfile:str):
-	"""
-	strip leading spaces from column names and saves the fil
-	# todo maybe renmame columns here ?
-	"""
-	subchars = [', ',',Â','∞','Â°F','Â°','â°','â']
-	try:
-		with open(csvfile,'r') as f:
-			rawdata = f.readlines()
-		#for badchar in subchars:
-		rawdata[0] = get_sanatized_column_names(rawdata[0]) #re.sub(badchar,',',rawdata[0])
-		# rawdata[0] = re.sub(', ',',',rawdata[0])
-		# rawdata[0] = re.sub('Â','',rawdata[0])
-		# rawdata[0] = re.sub('∞','',rawdata[0])
-		# rawdata[0] = re.sub('Â°F','F',rawdata[0])
-		# rawdata[0] = re.sub('Â°','',rawdata[0])
-		# rawdata[0] = re.sub('â°','',rawdata[0])
-		# rawdata[0] = re.sub('â','',rawdata[0])
-		with open(csvfile,'w') as f:
-			f.writelines(rawdata)
-		return True
-	except Exception as e:
-		logger.error(f'{type(e)} {e} in {csvfile}')
-		return False
 
-def replace_headers(newfiles:list):
-	"""
-	newfiles a list of new files we need to process / send
-	strip leading spaces off the column headers
-	returns dict with two list of files, successfully processed files, and error files
-	"""
-
-	res = {
-		'files_to_read': [],
-		'errorfiles': [],
-	}
-	for f in newfiles:
-		if fix_column_names(f):
-			res['files_to_read'].append(f)
-		else:
-			res['errorfiles'].append(f)
-	if len(res['errorfiles']) > 0:
-		logger.warning(f"errors: {len(res['errorfiles'])} {res['errorfiles']}")
-	else:
-		logger.info(f'fixed {len(res["files_to_read"])} files')
-	return res
 
 def db_set_file_flag(session, filename=None, flag=None, flagval=None, sent_rows=None):
 	"""
@@ -561,7 +516,7 @@ def cli_main(args):
 			newfiles = get_files_to_send(session, args=args)
 		# todo fix colum names, some files have colum names with a leading space (eg ''GPS Time, Device Time, Longitude, Latitude,GPS Speed(km/h), Horizontal Dilution of Precision, Altitude(m), Bearing,')
 		# maybe replace this before read_csv ?
-		fixed_newfiles = replace_headers(newfiles)
+		fixed_newfiles = replace_headers(newfiles, args)
 		broken_files.extend(fixed_newfiles['errorfiles'])
 		if len(fixed_newfiles['errorfiles'])>0:
 			logger.warning(f'errorfiles: {fixed_newfiles["errorfiles"]} total broken_files: {len(broken_files)}')

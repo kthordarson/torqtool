@@ -24,6 +24,60 @@ from datamodels import TorqFile, database_init
 from schemas import ncc, schema_datatypes
 from utils import get_engine_session, get_fixed_lines, get_sanatized_column_names,MIN_FILESIZE, convert_string_to_datetime
 
+def replace_headers(newfiles:list, args):
+	"""
+	newfiles a list of new files we need to process / send
+	strip leading spaces off the column headers
+	returns dict with two list of files, successfully processed files, and error files
+	"""
+
+	res = {
+		'files_to_read': [],
+		'errorfiles': [],
+	}
+	for f in newfiles:
+		if fix_column_names(f, args):
+			res['files_to_read'].append(f)
+		else:
+			res['errorfiles'].append(f)
+	if len(res['errorfiles']) > 0:
+		logger.warning(f"errors: {len(res['errorfiles'])} {res['errorfiles']}")
+	else:
+		logger.info(f'fixed {len(res["files_to_read"])} files')
+	return res
+
+
+def fix_column_names(csvfile:str, args):
+	"""
+	strip leading spaces from column names and saves the fil
+	# todo maybe renmame columns here ?
+	"""
+	subchars = [', ',',Â','∞','Â°F','Â°','â°','â']
+	try:
+		with open(csvfile,'r') as f:
+			rawdata = f.readlines()
+		#for badchar in subchars:
+		rawdata[0] = get_sanatized_column_names(rawdata[0]) #re.sub(badchar,',',rawdata[0])
+		# rawdata[0] = re.sub(', ',',',rawdata[0])
+		# rawdata[0] = re.sub('Â','',rawdata[0])
+		# rawdata[0] = re.sub('∞','',rawdata[0])
+		# rawdata[0] = re.sub('Â°F','F',rawdata[0])
+		# rawdata[0] = re.sub('Â°','',rawdata[0])
+		# rawdata[0] = re.sub('â°','',rawdata[0])
+		# rawdata[0] = re.sub('â','',rawdata[0])
+		if not args.skipwrites:
+			logger.info(f'writing columns to {csvfile}')
+			shutil.copy(csvfile, f'{csvfile}.colfixbak')
+			with open(csvfile,'w') as f:
+				f.writelines(rawdata)
+		else:
+			logger.info(f'skipping write {csvfile}')
+		return True
+	except Exception as e:
+		logger.error(f'{type(e)} {e} in {csvfile}')
+		return False
+
+
 def test_polars_csv_read(logdir,maxfiles=100):
 	dfx = pd.DataFrame()
 	errors=0
@@ -130,7 +184,7 @@ def drop_empty_columns(logfile:str, savebackup=True):
 
 def get_cols(logpath:str, extglob:str="**/*.csv", debug=False):
 	"""
-	collect all columns from all log files in the path
+	collect all columns from all csv files in the path
 	params: logpath where to search, extglob glob pattern to use
 	prep data base columns ....
 	"""
