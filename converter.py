@@ -19,7 +19,7 @@ from sqlalchemy.exc import MultipleResultsFound
 
 from commonformats import fmt_20, fmt_24, fmt_26, fmt_28, fmt_30, fmt_34, fmt_36
 from datamodels import TorqFile, database_init
-from schemas import ncc, schema_datatypes
+from schemas import ncc, schema_datatypes, schema_datatypes
 from utils import get_engine_session, get_fixed_lines, get_sanatized_column_names,MIN_FILESIZE
 from fixers import split_file, test_pandas_csv_read, test_polars_csv_read, run_fixer, get_cols, check_and_fix_logs, fix_column_names, replace_headers
 
@@ -117,7 +117,7 @@ def read_csv_file(logfile):
 	returns pandas dataframe, with sanatized column names
 	raises Polarsreaderror if something goes wrong
 	"""
-	# todo handle missing gpstime, if not present, copy from devicetime
+
 	try: # schema_overrides=so,
 		data = pl.read_csv(logfile, schema_overrides=schema_datatypes, ignore_errors=True, try_parse_dates=True,truncate_ragged_lines=True, n_threads=4, use_pyarrow=True) # .to_pandas()
 		#, schema=schema)
@@ -138,6 +138,42 @@ def read_csv_file(logfile):
 	nanfix = [k for k in df.columns if 'NaN' in df[k].values]
 	for col in nanfix:
 		df[col] = df[col].replace('NaN',0)
+	# bigvalfix = [k for k in df.columns if '340282346638528860000000000000000000000' in df[k].values or '612508207723425200000000000000000000000' in df[k].values]
+	#for col in bigvalfix:
+	#	df[col] = df[col].replace('340282346638528860000000000000000000000',0)
+	#	df[col] = df[col].replace('612508207723425200000000000000000000000',0)
+
+	# bigval check v2
+	for col in df.columns:
+		# must be longer than 13, must be str and not contain 'time'
+		# chk = [print(f'{col} {k} {type(k)}') for k in df[col]  if isinstance(k,str) and len(k) > 13 and 'time' not in col]
+		longcheck = None
+		if not 'time' in col:
+			longcheck = [k for k in df[col] if isinstance(k,str) and len(k) > 18]
+			if longcheck:
+				# remove the long bad values
+				df[col] = df[col].replace(longcheck,0)
+				logger.warning(f'replaced {len(longcheck)} long values in {logfile} column: {col} lc:  {longcheck[0:1]}')
+
+	# todo ....
+	# find strings in dataframe
+	# should be converted to float or number
+	string_check = []
+	for col in df.columns:
+		if 'time' not in col:
+			string_check.extend([{'col':col, 'value': k, 'idx': idx} for idx,k in enumerate(df[col]) if isinstance(k,str)])
+			# string_check.extend([print(f'col:{col} value: {k} {type(k)}') for k in df[col] if isinstance(k,str)])
+	columns_with_wrong_dtype = set([k['col'] for k in string_check])
+	if len(columns_with_wrong_dtype) > 0:
+		logger.warning(f'found {len(string_check)} string values in {logfile} columns: {columns_with_wrong_dtype=} ')
+
+	# for col in df.columns:
+	#	if 'time' not in col:
+	#		string_check = [print(f'col:{col} value: {k} {type(k)}') for k in df[col] if not isinstance(k,str)]
+
+	# bignumbers:
+	# 340282346638528860000000000000000000000
+	# 612508207723425200000000000000000000000
 	# bigvalfix = [k for k in df.columns if '340282346638528860000000000000000000000' in df[k].values or '612508207723425200000000000000000000000' in df[k].values]
 	#for col in bigvalfix:
 	#	df[col] = df[col].replace('340282346638528860000000000000000000000',0)
