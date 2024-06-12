@@ -6,7 +6,7 @@ from collections.abc import AsyncIterable
 from datetime import datetime
 from pathlib import Path
 from timeit import default_timer as timer
-
+import pandas as pd
 from loguru import logger
 from sqlalchemy.exc import OperationalError
 # sys.path.append('c:/apps/torqtool/torqtool')
@@ -187,11 +187,12 @@ async def main(args):
 		# create trips data from database
 		tf_ids = session.query(TorqFile.fileid).all()
 		for idx, tf in enumerate(tf_ids):
-			data = session.query(Torqlogs).filter(Torqlogs.fileid == tf.fileid).all()
+			# data = session.query(Torqlogs).filter(Torqlogs.fileid == tf.fileid).all()
+			data = pd.read_sql(session.query(Torqlogs).filter(Torqlogs.fileid==tf.fileid).statement,con=engine)
 			if data:
 				tripdata = None
 				try:
-					tripdata = generate_torqdata(data, session, args.debug)
+					tripdata = generate_torqdata(data, session, args)
 				except Exception as e:
 					logger.error(f'[!] unhandled {type(e)} {e} {tf=}')
 					sys.exit(1)

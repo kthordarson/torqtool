@@ -6,13 +6,7 @@ from loguru import logger
 from sqlalchemy import VARCHAR, Column, DateTime, Float, ForeignKey, Integer, Text, text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-from sqlalchemy.sql.sqltypes import *
-#  select fileid,count(id) as entrycount from torqlogs group by fileid order by entrycount;
-# reg = registry()
-# SELECT (select count(*) from torqlogs where fileid=101) as count, (SELECT gpstime FROM torqlogs WHERE fileid=101 ORDER BY gpstime LIMIT 1) as 'first',(SELECT gpstime FROM torqlogs WHERE fileid=101 ORDER BY gpstime DESC LIMIT 1) as 'last';
-# select fileid,count(id) as entrycount from torqlogs group by fileid order by entrycount desc limit 10;
-# select fileid,gpstime,count(id) as entrycount from torqlogs group by fileid order by entrycount desc limit 10;
-# select (select count(*) from torqlogs) as logcount, (select count(*) from torqfiles) as filecount;
+from sqlalchemy.sql.sqltypes import Double
 class Base(DeclarativeBase):
     pass
 
@@ -25,6 +19,7 @@ class TorqFile(Base):
 	fileid: Mapped[int] = mapped_column(primary_key=True)
 	csvfile = Column('csvfile', Text)
 	csvhash = Column('csvhash', Text)
+	sent_rows = Column('sent_rows', Integer, default=0, unique=False)
 	read_flag = Column('read_flag', Integer, default=0, unique=False) # 0 = not read, 1 = read
 	send_flag = Column('send_flag', Integer, default=0, unique=False) # 0 = not sent, 1 = sent
 	fixed_flag = Column('fixed_flag', Integer, default=0, unique=False) # 0 = not fixed, 1 = fixed
@@ -133,14 +128,14 @@ class Torqlogs(Base):
 	triptimesincejourneystarts = Column('triptimesincejourneystarts', Float)
 	triptimewhilstmovings = Column('triptimewhilstmovings', Float)
 	triptimewhilststationarys = Column('triptimewhilststationarys', Float)
-	gpsspeedkmh = Column('gpsspeedkmh', Text)
+	gpsspeedkmh = Column('gpsspeedkmh', Float)
 	altitudem = Column('altitudem', Float)
 	gravityxg = Column('gravityxg', Float)
 	gravityyg = Column('gravityyg', Float)
 	gravityzg = Column('gravityzg', Float)
-	enginecoolanttemperaturef = Column('enginecoolanttemperaturef', Float)
+	enginecoolanttemperaturef = Column('enginecoolanttemperaturef', Double)
 	fuelrailpressurekpa = Column('fuelrailpressurekpa', Float)
-	intakeairtemperaturef = Column('intakeairtemperaturef', Float)
+	intakeairtemperaturef = Column('intakeairtemperaturef', Double)
 	intakemanifoldpressurekpa = Column('intakemanifoldpressurekpa', Float)
 	torqueftlb = Column('torqueftlb', Float)
 	turboboostvacuumgaugebar = Column('turboboostvacuumgaugebar', Float)
@@ -156,7 +151,7 @@ class Torqlogs(Base):
 	voltagecontrolmodulev = Column('voltagecontrolmodulev', Float)
 	costpermilekminstantkm = Column('costpermilekminstantkm', Float)
 	costpermilekmtripkm = Column('costpermilekmtripkm', Float) # costpermilekmtripntkm
-	gpsspeedmeterssecond = Column('gpsspeedmeterssecond', Text)
+	gpsspeedmeterssecond = Column('gpsspeedmeterssecond', Float)
 	altitude = Column('altitude', Float)
 	gx = Column('gx', Float)
 	gy = Column('gy', Float)
@@ -175,6 +170,10 @@ class Torqlogs(Base):
 	barometricpressurefromvehiclepsi = Column('barometricpressurefromvehiclepsi', Float)
 	ambientairtempc = Column('ambientairtempc', Float)
 	fuelpressurekpa = Column('fuelpressurekpa', Float)
+	percentageofcitydriving = Column('percentageofcitydriving', Float)
+	percentageofhighwaydriving = Column('percentageofhighwaydriving', Float)
+	percentageofidledriving = Column('percentageofidledriving', Float)
+
 
 	def __init__(self, fileid):
 		self.fileid = fileid
