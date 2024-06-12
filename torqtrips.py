@@ -20,7 +20,7 @@ for trip in toptrips.id:
 	print(f'[trip] {trip}')
 	for c in chk_cols[0:4]:
 		print(f'[c] c:{c} t:{trip}')
-		res = pd.read_sql(f'SELECT MIN({c}), MAX({c}), AVG({c}) FROM torqlogs WHERE tripid = "{trip}"', engine)
+		res = pd.read_sql(f'SELECT MIN({c}), MAX({c}), AVG({c}) FROM torqlogs WHERE fileid = "{trip}"', engine)
 		if None not in res:
 			print(f'[r] {res}')
 		else:
