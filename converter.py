@@ -628,6 +628,7 @@ def get_args():
 	parser.add_argument('--transfer', default=False, help="transfer old logs, set oldlogpath to location of old triplogs", action="store_true", dest='transfer')
 	parser.add_argument('--fixer', default=False, help="run fixer, set --bakpath", action="store_true", dest='fixer')
 	parser.add_argument('--repairsplit', default=False, help="enable splitting of strange log files", action="store_true", dest='repairsplit')
+	parser.add_argument('--skipwrites', default=False, help="skipwrites", action="store_true", dest='skipwrites')
 
 	parser.add_argument('--testnewreader', default=False, help="run testnewreader", action="store_true", dest='testnewreader')
 	parser.add_argument('--samplemode', default=False, help="use samplemode, select small random number of logs-for debugging", action="store_true", dest='samplemode')

@@ -227,7 +227,13 @@ class Torqlogs(Base):
 	percentageofcitydriving = Column('percentageofcitydriving', Double)
 	percentageofhighwaydriving = Column('percentageofhighwaydriving', Double)
 	percentageofidledriving = Column('percentageofidledriving', Double)
-
+	fuelpressurepsi = Column('fuelpressurepsi', Double)
+	kphtimes0100 = Column('kphtimes0100', Double)
+	airfuelratiocommanded1 = Column('airfuelratiocommanded1', Double)
+	mphtimes0100 = Column('mphtimes0100', Double)
+	distancetravelledsincecodesclearedkm = Column('distancetravelledsincecodesclearedkm', Double)
+	dpfpressurepsi = Column('dpfpressurepsi', Double)
+	# 0200kphtimes dpfpressurepsi 030mphtimes 060mphtimes 14miletimes 18miletimes 1000kphtimes
 
 	def __init__(self, fileid):
 		self.fileid = fileid
