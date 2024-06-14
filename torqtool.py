@@ -10,7 +10,7 @@ import pandas as pd
 from loguru import logger
 from sqlalchemy.exc import OperationalError
 # sys.path.append('c:/apps/torqtool/torqtool')
-from datamodels import (
+from torqtool.datamodels import (
 	Torqdata,
 	TorqFile,
 	Torqlogs,
@@ -18,7 +18,7 @@ from datamodels import (
 	database_dropall,
 	send_torqfiles,
 )
-from utils import (
+from torqtool.utils import (
 	fix_logfile,
 	generate_torqdata,
 	get_csv_files,
