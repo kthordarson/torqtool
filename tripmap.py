@@ -39,7 +39,7 @@ def cli_main(args):
 			px = 1/plt.rcParams['figure.dpi']  # pixel in inches
 			fig,ax1 = plt.subplots(figsize=(800*px,600*px))
 			plt.axis('off')
-			df.plot(x="longitude", y="latitude", kind="scatter",   ax=ax1, marker='.')
+			df.plot(x="latitude", y="longitude", kind="scatter",   ax=ax1, marker='.')
 			plt.savefig(pltfilename, transparent=True, dpi=100)
 			# plt.gcf()
 			# plt.show()
