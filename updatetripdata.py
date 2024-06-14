@@ -17,7 +17,7 @@ from sqlalchemy.exc import (
 )
 from sqlalchemy.orm import sessionmaker
 
-from datamodels import Torqdata, TorqFile, Torqlogs
+from torqtool.datamodels import Torqdata, TorqFile, Torqlogs
 
 
 def create_tripdata(engine, session, newfilelist):
