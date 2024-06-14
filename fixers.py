@@ -72,11 +72,12 @@ def fix_column_names(csvfile:str, args):
 			with open(csvfile,'w') as f:
 				f.writelines(rawdata)
 		else:
-			logger.info(f'skipping write {csvfile}')
-		return True
+			pass # logger.info(f'skipping write {csvfile}')
 	except Exception as e:
 		logger.error(f'{type(e)} {e} in {csvfile}')
 		return False
+	finally:
+		return True
 
 
 def test_polars_csv_read(logdir,maxfiles=100):
