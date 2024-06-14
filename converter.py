@@ -12,11 +12,13 @@ import pandas as pd
 import polars as pl
 import pytz
 from loguru import logger
+import sqlalchemy
+import pymysql
 from sqlalchemy import create_engine
 from sqlalchemy.exc import DataError, OperationalError, NoResultFound
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.exc import MultipleResultsFound
-
+import sqlite3
 from commonformats import fmt_19, fmt_20, fmt_24, fmt_26, fmt_28, fmt_30, fmt_34, fmt_36
 from datamodels import TorqFile, database_init
 from schemas import ncc, schema_datatypes
@@ -118,8 +120,8 @@ def read_csv_file(logfile):
 	raises Polarsreaderror if something goes wrong
 	"""
 	# todo handle missing gpstime, if not present, copy from devicetime
-	try: # schema_overrides=so,
-		data = pl.read_csv(logfile, schema_overrides=schema_datatypes, ignore_errors=True, try_parse_dates=True,truncate_ragged_lines=True, n_threads=4, use_pyarrow=True) # .to_pandas()
+	try: # schema_overrides=so, # schema_overrides=schema_datatypes,
+		data = pl.read_csv(logfile,  ignore_errors=True, try_parse_dates=True,truncate_ragged_lines=True, n_threads=4, use_pyarrow=True) # .to_pandas()
 		#, schema=schema)
 	except pl.exceptions.NoDataError as e:
 		msg = f'NoDataError {type(e)} {e} {logfile}'
@@ -167,7 +169,7 @@ def read_csv_file(logfile):
 			# string_check.extend([print(f'col:{col} value: {k} {type(k)}') for k in df[col] if isinstance(k,str)])
 	columns_with_wrong_dtype = set([k['col'] for k in string_check])
 	if len(columns_with_wrong_dtype) > 0:
-		logger.warning(f'found {len(string_check)} string values in {logfile} columns: {columns_with_wrong_dtype=} ')
+		logger.warning(f'found {len(columns_with_wrong_dtype)} columns with {len(string_check)} string values in {logfile}')# columns: {columns_with_wrong_dtype=} ')
 
 	# for col in df.columns:
 	#	if 'time' not in col:
@@ -262,7 +264,7 @@ def send_filename_to_db(args, filename):
 			logger.error(f'unhandled {type(e)} {e} from {filename}')
 			return False
 
-def send_csv_data_to_db(args, data:pd.DataFrame, f:str):
+def send_csv_data_to_db(args, data:pd.DataFrame, f:str, insertid=True):
 	"""
 	send this csvdata to database, catch all exceptions in here
 	return True if ok, else False
@@ -270,28 +272,54 @@ def send_csv_data_to_db(args, data:pd.DataFrame, f:str):
 	engine, session = get_engine_session(args)
 	fileid = session.query(TorqFile.fileid).filter(TorqFile.csvfile==f).one()[0]
 	# fileid_series = pl.Series("fileid", [fileid for k in range(len(data))])
-	data.insert(column='fileid', loc=0, value=fileid)
+
+	if insertid:
+		data.insert(column='fileid', loc=0, value=fileid)
 	fn = Path(f).name
+	datacols = [k for k in data.columns] # get column names
+	# todropcols = [k for k in datacols if k not in schema_datatypes]
+	todropcols_ = list(set(datacols)-set(schema_datatypes))
+	todropcols = [k for k in todropcols_ if k not in ['gpstime','fileid','devicetime']]
+	if len(todropcols) > 0:
+		logger.warning(f'dropping {len(todropcols)} datalen:{len(data.columns)}  in {f}') # datacols:{datacols}\n dropcolumns {todropcols}
+		data = data.drop(columns=todropcols)
+		logger.warning(f'after dropdatalen:{len(data.columns)}')
 	try:
 		# data.to_sql('torqlogs', con=session.get_bind(), if_exists='append', index=False)
 		data.to_sql('torqlogs', con=engine, if_exists='append', index=False)
 	except (DataError) as e:
 		logger.warning(f'{type(e)} {e.args[0]} {f=}')
 		return 0
-	except (OperationalError) as e:
+	except (sqlalchemy.exc.OperationalError, OperationalError,sqlite3.OperationalError) as e:
 		# todo sent error_flag=7 for unknown column
 		# <class 'sqlalchemy.exc.OperationalError'> (pymysql.err.OperationalError) (1054, "Unknown column '1000kphtimes' in 'field list'") f='/home/kth/development/torq/torqueLogs/trackLog-2021-Jun-05_09-52-19.csv
+		# pymysql.err.OperationalError: (1054, "Unknown column 'egrerror' in 'field list'")
 		errmsg = e.args[0]
-		if 'Unknown column' in errmsg:
+		retrysentrows = 0
+		colname = None
+		logger.error(f'{e.args[0]} {f=}')
+		if 'sqlite3.OperationalError' in errmsg and 'no column named' in errmsg:
+			colname = errmsg.split('no column named')[1].strip()
+		elif 'pymysql.err.OperationalError' in errmsg and 'Unknown column' in errmsg:
+			colname = re.findall(r"'(.*?)'", errmsg)[0]
+		elif 'sqlalchemy.exc.OperationalError' in errmsg and 'Unknown column' in errmsg:
 			# find column name
 			colname = re.findall(r"'(.*?)'", errmsg)[0]
+			# todo set error_flag=7 for unknown column
+			#return 0
+		elif '1040' in errmsg:
+			logger.error(f'1040  {type(e)} {e.args[0]} {f=}')
+			return 0
+		if colname:
+			session.close()
 			logger.warning(f'dropping unknown column {colname} in {f}')
 			df0 = data.drop(columns=[colname])
-			send_csv_data_to_db(args, df0, f)
-			# todo set error_flag=7 for unknown column
-			return 0
-		else:
-			logger.warning(f'{type(e)} {e.args[0]} {f=}')
+			retrysentrows = send_csv_data_to_db(args, df0, f, insertid=False)
+			if retrysentrows > 0:
+				return retrysentrows
+			else:
+				logger.warning(f'retrysendfailed {retrysentrows=} col: {colname} in {f}')
+				return retrysentrows
 		return 0
 	except Exception as e:
 		logger.error(f'unhandled {type(e)} {e} ')
@@ -337,7 +365,11 @@ def date_column_fixer(data:pd.DataFrame=None, datecol:str=None, f:str=None):
 	param: data Dataframe, datecol name of date column, f filename (for ref)
 	"""
 	testdate = data[datecol][len(data)//2]
-	fmt_selector = len(testdate) # use value in middle to check.....
+	try:
+		fmt_selector = len(testdate) # use value in middle to check.....
+	except TypeError as e:
+		logger.error(f'datefix {type(e)} {e}  {type(datecol)} datecol: {datecol}')
+		raise e
 	fixed_datecol = data[datecol]# copy pd.DataFrame()
 	# chk = [k for k in fixed_datecol if isinstance(k,str) and '-' in k]
 	# chk_g = [k for k in fixed_datecol if isinstance(k,str) and 'G' in k]
@@ -437,7 +469,11 @@ def data_fixer(data:pd.DataFrame, f):
 	# fixed_data = pd.DataFrame()
 	date_columns = ['gpstime','devicetime']
 	for col in date_columns:
-		newdatecol = date_column_fixer(data=data, datecol=col, f=f)
+		try:
+			newdatecol = date_column_fixer(data=data, datecol=col, f=f)
+		except TypeError as e:
+			logger.error(f'datafixer {type(e)} {e} {f} {col=}')
+			raise e
 	# for col in data.columns:
 	# 	if 'timestamp' in col.lower():
 	# 		# skip timestamp columns
@@ -560,7 +596,7 @@ def cli_main(args):
 				try:
 					fixed_data = data_fixer(data, f)
 				except Exception as e:
-					logger.error(f'error in datafixer {e} for {f}')
+					logger.error(f'error in datafixer {type(e)} {e} for {f}')
 					broken_files.append(f)
 					db_set_file_flag(session, filename=f, flag='fixerror')
 					continue
@@ -570,7 +606,7 @@ def cli_main(args):
 						# todo maybe update torqfile flags in database
 						db_set_file_flag(session, filename=f, flag='ok', sent_rows=sent_rows) # pass # logger.debug(f'Sent data from {f} to database')
 					else:
-						logger.warning(f'Could not send {sent_rows} data from {f} to db...')
+						logger.warning(f'Sent rows = {sent_rows} from {f} to db...')
 						db_set_file_flag(session, filename=f, flag='senderror')
 						broken_files.append(f)
 				except Exception as e:
