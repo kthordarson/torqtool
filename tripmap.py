@@ -12,7 +12,7 @@ from plotutils import plot_trip, combine_map_plot, download_maps
 
 
 def cli_main(args):
-	dburl = 'sqlite:///torqfiskur.db'
+	dburl = args.dburl #'sqlite:///torqfiskur.db'
 	engine = create_engine(dburl, echo=False, connect_args={'check_same_thread': False})
 
 	Session = sessionmaker(bind=engine)
@@ -30,11 +30,11 @@ def cli_main(args):
 		download_maps(args, session)
 		sys.exit(0)
 	elif args.plotall: # make a plot of all trips - no maps
-		trips = [k.tripid for k in session.query(TorqFile.tripid).all()]
+		trips = [k.fileid for k in session.query(TorqFile.fileid).all()]
 		for idx,trip in enumerate(trips):
 			logger.debug(f'[{idx}/{len(trips)}] plotting {trip}')
 			pltfilename = f'{PLOT_DIR}/tripmap-{trip:04d}-plotly.png' # padding
-			#tripid = str(trips.iloc[0].values[0])
+			#fileid = str(trips.iloc[0].values[0])
 			df = pd.DataFrame([k for k in session.query(Torqlogs.latitude, Torqlogs.longitude).filter(Torqlogs.fileid==trip).all()])
 			px = 1/plt.rcParams['figure.dpi']  # pixel in inches
 			fig,ax1 = plt.subplots(figsize=(800*px,600*px))
@@ -67,10 +67,11 @@ def cli_main(args):
 if __name__ == '__main__':
 	parser = argparse.ArgumentParser(description="plotmap")
 
-	parser.add_argument('-pi', '--plot-id', help="tripid to plot", action="store", dest='plotid')
+	parser.add_argument('-pi', '--plot-id', help="fileid to plot", action="store", dest='plotid')
 	parser.add_argument('-c', '--combine', help="combiner mapfile plotfile outfile", action="store", dest='combine', default="", nargs=3)
 	parser.add_argument('-pa', '--plot-all', help="plot all", action="store_true", dest='plotall', default=False)
 	parser.add_argument('-d', '--download-maps', help="download all maps from mapbox", action="store_true", default=False, dest='dlmaps')
+	parser.add_argument('-db', '--dburl', help="database url", action="store", default='sqlite:///torqfiskur.db', dest='dburl')
 	args = parser.parse_args()
 	cli_main(args)
 
