@@ -1,3 +1,4 @@
+fmt_19 = '%d-%b-%Y %H:%M:%S'
 fmt_20 = '%d-%b-%Y %H:%M:%S'
 
 fmt_24 = '%d-%b-%Y %H:%M:%S.%f'

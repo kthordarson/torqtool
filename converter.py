@@ -17,7 +17,7 @@ from sqlalchemy.exc import DataError, OperationalError, NoResultFound
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.exc import MultipleResultsFound
 
-from commonformats import fmt_20, fmt_24, fmt_26, fmt_28, fmt_30, fmt_34, fmt_36
+from commonformats import fmt_19, fmt_20, fmt_24, fmt_26, fmt_28, fmt_30, fmt_34, fmt_36
 from datamodels import TorqFile, database_init
 from schemas import ncc, schema_datatypes
 from utils import get_engine_session, get_fixed_lines, get_sanatized_column_names,MIN_FILESIZE
@@ -275,8 +275,23 @@ def send_csv_data_to_db(args, data:pd.DataFrame, f:str):
 	try:
 		# data.to_sql('torqlogs', con=session.get_bind(), if_exists='append', index=False)
 		data.to_sql('torqlogs', con=engine, if_exists='append', index=False)
-	except (DataError, OperationalError) as e:
+	except (DataError) as e:
 		logger.warning(f'{type(e)} {e.args[0]} {f=}')
+		return 0
+	except (OperationalError) as e:
+		# todo sent error_flag=7 for unknown column
+		# <class 'sqlalchemy.exc.OperationalError'> (pymysql.err.OperationalError) (1054, "Unknown column '1000kphtimes' in 'field list'") f='/home/kth/development/torq/torqueLogs/trackLog-2021-Jun-05_09-52-19.csv
+		errmsg = e.args[0]
+		if 'Unknown column' in errmsg:
+			# find column name
+			colname = re.findall(r"'(.*?)'", errmsg)[0]
+			logger.warning(f'dropping unknown column {colname} in {f}')
+			df0 = data.drop(columns=[colname])
+			send_csv_data_to_db(args, df0, f)
+			# todo set error_flag=7 for unknown column
+			return 0
+		else:
+			logger.warning(f'{type(e)} {e.args[0]} {f=}')
 		return 0
 	except Exception as e:
 		logger.error(f'unhandled {type(e)} {e} ')
@@ -331,6 +346,8 @@ def date_column_fixer(data:pd.DataFrame=None, datecol:str=None, f:str=None):
 	#	fixed_datecol = fixed_datecol.replace('-',0) # copy pd.DataFrame()
 	try:
 		match fmt_selector:
+			case 19:
+				fixed_datecol = pd.DataFrame({datecol:[datetime.strptime(k,fmt_19).astimezone(pytz.timezone('UTC')) for k in fixed_datecol if isinstance(k, str) ]})
 			case 20:
 				fixed_datecol = pd.DataFrame({datecol:[datetime.strptime(k,fmt_20).astimezone(pytz.timezone('UTC')) for k in fixed_datecol if isinstance(k, str) ]})
 			case 24:

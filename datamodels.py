@@ -1,6 +1,6 @@
 import sys
 import uuid
-
+from datetime import datetime
 import pandas as pd
 from loguru import logger
 from sqlalchemy import VARCHAR, Column, DateTime, Float, ForeignKey, Integer, Text, text
@@ -19,6 +19,7 @@ class TorqFile(Base):
 	fileid: Mapped[int] = mapped_column(primary_key=True)
 	csvfile = Column('csvfile', Text)
 	csvhash = Column('csvhash', Text)
+	import_date = Column('import_date', DateTime)
 	sent_rows = Column('sent_rows', Integer, default=0, unique=False)
 	read_flag = Column('read_flag', Integer, default=0, unique=False) # 0 = not read, 1 = read
 	send_flag = Column('send_flag', Integer, default=0, unique=False) # 0 = not sent, 1 = sent
@@ -28,8 +29,14 @@ class TorqFile(Base):
 	# 0 = need tripdata, 1 = have tripdata
 
 	error_flag = Column('error_flag', Integer, default=0, unique=False)
-	# 0 = no error, 1 = has error, 2 = need split
-	# 3 = header error, 4 = fixerror, 5 = senderror, 6 = polarreaderror
+	# 0 = no error,
+	# 1 = dupe entry in db,
+	# 2 = need split
+	# 3 = header error,
+	# 4 = fixerror,
+	# 5 = senderror,
+	# 6 = polarreaderror
+	# 7 = unknowncolumnerror
 
 	def __init__(self, csvfile, csvhash):
 		self.csvfile = csvfile
@@ -39,6 +46,7 @@ class TorqFile(Base):
 		self.fixed_flag = 0
 		self.error_flag = 0
 		self.data_flag = 0
+		self.import_date = datetime.now()
 
 	# def __repr__(self):
 	# 	# fn = self.csvfile.split('/')[-1]
@@ -179,6 +187,15 @@ class Torqlogs(Base):
 	mphtimes0100 = Column('mphtimes0100', Double)
 	distancetravelledsincecodesclearedkm = Column('distancetravelledsincecodesclearedkm', Double)
 	dpfpressurepsi = Column('dpfpressurepsi', Double)
+	kphTime0200 = Column('kphTime0200', Double)
+	mphtimes030 = Column('mphtimes030', Double)
+	mphtimes060 = Column('mphtimes060', Double)
+	dpftemperaturec = Column('dpftemperaturec', Double)
+	miletimes14 = Column('miletimes14', Double)
+	dpfpressurebar = Column('dpfpressurebar', Double)
+	driversdemandenginetorque = Column('driversdemandenginetorque', Double)
+	miletimes18 = Column('miletimes18', Double)
+	kphTime1000 = Column('kphTime1000', Double)
 	# 0200kphtimes dpfpressurepsi 030mphtimes 060mphtimes 14miletimes 18miletimes 1000kphtimes
 
 	def __init__(self, fileid):
