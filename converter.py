@@ -14,18 +14,20 @@ import pytz
 from loguru import logger
 import sqlalchemy
 import pymysql
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.exc import DataError, OperationalError, NoResultFound
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.exc import MultipleResultsFound
+from psycopg2.errors import UndefinedColumn
 import sqlite3
-from torqtool.commonformats import fmt_19, fmt_20, fmt_24, fmt_26, fmt_28, fmt_30, fmt_34, fmt_36
-from torqtool.datamodels import TorqFile, database_init
-from torqtool.schemas import ncc, schema_datatypes
-from torqtool.utils import get_engine_session, get_fixed_lines, get_sanatized_column_names,MIN_FILESIZE
-from torqtool.fixers import split_file, test_pandas_csv_read, test_polars_csv_read, run_fixer, get_cols, check_and_fix_logs, fix_column_names, replace_headers
+from commonformats import fmt_19, fmt_20, fmt_24, fmt_26, fmt_28, fmt_30, fmt_34, fmt_36
+from datamodels import TorqFile, database_init
+from schemas import ncc, schema_datatypes
+from utils import get_engine_session, get_fixed_lines, get_sanatized_column_names,MIN_FILESIZE
+from fixers import split_file, test_pandas_csv_read, test_polars_csv_read, run_fixer, get_cols, check_and_fix_logs, fix_column_names, replace_headers
 
 pd.set_option('future.no_silent_downcasting', True)
+# x = latitude y = longitude !
 
 class Polarsreaderror(Exception):
 	pass
@@ -264,31 +266,31 @@ def send_filename_to_db(args, filename):
 			logger.error(f'unhandled {type(e)} {e} from {filename}')
 			return False
 
-def send_csv_data_to_db(args, data:pd.DataFrame, f:str, insertid=True):
+def send_csv_data_to_db(args:argparse.Namespace, data:pd.DataFrame, csvfilename:str, insertid:bool=True):
 	"""
 	send this csvdata to database, catch all exceptions in here
 	return True if ok, else False
 	"""
 	engine, session = get_engine_session(args)
-	fileid = session.query(TorqFile.fileid).filter(TorqFile.csvfile==f).one()[0]
+	fileid = session.query(TorqFile.fileid).filter(TorqFile.csvfile==csvfilename).one()[0]
 	# fileid_series = pl.Series("fileid", [fileid for k in range(len(data))])
 
 	if insertid:
 		data.insert(column='fileid', loc=0, value=fileid)
-	fn = Path(f).name
+	fn = Path(csvfilename).name
 	datacols = [k for k in data.columns] # get column names
 	# todropcols = [k for k in datacols if k not in schema_datatypes]
 	todropcols_ = list(set(datacols)-set(schema_datatypes))
 	todropcols = [k for k in todropcols_ if k not in ['gpstime','fileid','devicetime']]
 	if len(todropcols) > 0:
-		logger.warning(f'dropping {len(todropcols)} datalen:{len(data.columns)}  in {f}') # datacols:{datacols}\n dropcolumns {todropcols}
+		org_col_len = len(data.columns)
 		data = data.drop(columns=todropcols)
-		logger.warning(f'after dropdatalen:{len(data.columns)}')
+		logger.warning(f'Dropped {len(todropcols)} columns {org_col_len}->{len(data.columns)} in {csvfilename}') # datacols:{datacols}\n dropcolumns {todropcols}
 	try:
 		# data.to_sql('torqlogs', con=session.get_bind(), if_exists='append', index=False)
 		data.to_sql('torqlogs', con=engine, if_exists='append', index=False)
 	except (DataError) as e:
-		logger.warning(f'{type(e)} {e.args[0]} {f=}')
+		logger.warning(f'{type(e)} {e.args[0]} {csvfilename=}')
 		return 0
 	except (sqlalchemy.exc.OperationalError, OperationalError,sqlite3.OperationalError) as e:
 		# todo sent error_flag=7 for unknown column
@@ -297,7 +299,7 @@ def send_csv_data_to_db(args, data:pd.DataFrame, f:str, insertid=True):
 		errmsg = e.args[0]
 		retrysentrows = 0
 		colname = None
-		logger.error(f'{e.args[0]} {f=}')
+		logger.error(f'{e.args[0]} {csvfilename=}')
 		if 'sqlite3.OperationalError' in errmsg and 'no column named' in errmsg:
 			colname = errmsg.split('no column named')[1].strip()
 		elif 'pymysql.err.OperationalError' in errmsg and 'Unknown column' in errmsg:
@@ -308,17 +310,17 @@ def send_csv_data_to_db(args, data:pd.DataFrame, f:str, insertid=True):
 			# todo set error_flag=7 for unknown column
 			#return 0
 		elif '1040' in errmsg:
-			logger.error(f'1040  {type(e)} {e.args[0]} {f=}')
+			logger.error(f'1040  {type(e)} {e.args[0]} {csvfilename=}')
 			return 0
 		if colname:
 			session.close()
-			logger.warning(f'dropping unknown column {colname} in {f}')
+			logger.warning(f'dropping unknown column {colname} in {csvfilename}')
 			df0 = data.drop(columns=[colname])
-			retrysentrows = send_csv_data_to_db(args, df0, f, insertid=False)
+			retrysentrows = send_csv_data_to_db(args=args, data=df0, csvfilename=csvfilename, insertid=False)
 			if retrysentrows > 0:
 				return retrysentrows
 			else:
-				logger.warning(f'retrysendfailed {retrysentrows=} col: {colname} in {f}')
+				logger.warning(f'retrysendfailed {retrysentrows=} col: {colname} in {csvfilename}')
 				return retrysentrows
 		return 0
 	except Exception as e:
@@ -326,7 +328,7 @@ def send_csv_data_to_db(args, data:pd.DataFrame, f:str, insertid=True):
 		return 0
 	session.close()
 	if args.debug:
-		logger.debug(f'Sent {len(data)} rows from {fn} id:{fileid} to database {args.dbmode}')
+		logger.debug(f'Sent {len(data)} rows from {fn} id:{fileid}  to database {args.dbmode}')
 	return len(data)
 
 def get_files_to_send(session:sessionmaker, args):
@@ -335,14 +337,18 @@ def get_files_to_send(session:sessionmaker, args):
 	returns list of files not in the database, filenames as str, NOT Path!
 	"""
 	files_to_send = []
+	all_db_files = []
+	unread_dbfiles = []
+	csvfiles = [str(k) for k in Path(args.logpath).glob('*.csv') if k.stat().st_size > MIN_FILESIZE]
+	smallcsvfiles = [str(k) for k in Path(args.logpath).glob('*.csv') if k.stat().st_size < MIN_FILESIZE]
 	try:
 		all_db_files = session.query(TorqFile).count()
 		unread_dbfiles = session.query(TorqFile).filter(TorqFile.read_flag==0).filter(TorqFile.error_flag==0).all()
 		read_dbfiles = session.query(TorqFile).filter(TorqFile.read_flag==1).all()
 		error_dbfiles = session.query(TorqFile).filter(TorqFile.error_flag!=0).all()
-		csvfiles = [str(k) for k in Path(args.logpath).glob('*.csv') if k.stat().st_size > MIN_FILESIZE]
-		smallcsvfiles = [str(k) for k in Path(args.logpath).glob('*.csv') if k.stat().st_size < MIN_FILESIZE]
 		files_to_send = set(csvfiles)-set([k.csvfile for k in read_dbfiles])
+	except UndefinedColumn as e:
+		logger.warning(f'UndefinedColumn {type(e)} {e} from {args.logpath} {args.dbmode}')
 	except Exception as e:
 		logger.error(f'unhandled {type(e)} {e} from {args.logpath} {args.dbmode}')
 	finally:
@@ -350,7 +356,8 @@ def get_files_to_send(session:sessionmaker, args):
 		if len(files_to_send) > 0:
 			logger.info(f'found {len(files_to_send)} files_to_send, skipping {len(smallcsvfiles)} files under MIN_FILESIZE - unread_dbfiles:{len(unread_dbfiles)} error_dbfiles: {len(error_dbfiles)} all_db_files:{all_db_files}')
 		else:
-			logger.warning(f'no files found in {args.logpath} ! dbfiles:{len(unread_dbfiles)} ...')
+			logger.warning(f'no valid files found in {args.logpath} ! dbfiles: all= {len(all_db_files)} / unread= {len(unread_dbfiles)} csvfiles:{len(csvfiles)} ... Exit!')
+			sys.exit(-1)
 
 		files_to_send = sorted(files_to_send) # sort by filename (date)
 		if args.samplemode:
@@ -498,7 +505,7 @@ def data_fixer(data:pd.DataFrame, f):
 
 
 
-def db_set_file_flag(session, filename=None, flag=None, flagval=None, sent_rows=None):
+def db_set_file_flag(session, filename=None, flag=None, flagval=None, sent_rows=None, readtime=None, sendtime=None):
 	"""
 	set flag on file in database
 	"""
@@ -525,6 +532,23 @@ def db_set_file_flag(session, filename=None, flag=None, flagval=None, sent_rows=
 			torqfile.send_flag = 1
 			torqfile.read_flag = 1
 			torqfile.sent_rows = sent_rows
+			torqfile.readtime = readtime
+			torqfile.sendtime = sendtime
+			# get trip start and end times... # datetime.fromisoformat(
+			try:
+				datemin = session.execute(text(f'select gpstime from torqlogs where fileid={torqfile.fileid} order by gpstime limit 1 ')).all()[0][0]
+				if isinstance(datemin, str):
+					datemin = datetime.fromisoformat(datemin)
+				datemax = session.execute(text(f'select gpstime from torqlogs where fileid={torqfile.fileid} order by gpstime desc limit 1 ')).all()[0][0]
+				if isinstance(datemax, str):
+					datemax = datetime.fromisoformat(datemax)
+				torqfile.trip_start = datemin
+				torqfile.trip_end = datemax
+				torqfile.trip_duration = (datemax - datemin).total_seconds()
+			except TypeError as e:
+				logger.warning(f'{e} while calculating trip_duration for {filename} ') # {datemin=} {datemax=}
+				torqfile.trip_duration = 0
+
 		case 'split':
 			torqfile.error_flag = 2
 			torqfile.read_flag = 0
@@ -563,7 +587,7 @@ def cli_main(args):
 		try:
 			database_init(engine)
 		except AssertionError as e:
-			logger.error(f'[maindbinit] {e}')
+			logger.error(f'[maindbinit] {e} exit')
 			sys.exit(-1)
 		with session.no_autoflush:
 			newfiles = get_files_to_send(session, args=args)
@@ -576,6 +600,7 @@ def cli_main(args):
 			for errfile in fixed_newfiles['errorfiles']:
 				db_set_file_flag(session, filename=errfile, flag='headfixerr')
 		for idx,f in enumerate(fixed_newfiles['files_to_read']):
+			readstart = datetime.now()
 			logger.debug(f'[{idx}/{len(fixed_newfiles["files_to_read"])}] reading {Path(f).name}')
 			try:
 				data = read_csv_file(logfile=f)
@@ -601,14 +626,20 @@ def cli_main(args):
 					db_set_file_flag(session, filename=f, flag='fixerror')
 					continue
 				try:
-					sent_rows = send_csv_data_to_db(args, fixed_data, f)
+					readtime = (datetime.now()-readstart).total_seconds()
+					sendstart = datetime.now()
+					sent_rows = send_csv_data_to_db(args=args, data=fixed_data, csvfilename=f)
 					if sent_rows>0:
 						# todo maybe update torqfile flags in database
-						db_set_file_flag(session, filename=f, flag='ok', sent_rows=sent_rows) # pass # logger.debug(f'Sent data from {f} to database')
+						sendtime = (datetime.now()-sendstart).total_seconds()
+						db_set_file_flag(session, filename=f, flag='ok', sent_rows=sent_rows, readtime=readtime, sendtime=sendtime) # pass # logger.debug(f'Sent data from {f} to database')
 					else:
 						logger.warning(f'Sent rows = {sent_rows} from {f} to db...')
 						db_set_file_flag(session, filename=f, flag='senderror')
 						broken_files.append(f)
+				except TypeError as e:
+					logger.error(f'{type(e)} {e} from send_csv_data_to_db {f}')
+					broken_files.append(f)
 				except Exception as e:
 					logger.error(f'unhandled {type(e)} {e} from send_csv_data_to_db {f}')
 					broken_files.append(f)

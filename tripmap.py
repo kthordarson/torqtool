@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 
 from plotutils import MAP_CACHE, PLOT_DIR
 from plotutils import plot_trip, combine_map_plot, download_maps
+# x = latitude y = longitude !
 
 
 def cli_main(args):

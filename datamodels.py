@@ -13,6 +13,7 @@ class Base(DeclarativeBase):
 def genuuid():
 	return str(uuid.uuid4())
 # tables = ['torqtrips', 'torqlogs', 'torqfiles', 'torqdata']
+# x = latitude y = longitude !
 
 class TorqFile(Base):
 	__tablename__ = 'torqfiles'
@@ -20,6 +21,11 @@ class TorqFile(Base):
 	csvfile = Column('csvfile', Text)
 	csvhash = Column('csvhash', Text)
 	import_date = Column('import_date', DateTime)
+	trip_start = Column('trip_start', DateTime)
+	trip_end = Column('trip_end', DateTime)
+	trip_duration = Column('trip_duration', Float)
+	readtime = Column('readtime', Float)
+	sendtime = Column('sendtime', Float)
 	sent_rows = Column('sent_rows', Integer, default=0, unique=False)
 	read_flag = Column('read_flag', Integer, default=0, unique=False) # 0 = not read, 1 = read
 	send_flag = Column('send_flag', Integer, default=0, unique=False) # 0 = not sent, 1 = sent

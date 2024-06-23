@@ -1,5 +1,6 @@
 *.db
 test*
+temp*
 torqfiskurdb*
 __pycache__/
 __pypackages__/
