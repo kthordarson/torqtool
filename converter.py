@@ -695,10 +695,8 @@ def cli_main(args):
 		print(f'{fixed=}')
 		sys.exit(0)
 
-
-def get_args(appname):
+def get_parser(appname):
 	parser = argparse.ArgumentParser(description=appname)
-
 	parser.add_argument('--scanpath', default=False, help="run scanpath", action="store_true", dest='scanpath')
 
 	parser.add_argument("--logpath", nargs="?", default=".", help="logpath", action="store")
@@ -721,6 +719,11 @@ def get_args(appname):
 	parser.add_argument("--dbuser", default="torq", help="dbname", action="store")
 	parser.add_argument("--dbpass", default="qrot", help="dbname", action="store")
 	parser.add_argument('-d', '--debug', default=False, help="debugmode", action="store_true", dest='debug')
+	return parser
+
+def get_args(appname):
+	parser = get_parser(appname)
+
 
 	args = parser.parse_args()
 	return args

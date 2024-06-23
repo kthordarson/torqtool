@@ -30,8 +30,7 @@ from sqlalchemy.exc import (
 from sqlalchemy.orm import sessionmaker
 
 from commonformats import fmt_20, fmt_24, fmt_26, fmt_28, fmt_30, fmt_34, fmt_36
-from datamodels import TorqFile, database_init
-from updatetripdata import send_torqdata_ppe
+from datamodels import TorqFile, database_init, Torqlogs, Torqdata
 from schemas import ncc
 
 MIN_FILESIZE = 2500
@@ -954,6 +953,41 @@ def convert_string_to_datetime(s:str):
 		logger.error(f'dateconverter {type(e)} {e} {s=}')
 	finally:
 		return datetimeobject
+
+def send_torqdata_ppe(tfid, session, debug=False):
+	if not tfid:
+		logger.warning('missing tfid!')
+		return 'error:missing tfid'
+	res = 'notset'
+	try:
+		data = session.query(Torqlogs).filter(Torqlogs.fileid == tfid.fileid).all()
+	except TypeError as e:
+		import traceback
+		logger.error(f'[sendtd] {e} {type(e)} {tfid=}')
+		logger.error(traceback.print_exc())
+		return f'error:{e}'
+	td = Torqdata(tfid.fileid)
+	session.add(td)
+	if debug:
+		logger.info(f'[send_torqdata_ppe] tfid={tfid} d: {len(data)}')
+	# session.commit()
+	td = session.query(Torqdata).filter(Torqdata.fileid == tfid.fileid).first()
+	gpsspeedkmh = sum([k.gpsspeedkmh for k in data])
+	session.add(td)
+	try:
+		td.avg_gpsspeedkmh = gpsspeedkmh//len(data)
+		session.commit()
+		res = 'success'
+	except ZeroDivisionError as e:
+		logger.error(f'[sendtd] {e} {type(e)} {tfid=} {td=} {gpsspeedkmh=} {len(data)=}')
+		res = f'error:{e}'
+	finally:
+		if debug:
+			if 'error' in res:
+				logger.warning(f'[sendtd] {tfid=} {td=} {gpsspeedkmh=} {len(data)=} {res=}')
+			else:
+				logger.info(f'[sendtd] {tfid=} {td=} {gpsspeedkmh=} {len(data)=} {res=}')
+		return res
 
 
 if __name__ == '__main__':
