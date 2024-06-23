@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
 ################################################################################
-## Form generated from reading UI file 'untitledDsNDaT.ui'
+## Form generated from reading UI file 'untitledqIjKLs.ui'
 ##
 ## Created by: Qt User Interface Compiler version 6.5.2
 ##
@@ -44,13 +44,13 @@ class Ui_MainWindow(object):
         self.listView.setGeometry(QRect(750, 740, 341, 61))
         self.horizontalLayoutWidget = QWidget(self.centralwidget)
         self.horizontalLayoutWidget.setObjectName(u"horizontalLayoutWidget")
-        self.horizontalLayoutWidget.setGeometry(QRect(190, 10, 441, 491))
+        self.horizontalLayoutWidget.setGeometry(QRect(310, 740, 321, 71))
         self.main_layout = QHBoxLayout(self.horizontalLayoutWidget)
         self.main_layout.setObjectName(u"main_layout")
         self.main_layout.setContentsMargins(0, 0, 0, 0)
         self.horizontalLayoutWidget_2 = QWidget(self.centralwidget)
         self.horizontalLayoutWidget_2.setObjectName(u"horizontalLayoutWidget_2")
-        self.horizontalLayoutWidget_2.setGeometry(QRect(650, 10, 441, 491))
+        self.horizontalLayoutWidget_2.setGeometry(QRect(190, 10, 901, 501))
         self.triplayout = QHBoxLayout(self.horizontalLayoutWidget_2)
         self.triplayout.setObjectName(u"triplayout")
         self.triplayout.setContentsMargins(0, 0, 0, 0)
