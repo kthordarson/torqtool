@@ -52,7 +52,6 @@ def fix_column_names(csvfile:str, args):
 	"""
 	strip leading spaces from column names and saves the fil
 	# todo skip files that have been fixed already, by checking in the database
-	# todo maybe renmame columns here ?
 	"""
 	subchars = [', ',',Â','∞','Â°F','Â°','â°','â']
 	try:

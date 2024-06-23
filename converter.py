@@ -149,11 +149,16 @@ def read_csv_file(logfile):
 
 	# bigval check v2
 	longcheck = None
+	# todo ....
+	# find strings in dataframe
+	# should be converted to float or number
+	string_check = []
 	for col in df.columns:
 		# must be longer than 13, must be str and not contain 'time'
 		# chk = [print(f'{col} {k} {type(k)}') for k in df[col]  if isinstance(k,str) and len(k) > 13 and 'time' not in col]
 		longcheck = None
 		if 'time' not in col: # skip gpstime and devicetime, check other columns
+			string_check.extend([{'col':col, 'value': k, 'idx': idx} for idx,k in enumerate(df[col]) if isinstance(k,str)])
 			longcheck = [k for k in df[col] if isinstance(k,str) and len(k) > 18]
 			if longcheck:
 				# remove the long bad values
@@ -161,14 +166,6 @@ def read_csv_file(logfile):
 	if longcheck:
 		logger.warning(f'replaced {len(longcheck)} long values in {logfile}')# column: {col} lc:  {longcheck[0:1]}')
 
-	# todo ....
-	# find strings in dataframe
-	# should be converted to float or number
-	string_check = []
-	for col in df.columns:
-		if 'time' not in col:
-			string_check.extend([{'col':col, 'value': k, 'idx': idx} for idx,k in enumerate(df[col]) if isinstance(k,str)])
-			# string_check.extend([print(f'col:{col} value: {k} {type(k)}') for k in df[col] if isinstance(k,str)])
 	columns_with_wrong_dtype = set([k['col'] for k in string_check])
 	if len(columns_with_wrong_dtype) > 0:
 		logger.warning(f'found {len(columns_with_wrong_dtype)} columns with {len(string_check)} string values in {logfile}')# columns: {columns_with_wrong_dtype=} ')
@@ -208,7 +205,6 @@ def read_csv_file(logfile):
 		msg = f'keyerror {type(e)} {e} {logfile}\ndatacols: {df.columns} \n'
 		logger.warning(msg)
 		raise Polarsreaderror(msg)
-
 	# dfout = df.fillna(0)
 	return df
 
@@ -285,7 +281,8 @@ def send_csv_data_to_db(args:argparse.Namespace, data:pd.DataFrame, csvfilename:
 	if len(todropcols) > 0:
 		org_col_len = len(data.columns)
 		data = data.drop(columns=todropcols)
-		logger.warning(f'Dropped {len(todropcols)} columns {org_col_len}->{len(data.columns)} in {csvfilename}') # datacols:{datacols}\n dropcolumns {todropcols}
+		if args.showdrops:
+			logger.warning(f'Dropped {len(todropcols)} columns {org_col_len}->{len(data.columns)} in {csvfilename}\n datacols:{datacols}\n dropcolumns {todropcols}')
 	try:
 		# data.to_sql('torqlogs', con=session.get_bind(), if_exists='append', index=False)
 		data.to_sql('torqlogs', con=engine, if_exists='append', index=False)
@@ -713,6 +710,7 @@ def get_args(appname):
 	parser.add_argument('--fixer', default=False, help="run fixer, set --bakpath", action="store_true", dest='fixer')
 	parser.add_argument('--repairsplit', default=False, help="enable splitting of strange log files", action="store_true", dest='repairsplit')
 	parser.add_argument('--skipwrites', default=False, help="skipwrites", action="store_true", dest='skipwrites')
+	parser.add_argument('--showdrops', default=False, help="show dropped columns", action="store_true", dest='showdrops')
 
 	parser.add_argument('--testnewreader', default=False, help="run testnewreader", action="store_true", dest='testnewreader')
 	parser.add_argument('--samplemode', default=False, help="use samplemode, select small random number of logs-for debugging", action="store_true", dest='samplemode')
