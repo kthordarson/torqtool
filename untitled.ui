@@ -19,7 +19,7 @@
      <rect>
       <x>10</x>
       <y>10</y>
-      <width>161</width>
+      <width>301</width>
       <height>801</height>
      </rect>
     </property>
@@ -42,7 +42,7 @@
    <widget class="QWidget" name="horizontalLayoutWidget">
     <property name="geometry">
      <rect>
-      <x>310</x>
+      <x>410</x>
       <y>740</y>
       <width>321</width>
       <height>71</height>
@@ -53,10 +53,10 @@
    <widget class="QWidget" name="horizontalLayoutWidget_2">
     <property name="geometry">
      <rect>
-      <x>190</x>
+      <x>760</x>
       <y>10</y>
-      <width>901</width>
-      <height>501</height>
+      <width>331</width>
+      <height>271</height>
      </rect>
     </property>
     <layout class="QHBoxLayout" name="triplayout"/>
@@ -64,13 +64,24 @@
    <widget class="QWidget" name="horizontalLayoutWidget_3">
     <property name="geometry">
      <rect>
-      <x>190</x>
+      <x>370</x>
       <y>520</y>
-      <width>901</width>
+      <width>721</width>
       <height>201</height>
      </rect>
     </property>
     <layout class="QHBoxLayout" name="entrieslayout"/>
+   </widget>
+   <widget class="QWidget" name="horizontalLayoutWidget_4">
+    <property name="geometry">
+     <rect>
+      <x>330</x>
+      <y>10</y>
+      <width>411</width>
+      <height>271</height>
+     </rect>
+    </property>
+    <layout class="QHBoxLayout" name="speedlayout"/>
    </widget>
   </widget>
   <widget class="QMenuBar" name="menubar">
@@ -109,10 +120,16 @@
    <property name="text">
     <string>&amp;Open db</string>
    </property>
+   <property name="shortcut">
+    <string>Ctrl+O</string>
+   </property>
   </action>
   <action name="actionExit">
    <property name="text">
     <string>E&amp;xit</string>
+   </property>
+   <property name="shortcut">
+    <string>Ctrl+Q</string>
    </property>
   </action>
   <action name="actionOptions">
