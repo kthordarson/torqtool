@@ -20,10 +20,10 @@ from sqlalchemy.exc import DataError, OperationalError, NoResultFound
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.exc import MultipleResultsFound
 
-from torqtool.commonformats import fmt_20, fmt_24, fmt_26, fmt_28, fmt_30, fmt_34, fmt_36
-from torqtool.datamodels import TorqFile, database_init
-from torqtool.schemas import ncc, schema_datatypes
-from torqtool.utils import get_engine_session, get_fixed_lines, get_sanatized_column_names,MIN_FILESIZE, convert_string_to_datetime
+from commonformats import fmt_20, fmt_24, fmt_26, fmt_28, fmt_30, fmt_34, fmt_36
+from datamodels import TorqFile, database_init
+from schemas import ncc, schema_datatypes
+from utils import get_engine_session, get_fixed_lines, get_sanatized_column_names,MIN_FILESIZE, convert_string_to_datetime
 
 def replace_headers(newfiles:list, args):
 	"""

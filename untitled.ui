@@ -19,7 +19,7 @@
      <rect>
       <x>10</x>
       <y>10</y>
-      <width>381</width>
+      <width>161</width>
       <height>801</height>
      </rect>
     </property>
@@ -32,8 +32,8 @@
    <widget class="QListView" name="listView">
     <property name="geometry">
      <rect>
-      <x>720</x>
-      <y>690</y>
+      <x>750</x>
+      <y>740</y>
       <width>341</width>
       <height>61</height>
      </rect>
@@ -42,23 +42,35 @@
    <widget class="QWidget" name="horizontalLayoutWidget">
     <property name="geometry">
      <rect>
-      <x>800</x>
+      <x>190</x>
       <y>10</y>
-      <width>271</width>
-      <height>271</height>
+      <width>441</width>
+      <height>491</height>
      </rect>
     </property>
     <layout class="QHBoxLayout" name="main_layout"/>
    </widget>
-   <widget class="QWidget" name="widget" native="true">
+   <widget class="QWidget" name="horizontalLayoutWidget_2">
     <property name="geometry">
      <rect>
-      <x>420</x>
-      <y>30</y>
-      <width>361</width>
-      <height>401</height>
+      <x>650</x>
+      <y>10</y>
+      <width>441</width>
+      <height>491</height>
      </rect>
     </property>
+    <layout class="QHBoxLayout" name="triplayout"/>
+   </widget>
+   <widget class="QWidget" name="horizontalLayoutWidget_3">
+    <property name="geometry">
+     <rect>
+      <x>190</x>
+      <y>520</y>
+      <width>901</width>
+      <height>201</height>
+     </rect>
+    </property>
+    <layout class="QHBoxLayout" name="entrieslayout"/>
    </widget>
   </widget>
   <widget class="QMenuBar" name="menubar">
@@ -72,17 +84,20 @@
    </property>
    <widget class="QMenu" name="menuFile">
     <property name="title">
-     <string>File</string>
+     <string>&amp;File</string>
     </property>
+    <addaction name="actionOpen_db"/>
+    <addaction name="actionExit"/>
    </widget>
    <widget class="QMenu" name="menuView">
     <property name="title">
-     <string>View</string>
+     <string>&amp;View</string>
     </property>
+    <addaction name="actionOptions"/>
    </widget>
    <widget class="QMenu" name="menuAbout">
     <property name="title">
-     <string>About</string>
+     <string>&amp;About</string>
     </property>
    </widget>
    <addaction name="menuFile"/>
@@ -90,6 +105,21 @@
    <addaction name="menuAbout"/>
   </widget>
   <widget class="QStatusBar" name="statusbar"/>
+  <action name="actionOpen_db">
+   <property name="text">
+    <string>&amp;Open db</string>
+   </property>
+  </action>
+  <action name="actionExit">
+   <property name="text">
+    <string>E&amp;xit</string>
+   </property>
+  </action>
+  <action name="actionOptions">
+   <property name="text">
+    <string>&amp;Options</string>
+   </property>
+  </action>
  </widget>
  <resources/>
  <connections/>
