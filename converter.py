@@ -699,8 +699,8 @@ def cli_main(args):
 		sys.exit(0)
 
 
-def get_args():
-	parser = argparse.ArgumentParser(description="converter ")
+def get_args(appname):
+	parser = argparse.ArgumentParser(description=appname)
 
 	parser.add_argument('--scanpath', default=False, help="run scanpath", action="store_true", dest='scanpath')
 
@@ -728,7 +728,7 @@ def get_args():
 	return args
 
 def main():
-	args = get_args()
+	args = get_args(appname='converter')
 	cli_main(args)
 
 if __name__ == '__main__':

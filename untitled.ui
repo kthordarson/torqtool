@@ -42,10 +42,10 @@
    <widget class="QWidget" name="horizontalLayoutWidget">
     <property name="geometry">
      <rect>
-      <x>190</x>
-      <y>10</y>
-      <width>441</width>
-      <height>491</height>
+      <x>310</x>
+      <y>740</y>
+      <width>321</width>
+      <height>71</height>
      </rect>
     </property>
     <layout class="QHBoxLayout" name="main_layout"/>
@@ -53,10 +53,10 @@
    <widget class="QWidget" name="horizontalLayoutWidget_2">
     <property name="geometry">
      <rect>
-      <x>650</x>
+      <x>190</x>
       <y>10</y>
-      <width>441</width>
-      <height>491</height>
+      <width>901</width>
+      <height>501</height>
      </rect>
     </property>
     <layout class="QHBoxLayout" name="triplayout"/>
