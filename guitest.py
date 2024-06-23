@@ -97,26 +97,31 @@ class MainApp(QMainWindow):#QWidget, Ui_FindGitsApp):
 		row = self.ui.tableView.selectedIndexes()[0].row()
 		celldata = self.ui.tableView.model().data(index)
 		fileid = row+1
-		logs=self.session.query(Torqlogs.latitude, Torqlogs.longitude).filter(Torqlogs.fileid==fileid).all()
-		logger.debug(f'{fileid=} row={row}  data={celldata} logs={len(logs)}')
-		scatter = QScatterSeries()
+		lat_lon_data = self.session.query(Torqlogs.latitude, Torqlogs.longitude).filter(Torqlogs.fileid==fileid).all()
+		speedgpskmh_data = self.session.query(Torqlogs.id, Torqlogs.speedgpskmh).filter(Torqlogs.fileid==fileid).all()
+		logger.debug(f'{fileid=} row={row}  data={celldata} lld={len(lat_lon_data)} spd={len(speedgpskmh_data)}')
+		latlonscatter = QScatterSeries()
+		speedscatter = QScatterSeries()
 		try:
-			[scatter.append(k[0],k[1]) for k in logs]
+			[latlonscatter.append(k[0],k[1]) for k in lat_lon_data]
+			[speedscatter.append(k[0],k[1]) for k in speedgpskmh_data]
 		except TypeError as e:
 			logger.warning(f'{e}')
-		self.tripplotmodel = TripplotModel(fileid=fileid)
+		# self.tripplotmodel = TripplotModel(fileid=fileid)
 		try:
 			self.ui.triplayout.removeWidget(self.trip_plot_view)
 		except AttributeError as e:
 			logger.warning(f'{e}')
 		self.trip_plot = QChart()
+		self.trip_plot.addSeries(latlonscatter)
+		self.trip_plot.addSeries(speedscatter)
+		self.trip_plot.legend().hide()
 		self.trip_plot_view = QChartView(self.trip_plot)
 		#scatter.setModel(self.tripplotmodel)
 		self.ui.triplayout.addWidget(self.trip_plot_view)
 		self.setLayout(self.ui.triplayout)
-		self.trip_plot.addSeries(scatter)
-		scatter.setMarkerSize(5)
-		self.trip_plot.legend().hide()
+		latlonscatter.setMarkerSize(5)
+		speedscatter.setMarkerSize(5)
 
 	def create_start_stops_plot(self):
 		# self.startstopmodel = QSqlQueryModel()
