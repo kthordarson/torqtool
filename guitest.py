@@ -1,8 +1,9 @@
 #!/usr/bin/python3
 import sys
 import os
+import datetime
 from argparse import ArgumentParser
-
+import pandas as pd
 import PySide6
 from loguru import logger
 from PySide6 import QtCore, QtSql, QtGui
@@ -85,6 +86,8 @@ class MainApp(QMainWindow):
 		self.session = session
 		self.populate_torqfiles()
 		self.create_entries_plot()
+		self.create_speed_plot()
+		self.create_start_stops_plot()
 		self.ui.tableView.doubleClicked.connect(self.doubleClicked_table)
 		self.trip_plot_view = QChartView()
 		self.speed_plot_view = QChartView()
@@ -115,7 +118,9 @@ class MainApp(QMainWindow):
 		celldata = self.ui.tableView.model().data(index)
 		fileid = row+1
 		lat_lon_data = self.session.query(Torqlogs.latitude, Torqlogs.longitude).filter(Torqlogs.fileid==fileid).all()
+		lat_lon_data = pd.DataFrame(lat_lon_data).fillna(0)
 		speed_data = self.session.query(Torqlogs.id, Torqlogs.speedgpskmh, Torqlogs.gpsspeedkmh, Torqlogs.speedobdkmh).filter(Torqlogs.fileid==fileid).all()
+		speed_data = pd.DataFrame(speed_data).fillna(0)
 		logger.debug(f'{fileid=} row={row}  data={celldata} lld={len(lat_lon_data)} spd={len(speed_data)}')
 		font = QFont('Ariel', 8)
 		font.setPixelSize(8)
@@ -149,41 +154,16 @@ class MainApp(QMainWindow):
 		speedobdkmh.setPen(pen)
 		invalid_latlon_points = 0
 		invalid_speed_points = 0
-		for k in lat_lon_data:
-			if k[0] and k[1]:
-				try:
-					latlonscatter.append(k[0],k[1])
-				except TypeError as e:
-					logger.warning(f'{e} {k}')
-			else:
-				invalid_latlon_points += 1
-		if invalid_latlon_points > 0:
-			logger.warning(f'found {invalid_latlon_points} invalid_latlon_points {fileid=}')
-		for k in speed_data:
-			if k[0] and k[1]:
-				try:
-					speedgpskmh.append(k[0],k[1])
-				except TypeError as e:
-					logger.warning(f'{e} {k}')
-			else:
-				invalid_speed_points += 1
-			if k[0] and k[2]:
-				try:
-					gpsspeedkmh.append(k[0],k[2])
-				except TypeError as e:
-					logger.warning(f'{e} {k}')
-			else:
-				invalid_speed_points += 1
-			if k[0] and k[3]:
-				try:
-					speedobdkmh.append(k[0],k[3])
-				except TypeError as e:
-					logger.warning(f'{e} {k}')
-			else:
-				invalid_speed_points += 1
-		if invalid_speed_points > 0:
-			logger.warning(f'found {invalid_speed_points} invalid_speed_points {fileid=}')
-		# self.tripplotmodel = TripplotModel(fileid=fileid)
+		# [latlonscatter.append(lat_lon_data[k].values[0],lat_lon_data[k].values[1]) for k in lat_lon_data]
+		[latlonscatter.append(k.latitude,k.longitude) for k in lat_lon_data.itertuples()]
+
+		for k in speed_data.itertuples():
+			[speedgpskmh.append(k.id,k.speedgpskmh) for k in k[speed_data].itertuples()]
+			[gpsspeedkmh.append(k.id,k.gpsspeedkmh) for k in k[speed_data].itertuples()]
+			[speedobdkmh.append(k.id,k.speedobdkmh) for k in k[speed_data].itertuples()]
+			#[speedgpskmh.append(speed_data[k].values[0],speed_data[k].values[1]) for k in speed_data]
+			#[speedgpskmh.append(speed_data[k].values[0],speed_data[k].values[2]) for k in speed_data]
+			#[speedgpskmh.append(speed_data[k].values[0],speed_data[k].values[3]) for k in speed_data]
 		try:
 			self.ui.triplayout.removeWidget(self.trip_plot_view)
 			self.ui.speedlayout.removeWidget(self.speed_plot_view)
@@ -240,24 +220,77 @@ class MainApp(QMainWindow):
 		scatter = QScatterSeries()
 		[scatter.append(k[0],k[1]) for k in data]
 		[scatter.append(k[2],k[3]) for k in data]
-		self.start_stop_plot = QChart()
-		self.start_stop_plot_view = QChartView(self.start_stop_plot)
-		self.ui.main_layout.addWidget(self.start_stop_plot_view)
+		self.speed_plot = QChart()
+		self.speed_plot_view = QChartView(self.speed_plot)
+		self.ui.main_layout.addWidget(self.speed_plot_view)
 		#self.setLayout(self.ui.main_layout)
 
-		self.start_stop_plot.addSeries(scatter)
+		self.speed_plot.addSeries(scatter)
 		# scatter.setName('start/end')
 		scatter.setMarkerSize(5)
 		# self.start_stop_plot.createDefaultAxes()
 		# self.start_stop_plot.setTitleFont(QFont('Arial', 10))
-		self.start_stop_plot.setTitle('trip start/end')
-		self.start_stop_plot.legend().hide()
+		self.speed_plot.setTitle('trip start/end')
+		self.speed_plot.legend().hide()
 		# self.start_stop_plot.axes()[0].setMax(self.start_stop_plot.axes()[0].max()+1)
 		# self.start_stop_plot.axes()[1].setMax(self.start_stop_plot.axes()[1].max()+1)
 		# self.start_stop_plot.axes()[0].setMin(self.start_stop_plot.axes()[0].min()-1)
 		# self.start_stop_plot.axes()[1].setMin(self.start_stop_plot.axes()[1].min()-1)
 		#self.ui.tableView.setModel(self.tripdist_series_model)
 		#self.ui.tableView.resizeColumnsToContents()
+
+	def create_speed_plot(self):
+		#data = np.array(session.execute(text('select * from speeds')).all())
+		data = pd.DataFrame(session.execute(text('select * from speeds')).all())
+		#data = np.array(df.fillna(0))
+		scatter = QScatterSeries()
+		# [scatter.append(k.gpstime,k.speed) for k in data.itertuples()]
+		for k in data.itertuples():
+			kgpstime = None
+			kgpstime_ = str(k.gpstime)#.toMSecsSinceEpoch()
+			try:
+				kgpstime = QtCore.QDateTime.fromString(kgpstime_).toMSecsSinceEpoch()
+				scatter.append(k.fileid,k.speed)
+				scatter.append(kgpstime,k.speed)
+			except TypeError as e:
+				logger.warning(f'{e} {kgpstime=} {k=} {k.gpstime=}')
+		#[scatter.append(k.fileid,k.speed) for k in data.itertuples()]
+		# [scatter.append(k[3],k[2]) for k in data ]
+		#[scatter.append(k[0],k[2]) for k in data ]
+		scatter.setMarkerSize(5)
+		# [scatter.append(k[0]) for k in (data.fileid, data.speed) ]
+		# [scatter.append(k[0],k[1]) for k in (data.fileid, data.speed) ]
+		#[scatter.append(k[0],str(k[2])) for k in data if k[0] and k[1] and k[2]]
+		self.speed_plot = QChart()
+		self.speed_plot.addSeries(scatter)
+		self.speed_plot_view = QChartView(self.speed_plot)
+		self.ui.main_layout.addWidget(self.speed_plot_view)
+		#self.setLayout(self.ui.main_layout)
+
+		# scatter.setName('start/end')
+		# self.start_stop_plot.createDefaultAxes()
+		# self.start_stop_plot.setTitleFont(QFont('Arial', 10))
+		# self.start_stop_plot.setTitle('trip start/end')
+		self.speed_plot.legend().hide()
+		self.ui.entrieslayout.addWidget(self.speed_plot_view)
+		self.setLayout(self.ui.main_layout)
+		# self.start_stop_plot.axes()[0].setMax(self.start_stop_plot.axes()[0].max()+1)
+		# self.start_stop_plot.axes()[1].setMax(self.start_stop_plot.axes()[1].max()+1)
+		# self.start_stop_plot.axes()[0].setMin(self.start_stop_plot.axes()[0].min()-1)
+		# self.start_stop_plot.axes()[1].setMin(self.start_stop_plot.axes()[1].min()-1)
+		#self.ui.tableView.setModel(self.tripdist_series_model)
+		#self.ui.tableView.resizeColumnsToContents()
+
+	def xcreate_speed_plot(self):
+		#
+		#lat_lon_data = self.session.query(Torqlogs.latitude, Torqlogs.longitude).filter(Torqlogs.fileid==fileid).all()
+		self.speedmodel = QSqlQueryModel()
+		self.speedmodel.setQuery('select * from speeds')
+		self.speedmodel.setHeaderData(0, QtCore.Qt.Horizontal, "fileid")
+		self.speedmodel.setHeaderData(1, QtCore.Qt.Horizontal, "speed")
+		self.speedmodel.setHeaderData(2, QtCore.Qt.Horizontal, "gpstime")
+		self.speed_series = QLineSeries()
+
 
 	def create_entries_plot(self):
 		self.fileentries_series = QLineSeries()
