@@ -157,6 +157,36 @@ def xsend_torqdata(tfid, dburl, debug=False):
 def main(args):
 	engine, session = get_engine_session(args)
 	print(args)
+	if args.db_filestats:
+
+		file_ids = pd.DataFrame(session.execute(text('select fileid from torqfiles ')))
+
+		print(f'fileids={len(file_ids)} ')
+		for fileidx, file in enumerate(file_ids.itertuples()):
+			results = []
+			#results[file.fileid] = []
+			total_rows = pd.DataFrame(session.execute(text(f'select count(*) from torqlogs where fileid={file.fileid}'))).values[0][0]
+			for idx,column in enumerate(schema_datatypes):
+				try:
+					nulls = pd.DataFrame(session.execute(text(f'select count(id) as count from torqlogs where fileid={file.fileid} and {column} is null ')).all()).values[0][0]
+					notnulls = total_rows - nulls
+					#dfval = df.values[0][0]
+					# print(f'[{fileidx}/{len(file_ids)}/{idx}/{len(schema_datatypes)}] {file.fileid} - {column} nulls {nulls} ratio:  {nulls/total_rows} notnulls:{notnulls} ratio: {notnulls/total_rows}')
+
+					results.append( {'fileid': file.fileid, 'column':column, 'nulls':nulls, 'nullratio':nulls/total_rows})
+				except (OperationalError,RuntimeWarning) as e:
+					logger.warning(f'{type(e)} {e} for {column} {total_rows=} {nulls=}')
+				except Exception as e:
+					logger.error(f'{type(e)} {e} for {column}')
+			print(f'[{fileidx}/{len(file_ids)}] {file.fileid} ')
+			df = pd.DataFrame([k for k in results])
+			print(f'sending {len(df)} filestats to db...')
+			try:
+				df.to_sql(con=engine, name='filestats',if_exists='replace')
+			except Exception as e:
+				logger.error(f'{type(e)} {e} for\n{df=}\n {results=}\n')
+			#return df
+
 	if args.db_columnstats:
 		results = {}
 		total_rows = pd.DataFrame(session.execute(text('select count(*) from torqlogs'))).values[0][0]
@@ -172,6 +202,11 @@ def main(args):
 				logger.warning(f'{type(e)} {e} for {column}')
 			except Exception as e:
 				logger.error(f'{type(e)} {e} for {column}')
+		df = pd.DataFrame([results[k] for k in results])
+		try:
+			df.to_sql(con=engine, name='columnstats',if_exists='replace')
+		except Exception as e:
+			logger.error(f'{type(e)} {e} for {df=} {results=}')
 		return results
 	if args.db_startends:
 		q = text('select fileid as fileid,min(latitude) as latmin,min(longitude) as lonmin,max(latitude) as latmax,max(longitude) as lonmax from torqlogs group by fileid;')
@@ -200,7 +235,11 @@ if __name__ == '__main__':
 	parser.add_argument('--db_speed', default=False, help="db_speed", action="store_true", dest='db_speed')
 	parser.add_argument('--db_startends', default=False, help="db_startends", action="store_true", dest='db_startends')
 	parser.add_argument('--db_columnstats', default=False, help="db_columnstats", action="store_true", dest='db_columnstats')
+	parser.add_argument('--db_filestats', default=False, help="db_filestats", action="store_true", dest='db_filestats')
 	args = parser.parse_args()
-	r = main(args)
-	print(r)
+	try:
+		r = main(args)
+		print(f'[main] got {type(r)}')
+	except Exception as e:
+		logger.error(f'unhandled {type(e)} {e}')
 
