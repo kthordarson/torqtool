@@ -20,6 +20,7 @@ from sqlalchemy.orm import sessionmaker
 from datamodels import Torqdata, TorqFile, Torqlogs
 from converter import get_parser
 from utils import get_engine_session
+from schemas import schema_datatypes
 
 def create_tripdata(engine, session, newfilelist):
 	#torqtrips = pd.read_sql(f'select id from torqtrips', session)
@@ -156,6 +157,22 @@ def xsend_torqdata(tfid, dburl, debug=False):
 def main(args):
 	engine, session = get_engine_session(args)
 	print(args)
+	if args.db_columnstats:
+		results = {}
+		total_rows = pd.DataFrame(session.execute(text('select count(*) from torqlogs'))).values[0][0]
+		print(f'{total_rows} in db')
+		for idx,column in enumerate(schema_datatypes):
+			try:
+				nulls = pd.DataFrame(session.execute(text(f'select count(id) as count from torqlogs where {column} is null')).all()).values[0][0]
+				notnulls = total_rows - nulls
+				#dfval = df.values[0][0]
+				print(f'[{idx}/{len(schema_datatypes)}-{len(results)}] {column} nulls {nulls} ratio:  {nulls/total_rows} notnulls:{notnulls} ratio: {notnulls/total_rows}')
+				results[column] = {'column':column, 'nulls':nulls, 'nullratio':nulls/total_rows}
+			except (OperationalError,) as e:
+				logger.warning(f'{type(e)} {e} for {column}')
+			except Exception as e:
+				logger.error(f'{type(e)} {e} for {column}')
+		return results
 	if args.db_startends:
 		q = text('select fileid as fileid,min(latitude) as latmin,min(longitude) as lonmin,max(latitude) as latmax,max(longitude) as lonmax from torqlogs group by fileid;')
 		df = pd.DataFrame(session.execute(q).all())
@@ -164,6 +181,7 @@ def main(args):
 		print(df.describe())
 		# res = session.execute(text('create table speeds as select fileid,avg(gpsspeedkmh) as speed,min(gpstime) as gpstime  from torqlogs group by fileid'))
 		print(df.to_sql(name='startends', con=engine, if_exists='replace'))
+		return 0
 	if args.db_speed:
 		#res = session.execute(text('drop table speeds'))
 		#print(res)
@@ -175,11 +193,14 @@ def main(args):
 		print(df.describe())
 		# res = session.execute(text('create table speeds as select fileid,avg(gpsspeedkmh) as speed,min(gpstime) as gpstime  from torqlogs group by fileid'))
 		print(df.to_sql(name='speeds', con=engine, if_exists='replace'))
-											  # create table startstops as select fileid as fileid,min(latitude) as latmin,min(longitude) as lonmin,max(latitude) as latmax,max(longitude) as lonmax from torqlogs group by fileid;
+		return 0
+		# create table startstops as select fileid as fileid,min(latitude) as latmin,min(longitude) as lonmin,max(latitude) as latmax,max(longitude) as lonmax from torqlogs group by fileid;
 if __name__ == '__main__':
 	parser = get_parser('dataupdate')
 	parser.add_argument('--db_speed', default=False, help="db_speed", action="store_true", dest='db_speed')
 	parser.add_argument('--db_startends', default=False, help="db_startends", action="store_true", dest='db_startends')
+	parser.add_argument('--db_columnstats', default=False, help="db_columnstats", action="store_true", dest='db_columnstats')
 	args = parser.parse_args()
-	main(args)
+	r = main(args)
+	print(r)
 
