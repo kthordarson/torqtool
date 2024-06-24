@@ -67,10 +67,15 @@ def fix_column_names(csvfile:str, args):
 		# rawdata[0] = re.sub('â°','',rawdata[0])
 		# rawdata[0] = re.sub('â','',rawdata[0])
 		if not args.skipwrites:
-			logger.info(f'writing columns to {csvfile}')
-			shutil.copy(csvfile, f'{csvfile}.colfixbak')
-			with open(csvfile,'w') as f:
-				f.writelines(rawdata)
+			bakfile = f'{csvfile}.colfixbak'
+			if not os.path.exists(bakfile):
+				shutil.copy(csvfile, bakfile)
+				logger.info(f'writing columns to {csvfile}')
+				with open(csvfile,'w') as f:
+					f.writelines(rawdata)
+			else:
+				if args.extradebug:
+					logger.warning(f'backup file exists {bakfile} skipping write {csvfile}')
 		else:
 			pass # logger.info(f'skipping write {csvfile}')
 	except Exception as e:
@@ -372,7 +377,7 @@ def split_file(logfile:str, session=None):
 			# {marker.get("linenumber")}
 			# remove lines that start with GPS, keep first line, write to file (overwrite)
 			skip_lines = [k.get('linenumber') for k in split_list]
-			shutil.copy(logfile, f'{logfile}.bak')
+			shutil.copy(logfile, f'{logfile}.splitbak')
 			with open(logfile, 'w') as f:
 				for idx, line in enumerate(rawdata):
 					if idx not in skip_lines:
@@ -380,25 +385,37 @@ def split_file(logfile:str, session=None):
 			logger.debug(f'wrote fixed {logfile}')
 			# mark the file as fixed in the database, TorqFile.fixed_flag = 1 and TorqFile.error_flag = 0, read again
 			if session:
-				torqfile = session.query(TorqFile).filter(TorqFile.csvfile == logfile).one()
+				try:
+					torqfile = session.query(TorqFile).filter(TorqFile.csvfile == logfile).one()
+				except NoResultFound as e:
+					torqfile = TorqFile(csvfile=logfile, csvhash=md5(open(logfile, 'rb').read()).hexdigest())
+					logger.warning(f'no result found for {logfile} {e} new torqfile: {torqfile}')
 				torqfile.fixed_flag = 1
 				torqfile.error_flag = 0
 				session.commit()
-				logger.debug(f'database updated for {logfile} torqfileid: {torqfile.fileid}')
+				logger.debug(f'database updated for {logfile} torqfileid: {torqfile.fileid} tf={torqfile}' )
+			return logfile
 		elif gpstime_diff >= 900: # more that five seconds, split file
 			# newbufferlen = len(rawdata[marker['linenumber']:])
-			logger.warning(f'Splitting {logfile} {gpstime_diff=} {devicetime_diff=} ') # \n\tgpsbefore: {gpstime_before_split} gpsafter: {gpstime_after_split}\n\tdevtimebefore: {devicetime_before_split} devtimeafter: {devicetime_after_split}' )
+			logger.warning(f'Splitting {logfile} {gpstime_diff=} {devicetime_diff=} {split_list}') # \n\tgpsbefore: {gpstime_before_split} gpsafter: {gpstime_after_split}\n\tdevtimebefore: {devicetime_before_split} devtimeafter: {devicetime_after_split}' )
 			marker = split_list[0]
 			# generate new filename for split
-			newdate = convert_string_to_datetime(rawdata[marker.get('linenumber')+1].split(',')[1])
-			basename = 'trackLog-' + newdate.strftime('%Y-%b-%d_%H-%M')
+			rawdate = rawdata[marker.get('linenumber')+1].split(',')[1]
+			try:
+				newdate = convert_string_to_datetime(rawdate)
+				basename = 'trackLog-split-' + newdate.strftime('%Y-%b-%d_%H-%M') + '.csv'
+			except TypeError as e:
+				logger.error(f'{e} failed to convert date {logfile} {rawdate=}')
+				return None # basename = 'trackLog-split-' + datetime.now().strftime('%Y-%b-%d_%H-%M') + '.csv'
 			newlogfile = os.path.join(Path(logfile).parent,basename)
 			start_line = [k.get('linenumber') for k in split_list][0]
 			new_rawdata = rawdata[start_line:]
 			with open(newlogfile, 'w') as f:
 				for idx, line in enumerate(new_rawdata):
 					f.write(line.strip()+'\n')
-			logger.debug(f'wrote fixed {basename}')
+			spname = f'{logfile}.baksplit'
+			shutil.move(logfile, spname)
+			logger.debug(f'wrote fixed {basename} old: {spname} new: {newlogfile}')
 			# mark the file as fixed in the database, TorqFile.fixed_flag = 1 and TorqFile.error_flag = 0, read again
 			if session:
 				torqfile = TorqFile(csvfile=newlogfile, csvhash=md5(open(newlogfile, 'rb').read()).hexdigest())
@@ -406,6 +423,7 @@ def split_file(logfile:str, session=None):
 				torqfile.error_flag = 0
 				session.commit()
 				logger.debug(f'database updated for {basename} torqfileid: {torqfile.fileid}')
+			return newlogfile
 			# write lines from split marker to end of file to new file
 			# mark the file as fixed in the database, TorqFile.fixed_flag = 1 and TorqFile.error_flag = 0, read again
 
@@ -414,7 +432,11 @@ def split_file(logfile:str, session=None):
 			# mark the file as fixed in the database, TorqFile.fixed_flag = 1 and TorqFile.error_flag = 1, read again
 
 	except TypeError as e:
-		logger.error(f'splitter failed {e} {logfile=}')
+		logger.error(f'splitter failed {type(e)} {e} {logfile=}')
+		return None
+	except Exception as e:
+		logger.error(f'unhandled Exception splitter failed {type(e)} {e} {logfile=}')
+		return None
 
 
 if __name__ == '__main__':
