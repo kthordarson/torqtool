@@ -100,10 +100,11 @@ def collect_db_speeds(args):
 	session.execute(text('drop table if exists speeds'))
 	#res = session.execute(text('drop table speeds'))
 	#print(res)
-	if not args.db_limit:
-		df = pd.DataFrame(session.execute(text('select fileid,avg(gpsspeedkmh) as speed,min(gpstime) as gpstime  from torqlogs group by fileid')).all()).fillna(0)
-	else:
-		df = pd.DataFrame(session.execute(text(f'select fileid,avg(gpsspeedkmh) as speed,min(gpstime) as gpstime  from torqlogs group by fileid limit {args.db_limit}')).all()).fillna(0)
+	q = 'select fileid,avg(gpsspeedkmh) as gpsspeedkmh, avg(speedobdkmh) as speedobdkmh, avg(speedgpskmh) as speedgpskmh, min(gpstime) as gpstime  from torqlogs where gpsspeedkmh is not null and gpsspeedkmh>0 and speedobdkmh is not null and speedobdkmh>0  and speedgpskmh is not null and speedgpskmh>0 group by fileid '
+	# oldq = 'select fileid,avg(gpsspeedkmh) as speed,min(gpstime) as gpstime  from torqlogs group by fileid'
+	if args.db_limit:
+		q += f' limit {args.limit}'
+	df = pd.DataFrame(session.execute(text(q)).all()).fillna(0)
 	logger.info(f'dbspeeds:{df.describe()}')
 	# res = session.execute(text('create table speeds as select fileid,avg(gpsspeedkmh) as speed,min(gpstime) as gpstime  from torqlogs group by fileid'))
 	logger.info(f"dbspeeds: dfres {df.to_sql(name='speeds', con=engine, if_exists='replace')}")

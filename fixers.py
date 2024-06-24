@@ -370,9 +370,20 @@ def split_file(logfile:str, session=None):
 		for idx,marker in enumerate(split_list):
 			if marker.get('linenumber') == 1:
 				logger.warning(f'invalid {marker=} {logfile=}\n{split_list=}')
-				continue
+				break
+
 			rawgpstime_before_split = rawdata[marker.get('linenumber') - line_offset].split(',')[0]
+			if rawgpstime_before_split == '-':
+				line_offset = random.randint(1,5)
+				rawgpstime_before_split = rawdata[marker.get('linenumber') - line_offset].split(',')[0]
+
 			rawgpstime_after_split = rawdata[marker.get('linenumber') + line_offset].split(',')[0]
+			if rawgpstime_after_split == '-':
+				line_offset = random.randint(1,5)
+				rawgpstime_after_split = rawdata[marker.get('linenumber') + line_offset].split(',')[0]
+			if rawgpstime_after_split == '-' or rawgpstime_before_split == '-':
+				logger.warning(f'invalid {marker=} {logfile=}\n{split_list=}')
+				break
 			try:
 				gpstime_before_split = convert_string_to_datetime(rawgpstime_before_split)
 				gpstime_after_split = convert_string_to_datetime(rawgpstime_after_split)
