@@ -656,9 +656,15 @@ def cli_main(args):
 			for errfile in fixed_newfiles['errorfiles']:
 				db_set_file_flag(session, filename=errfile, flag='headfixerr')
 		for idx,f in enumerate(fixed_newfiles['files_to_read']):
+			spchk = None
 			readstart = datetime.now()
 			logger.debug(f'[{idx}/{len(fixed_newfiles["files_to_read"])}] reading {Path(f).name}')
-			if split_check(f):
+			try:
+				spchk = split_check(f)
+			except FileNotFoundError as e:
+				logger.error(f'{e} {f}')
+				continue
+			if spchk:
 				if not args.repairsplit:
 					logger.warning(f'{f} needs splitting...')
 					broken_files.append(f)
