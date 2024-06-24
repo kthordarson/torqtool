@@ -30,10 +30,10 @@ from sqlalchemy.exc import (
 from sqlalchemy.orm import sessionmaker
 
 from commonformats import fmt_20, fmt_24, fmt_26, fmt_28, fmt_30, fmt_34, fmt_36
-from datamodels import TorqFile, database_init, Torqlogs, Torqdata
+from datamodels import TorqFile, database_init, Torqlogs
 from schemas import ncc
 
-MIN_FILESIZE = 2500
+MIN_FILESIZE = 3000
 
 class TimeZoneAwareConstructorWarning():
 	pass
@@ -591,26 +591,6 @@ async def torq_worker_ppe(tf, session, debug=False):
 		logger.error(f'[!] {type(e)} {e} in sqlsender buffer.is_empty() {buffer["torqbuffer"].is_empty()}')
 		return None
 
-async def torq_dataworker_ppe(tf, session, debug=False):
-	if not tf:
-		logger.warning('missing tf!')
-		return None
-	buffer = None
-	results = None
-	datares = None
-	t0 = datetime.now()
-	# logger.warning(f'torq_dataworker_ppe not implemented {tf=}')
-	# return None
-	try:
-		if debug:
-			logger.debug(f'file {tf}  ')
-		datares = send_torqdata_ppe(tf, session, debug=debug) # send trip data
-		if not datares:
-			logger.warning(f'torq_dataworker_ppe got no data file {tf.fileid}  {tf.csvfile} {datares=}')
-	except (ValueError, TypeError, PicklingError, OperationalError) as e:
-		logger.error(f'torq_dataworker_ppe {type(e)} {e} in send_torqdata_ppe {tf=}')
-		raise e
-	return datares
 
 def send_torqtripdata(stats_data:dict, session:sessionmaker, args:argparse.Namespace):
 	"""
@@ -805,119 +785,6 @@ def generate_torqdata(df:pd.DataFrame, session:sessionmaker=None, args:argparse.
 	# 	#print(stats)
 	return stats
 
-
-
-
-def xdate_fixer_devicetime(data, f):
-	"""
-	fix devicetime columns
-	"""
-	# cfix = ','.join([re.sub(r'\W', '', col) for col in data.columns]).encode('ascii', 'ignore').decode().lower().split(',')
-	# drop old date columns from data and store new df0
-	df0 = data.rename(columns=ncc).fillna(0)
-	# df0 = data.drop(columns=date_columns)
-	fixed_datecol = pd.DataFrame()
-	datecol = 'devicetime'
-	# what date format to use
-	# fmt_selector = sum([len(k) for k in data[datecol]])//len(data)
-
-	try:
-		testdate = df0[datecol][len(df0)//2]
-		if isinstance(testdate, pd.Timestamp):
-			logger.info(f'{datecol} is ok....')
-			return df0
-		fmt_selector = len(testdate) # use value in middle to check.....
-	except (ValueError, TypeError, KeyError) as e:
-		logger.warning(f'fmtselector {e} {f=} {testdate=} {datecol=}')
-		fmt_selector = len(df0[datecol][1])
-		logger.warning(f'fmtselector {e} {f=} {testdate=} {datecol=} newfmt_selector:{fmt_selector} d: {len(data)} d0: {len(df0)} \n sample0 {df0[datecol][0]} samplefmt {df0[datecol][fmt_selector]} \n datacols={data.columns} \n df0cols={df0.columns}\n')
-		# continue #
-	try:
-		match fmt_selector:
-			case 20:
-				fixed_datecol = pd.DataFrame({datecol:[datetime.strptime(k,fmt_20).astimezone(pytz.timezone('UTC')) for k in df0[datecol][1:] ]})
-			case 24:
-				fixed_datecol = pd.DataFrame({datecol:[datetime.strptime(k,fmt_24).astimezone(pytz.timezone('UTC')) for k in df0[datecol][1:] ]})
-			case 26:
-				fixed_datecol = pd.DataFrame({datecol:[datetime.strptime(k,fmt_26).astimezone(pytz.timezone('UTC')) for k in df0[datecol][1:] ]})
-			case 28:
-				fixed_datecol = pd.DataFrame({datecol:[datetime.strptime(k,fmt_28).astimezone(pytz.timezone('UTC')) for k in df0[datecol][1:] ]})
-			case 30:
-				fixed_datecol = pd.DataFrame({datecol:[datetime.strptime(k,fmt_30).astimezone(pytz.timezone('UTC')) for k in df0[datecol][1:] ]})
-			case 34:
-				fixed_datecol = pd.DataFrame({datecol:[datetime.strptime(k,fmt_34).astimezone(pytz.timezone('UTC')) for k in df0[datecol][1:] ]})
-			case 36:
-				fixed_datecol = pd.DataFrame({datecol:[datetime.strptime(k,fmt_36).astimezone(pytz.timezone('UTC')) for k in df0[datecol][1:] ]})
-			case _:
-				pass # logger.warning(f'could not match format for fmt_selector {fmt_selector} for {datecol} {f=}.\n sample:first= {df0[datecol][0]} middle= {df0[datecol][len(data)//2]} last= {df0[datecol][len(df0)-1]}\n')
-	except (ValueError,TypeError,KeyError) as e:
-		logger.error(f'datefix {type(e)} {e} {testdate=} {f=} datecol: {datecol} fmt: {fmt_selector} \n sample:first= {df0[datecol][0]} middle= {df0[datecol][len(data)//2]} \n') # last= {df0[datecol][len(df0)-1]}
-	if not fixed_datecol.empty:
-		df0 = data.drop(columns=datecol)
-		df0 = pd.concat([df0,fixed_datecol])
-		logger.info(f'replaced {datecol}')
-	else:
-		logger.warning(f'could not match format for fmt_selector {fmt_selector} for {datecol} {f=} {testdate=} .\n sample:first= {df0[datecol][0]} middle= {df0[datecol][len(data)//2]} ') # last= {df0[datecol][len(df0)-1]}\n')
-	return df0
-
-
-def xdate_fixer_gpstime(data, f):
-	"""
-	fix gpstime columns
-	"""
-	# cfix = ','.join([re.sub(r'\W', '', col) for col in data.columns]).encode('ascii', 'ignore').decode().lower().split(',')
-	# drop old date columns from data and store new df0
-	df0 = data.rename(columns=ncc).fillna(0)
-	# df0 = data.drop(columns=date_columns)
-	fixed_datecol = pd.DataFrame()
-	# gpstime = [datetime.strptime(k,fmt_28).astimezone(pytz.timezone('UTC')) for k in data['gpstime']]
-	# devicetime = [datetime.strptime(k,fmt_28).astimezone(pytz.timezone('UTC')) for k in data['devicetime']]
-	# fc = pd.DataFrame({dc:data})
-	# fc = pd.DataFrame(data=[datetime.strptime(k,fmt_24).astimezone(pytz.timezone('UTC')) for k in data[dc]])
-	datecol = 'gpstime'
-	# what date format to use
-	# fmt_selector = sum([len(k) for k in data[datecol]])//len(data)
-
-	try:
-		# testdate = df0[datecol][len(df0)//2]
-		testdate = max([k for k in df0[datecol].values if k !=0])
-		if isinstance(testdate, pd.Timestamp):
-			logger.info(f'{datecol} is ok....')
-			return df0
-		fmt_selector = len(testdate) # use value in middle to check.....
-	except (ValueError, TypeError, KeyError) as e:
-		logger.warning(f'fmtselector {e} {f=} {testdate=} {datecol=}')
-		fmt_selector = len(df0[datecol][1])
-		logger.warning(f'fmtselector {e} {f=} {testdate=} {datecol=} newfmt_selector:{fmt_selector} d: {len(data)} d0: {len(df0)} \n sample0 {df0[datecol][0]} samplefmt {df0[datecol][fmt_selector]} \n datacols={data.columns} \n df0cols={df0.columns}\n')
-		# continue #
-	try:
-		match fmt_selector:
-			case 20:
-				fixed_datecol = pd.DataFrame({datecol:[datetime.strptime(k,fmt_20).astimezone(pytz.timezone('UTC')) for k in df0[datecol][1:] ]})
-			case 24:
-				fixed_datecol = pd.DataFrame({datecol:[datetime.strptime(k,fmt_24).astimezone(pytz.timezone('UTC')) for k in df0[datecol][1:] ]})
-			case 26:
-				fixed_datecol = pd.DataFrame({datecol:[datetime.strptime(k,fmt_26).astimezone(pytz.timezone('UTC')) for k in df0[datecol][1:] ]})
-			case 28:
-				fixed_datecol = pd.DataFrame({datecol:[datetime.strptime(k,fmt_28).astimezone(pytz.timezone('UTC')) for k in df0[datecol][1:] ]})
-			case 30:
-				fixed_datecol = pd.DataFrame({datecol:[datetime.strptime(k,fmt_30).astimezone(pytz.timezone('UTC')) for k in df0[datecol][1:] ]})
-			case 34:
-				fixed_datecol = pd.DataFrame({datecol:[datetime.strptime(k,fmt_34).astimezone(pytz.timezone('UTC')) for k in df0[datecol][1:] ]})
-			case 36:
-				fixed_datecol = pd.DataFrame({datecol:[datetime.strptime(k,fmt_36).astimezone(pytz.timezone('UTC')) for k in df0[datecol][1:] ]})
-			case _:
-				pass # logger.warning(f'could not match format for fmt_selector {fmt_selector} for {datecol} {f=}.\n sample:first= {df0[datecol][0]} middle= {df0[datecol][len(data)//2]} last= {df0[datecol][len(df0)-1]}\n')
-	except (ValueError,TypeError,KeyError) as e:
-		logger.error(f'datefix {type(e)} {e} {testdate=} {f=} datecol: {datecol} fmt: {fmt_selector} \n sample:first= {df0[datecol][0]} middle= {df0[datecol][len(data)//2]} \n') # last= {df0[datecol][len(df0)-1]}
-	if not fixed_datecol.empty:
-		df0 = data.drop(columns=datecol)
-		df0 = pd.concat([df0,fixed_datecol])
-		logger.info(f'replaced {datecol}')
-	else:
-		logger.warning(f'could not match format for fmt_selector {fmt_selector} for {datecol} {f=} {testdate=} .\n sample:first= {df0[datecol][0]} middle= {df0[datecol][len(data)//2]} ') # last= {df0[datecol][len(df0)-1]}\n')
-	return df0
-
 def Convert(lst):
 	# convert list to dict
     res_dct = map(lambda i: (lst[i], lst[i+1]), range(len(lst)-1)[::2])
@@ -954,40 +821,6 @@ def convert_string_to_datetime(s:str):
 	finally:
 		return datetimeobject
 
-def send_torqdata_ppe(tfid, session, debug=False):
-	if not tfid:
-		logger.warning('missing tfid!')
-		return 'error:missing tfid'
-	res = 'notset'
-	try:
-		data = session.query(Torqlogs).filter(Torqlogs.fileid == tfid.fileid).all()
-	except TypeError as e:
-		import traceback
-		logger.error(f'[sendtd] {e} {type(e)} {tfid=}')
-		logger.error(traceback.print_exc())
-		return f'error:{e}'
-	td = Torqdata(tfid.fileid)
-	session.add(td)
-	if debug:
-		logger.info(f'[send_torqdata_ppe] tfid={tfid} d: {len(data)}')
-	# session.commit()
-	td = session.query(Torqdata).filter(Torqdata.fileid == tfid.fileid).first()
-	gpsspeedkmh = sum([k.gpsspeedkmh for k in data])
-	session.add(td)
-	try:
-		td.avg_gpsspeedkmh = gpsspeedkmh//len(data)
-		session.commit()
-		res = 'success'
-	except ZeroDivisionError as e:
-		logger.error(f'[sendtd] {e} {type(e)} {tfid=} {td=} {gpsspeedkmh=} {len(data)=}')
-		res = f'error:{e}'
-	finally:
-		if debug:
-			if 'error' in res:
-				logger.warning(f'[sendtd] {tfid=} {td=} {gpsspeedkmh=} {len(data)=} {res=}')
-			else:
-				logger.info(f'[sendtd] {tfid=} {td=} {gpsspeedkmh=} {len(data)=} {res=}')
-		return res
 
 
 if __name__ == '__main__':

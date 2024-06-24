@@ -12,7 +12,7 @@ class Base(DeclarativeBase):
 
 def genuuid():
 	return str(uuid.uuid4())
-# tables = ['torqtrips', 'torqlogs', 'torqfiles', 'torqdata']
+
 # x = latitude y = longitude !
 
 class TorqFile(Base):
@@ -53,10 +53,6 @@ class TorqFile(Base):
 		self.error_flag = 0
 		self.data_flag = 0
 		self.import_date = datetime.now()
-
-	# def __repr__(self):
-	# 	# fn = self.csvfile.split('/')[-1]
-	# 	return f'<TorqFile id: {self.fileid}  csvfile=( {self.csvfile} ) r:{self.read_flag} s:{self.send_flag} f:{self.fixed_flag} d:{self.data_flag} >'
 
 class Torqtrips(Base):
 	__tablename__ = 'torqtrips'
@@ -199,19 +195,6 @@ class Torqlogs(Base):
 	def __init__(self, fileid):
 		self.fileid = fileid
 
-	# def __repr__(self):
-	# 	return f'<Torqdata {self.id}  file:{self.fileid}>'
-
-class Torqdata(Base):
-	__tablename__ = 'torqdata'
-	id: Mapped[int] = mapped_column(primary_key=True)
-	fileid: Mapped[int] = mapped_column(ForeignKey('torqfiles.fileid'))
-
-	# def __repr__(self):
-	# 	return f'<Torqtrips id:{self.id} f:{self.fileid} >'
-
-	def __init__(self, fileid):
-		self.fileid = fileid
 
 def database_dropall(engine): # drop all tables
 	logger.warning(f'[database_dropall] engine:{engine}')
@@ -230,10 +213,7 @@ def send_torqfiles(filelist=[], session=None, debug=False): # returns list of ne
 	send list of files to db
 	returns list of TorqFile objects to be processed and sent to db
 	"""
-	#torqdbfiles = session.execute(text(f'select * from torqfiles;')).all()
-	# torqdbfiles = session.query(TorqFile).all() # get list of files from db
 	torqdbfiles = session.query(TorqFile).all() # get list of files from db
-	# hlist = pd.DataFrame([session.query(TorqFile.csvhash).all()])
 	hlist = pd.DataFrame(session.query(TorqFile.csvhash).all())
 	if debug:
 		logger.debug(f'filelist: {len(filelist)} dbfiles: {len(torqdbfiles)}  hashes: {len(hlist)} fl: {len(filelist)}')
@@ -243,7 +223,6 @@ def send_torqfiles(filelist=[], session=None, debug=False): # returns list of ne
 		csvhash = tf['csvhash']
 		if csvhash in hlist.values: #[k.csvhash for k in torqdbfiles]:
 			# check existing entry
-			# fid = session.execute(text('select fileid from torqfiles where csvhash=:csvhash'), {'csvhash':csvhash}).one()[0]
 			fid = session.execute(text(f'select fileid from torqfiles where csvhash="{csvhash}"')).one()[0]
 			check = session.execute(text(f'select count(id) from torqlogs where fileid={fid}')).one()[0]
 			if debug:

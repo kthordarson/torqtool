@@ -11,7 +11,6 @@ from loguru import logger
 from sqlalchemy.exc import OperationalError
 # sys.path.append('c:/apps/torqtool/torqtool')
 from datamodels import (
-	Torqdata,
 	TorqFile,
 	Torqlogs,
 	Torqtrips,
@@ -24,7 +23,6 @@ from utils import (
 	get_csv_files,
 	get_engine_session,
 	send_torqtripdata,
-	torq_dataworker_ppe,
 	torq_worker_ppe,
 )
 
@@ -42,21 +40,6 @@ from utils import (
 async def create_torqdata(session, args):
 	# dataworkders
 	return
-	t0 = datetime.now()
-	dbtorqfiles = session.query(TorqFile).all() # filter(TorqFile.data_flag == 0).all() # type: ignore
-	if args.debug:
-		logger.debug(f'[create_torqdata] t: {(datetime.now()-t0).seconds} starting {len(dbtorqfiles)} dataworkers')
-	async with asyncio.TaskGroup() as tg:
-		for idx, tf in enumerate(dbtorqfiles):
-			#asyncio.set_event_loop(loop)
-			t = session.query(TorqFile).filter(TorqFile.fileid == tf.fileid).first()
-			if args.debug:
-				logger.debug(f'[{idx}/{len(dbtorqfiles)}] t: {(datetime.now()-t0).seconds} starting dataworker {t=} for {tf=} tfid:{tf.fileid}')
-			tg.create_task(torq_dataworker_ppe(t, session, args.debug))
-			#await asyncio.gather(*tasks)
-	if args.debug:
-		logger.debug(f't: {(datetime.now()-t0).seconds} finished {len(dbtorqfiles)} dataworkers')
-
 
 async def scanpath(session, args):
 	"""
@@ -136,7 +119,6 @@ async def collect_info(session) -> AsyncIterable[str]:
 	yield session.query(Torqtrips).count()
 	yield session.query(TorqFile).count()
 	yield session.query(Torqlogs).count()
-	yield session.query(Torqdata).count()
 
 async def collect(async_iterable):
     return [item async for item in async_iterable]
@@ -180,7 +162,6 @@ async def main(args):
 		#files = session.query(Torqtrips).count()
 		#trips = session.query(Torqtrips).count()
 		#logs = session.query(Torqlogs).count()
-		#data = session.query(Torqdata).count()
 		#logger.info(f'[main] {files=} {trips=} {logs=:,} {data=}')
 		sys.exit(0)
 	if args.create_trips:

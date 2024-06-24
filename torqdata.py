@@ -5,9 +5,6 @@ from sqlalchemy.orm import sessionmaker
 
 from torqcols import allcols as cols
 
-#from datamodels import TorqFile
-
-
 def get_trip_data(trip, session):
 	resdata = []
 	for c in cols:

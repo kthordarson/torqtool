@@ -135,22 +135,42 @@ def read_csv_file(logfile, args):
 	#filtered_data = data.drop_nulls() # drop columns with all null values
 	df = data.to_pandas()
 
-	# do the fixing here ˆž 0ˆž
+	# do the fixing here ˆž 0ˆž â  Ã¢ÂÂ â  â° âÂ°F â
+	asbadval = 'Ã¢Â\x88Â\x9e'
+	bc = 'â\x88\x9e'
+
+	bcsymbs = [k for k in df.columns if bc in df[k].values]
+	for col in bcsymbs:
+		df[col] = df[col].replace(bc,0)
+
+	aasymbs = [k for k in df.columns if asbadval in df[k].values]
+	for col in aasymbs:
+		df[col] = df[col].replace(asbadval,0)
+
+	asymbs = [k for k in df.columns if 'â' in df[k].values]
+	for col in asymbs:
+		df[col] = df[col].replace('â',0)
+
 	zsymbs = [k for k in df.columns if 'ž' in df[k].values]
 	for col in zsymbs:
 		df[col] = df[col].replace('ž',0)
+
 	zsymbs = [k for k in df.columns if '0ˆž' in df[k].values]
 	for col in zsymbs:
 		df[col] = df[col].replace('0ˆž',0)
+
 	infsymbs = [k for k in df.columns if '∞' in df[k].values]
 	for col in infsymbs:
 		df[col] = df[col].replace('∞',0)
+
 	dashfix = [k for k in df.columns if '-' in df[k].values]
 	for col in dashfix:
 		df[col] = df[col].replace('-',0)
+
 	nanfix = [k for k in df.columns if 'NaN' in df[k].values]
 	for col in nanfix:
 		df[col] = df[col].replace('NaN',0)
+
 	# bigvalfix = [k for k in df.columns if '340282346638528860000000000000000000000' in df[k].values or '612508207723425200000000000000000000000' in df[k].values]
 	#for col in bigvalfix:
 	#	df[col] = df[col].replace('340282346638528860000000000000000000000',0)
@@ -277,7 +297,9 @@ def send_csv_data_to_db(args:argparse.Namespace, data:pd.DataFrame, csvfilename:
 	return True if ok, else False
 	"""
 	engine, session = get_engine_session(args)
-	fileid = session.query(TorqFile.fileid).filter(TorqFile.csvfile==csvfilename).one()[0]
+	csvhash = md5(open(csvfilename, 'rb').read()).hexdigest()
+	fileid = session.query(TorqFile.fileid).filter(TorqFile.csvhash==csvhash).one()[0]
+	#fileid = session.query(TorqFile.fileid).filter(TorqFile.csvfile==csvfilename).one()[0]
 	# fileid_series = pl.Series("fileid", [fileid for k in range(len(data))])
 
 	if insertid:
@@ -378,6 +400,10 @@ def date_column_fixer(data:pd.DataFrame=None, datecol:str=None, f:str=None):
 	param: data Dataframe, datecol name of date column, f filename (for ref)
 	"""
 	testdate = data[datecol][len(data)//2]
+	if testdate == 0:
+		errmsg = f'invalid testdate {testdate} {datecol=} datalen: {len(data)} f: {f}'
+		logger.error(errmsg)
+		raise TypeError(errmsg)
 	try:
 		fmt_selector = len(testdate) # use value in middle to check.....
 	except TypeError as e:
@@ -463,8 +489,12 @@ def split_check(csvfile:str):
 	check if file is damaged and needs splitting...
 	todo write splitter and refresh file list .....
 	"""
-	with open(csvfile, 'r') as f:
-		data = f.readlines()
+	try:
+		with open(csvfile, 'r') as f:
+			data = f.readlines()
+	except FileNotFoundError as e:
+		logger.error(f'{e} {csvfile} ...')
+		raise e
 	gpscount = 0
 	for line in data[1:]:
 		if 'gps' in line.lower():
@@ -481,6 +511,10 @@ def data_fixer(data:pd.DataFrame, f):
 	newdatecol = pd.DataFrame()
 	# fixed_data = pd.DataFrame()
 	date_columns = ['gpstime','devicetime']
+	droprows = [idx for idx,k in enumerate(data.gpstime) if k=='-']
+	if len(droprows) > 0:
+		data = data.drop(droprows)
+		logger.warning(f'dropping invalid gpstimerows {droprows} from {f}')
 	for col in date_columns:
 		try:
 			newdatecol = date_column_fixer(data=data, datecol=col, f=f)
@@ -519,6 +553,7 @@ def db_set_file_flag(session, filename=None, flag=None, flagval=None, sent_rows=
 	try:
 		torqfile = session.query(TorqFile).filter(TorqFile.csvhash == csvhash).one()
 	except MultipleResultsFound as e:
+		# todo more checking here....
 		logger.error(f'{e} {filename} {csvhash} multiple entries in db, {flag=} {flagval=} aborting...')
 		torqfiles = session.query(TorqFile).filter(TorqFile.csvhash == csvhash).all()
 		for t in torqfiles:
@@ -543,9 +578,15 @@ def db_set_file_flag(session, filename=None, flag=None, flagval=None, sent_rows=
 			# get trip start and end times... # datetime.fromisoformat(
 			try:
 				datemin = session.execute(text(f'select gpstime from torqlogs where fileid={torqfile.fileid} order by gpstime limit 1 ')).all()[0][0]
+				if not datemin:
+					datemin = session.execute(text(f'select devicetime from torqlogs where fileid={torqfile.fileid} order by devicetime limit 1 ')).all()[0][0]
+					logger.warning(f'no gpstime found for {filename} using devicetime {datemin=}')
 				if isinstance(datemin, str):
 					datemin = datetime.fromisoformat(datemin)
 				datemax = session.execute(text(f'select gpstime from torqlogs where fileid={torqfile.fileid} order by gpstime desc limit 1 ')).all()[0][0]
+				if not datemax:
+					datemax = session.execute(text(f'select devicetime from torqlogs where fileid={torqfile.fileid} order by devicetime desc limit 1 ')).all()[0][0]
+					logger.warning(f'no gpstime found for {filename} using devicetime {datemax=}')
 				if isinstance(datemax, str):
 					datemax = datetime.fromisoformat(datemax)
 				torqfile.trip_start = datemin
@@ -600,7 +641,7 @@ def cli_main(args):
 			session.execute(text('pragma synchronous = normal;'))
 			session.execute(text('pragma temp_store = memory;'))
 			session.execute(text('pragma mmap_size = 30000000000;'))
-  
+
 		with session.no_autoflush:
 			newfiles = get_files_to_send(session, args=args)
 		# todo fix colum names, some files have colum names with a leading space (eg ''GPS Time, Device Time, Longitude, Latitude,GPS Speed(km/h), Horizontal Dilution of Precision, Altitude(m), Bearing,')
@@ -676,7 +717,7 @@ def cli_main(args):
 		if len(broken_files)>0:
 			print(f'{len(broken_files)} {broken_files}')
 			# todo select split files from db and fix them, for now use the list
-			
+
 			if args.repairsplit:
 				files_to_split = session.execute(text('select csvfile from torqfiles where error_flag=2')).all()
 				logger.info(f'found {len(files_to_split)} files to split')
