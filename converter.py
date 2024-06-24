@@ -132,7 +132,13 @@ def read_csv_file(logfile):
 	#filtered_data = data.drop_nulls() # drop columns with all null values
 	df = data.to_pandas()
 
-	# do the fixing here
+	# do the fixing here ˆž 0ˆž
+	zsymbs = [k for k in df.columns if 'ž' in df[k].values]
+	for col in zsymbs:
+		df[col] = df[col].replace('ž',0)
+	zsymbs = [k for k in df.columns if '0ˆž' in df[k].values]
+	for col in zsymbs:
+		df[col] = df[col].replace('0ˆž',0)
 	infsymbs = [k for k in df.columns if '∞' in df[k].values]
 	for col in infsymbs:
 		df[col] = df[col].replace('∞',0)
@@ -510,7 +516,7 @@ def db_set_file_flag(session, filename=None, flag=None, flagval=None, sent_rows=
 	try:
 		torqfile = session.query(TorqFile).filter(TorqFile.csvhash == csvhash).one()
 	except MultipleResultsFound as e:
-		logger.error(f'{e} {filename} {csvhash} multiple entries in db, aborting...')
+		logger.error(f'{e} {filename} {csvhash} multiple entries in db, {flag=} {flagval=} aborting...')
 		torqfiles = session.query(TorqFile).filter(TorqFile.csvhash == csvhash).all()
 		for t in torqfiles:
 			t.error_flag = 1
@@ -586,10 +592,19 @@ def cli_main(args):
 		except AssertionError as e:
 			logger.error(f'[maindbinit] {e} exit')
 			sys.exit(-1)
+		if args.dbmode == 'sqlite':
+			session.execute(text('PRAGMA journal_mode=WAL;'))
+			session.execute(text('pragma synchronous = normal;'))
+			session.execute(text('pragma temp_store = memory;'))
+			session.execute(text('pragma mmap_size = 30000000000;'))
+  
 		with session.no_autoflush:
 			newfiles = get_files_to_send(session, args=args)
 		# todo fix colum names, some files have colum names with a leading space (eg ''GPS Time, Device Time, Longitude, Latitude,GPS Speed(km/h), Horizontal Dilution of Precision, Altitude(m), Bearing,')
 		# maybe replace this before read_csv ?
+		if args.db_limit:
+			print(args)
+			newfiles = newfiles[:int(args.db_limit)]
 		fixed_newfiles = replace_headers(newfiles, args)
 		broken_files.extend(fixed_newfiles['errorfiles'])
 		if len(fixed_newfiles['errorfiles'])>0:
@@ -719,6 +734,9 @@ def get_parser(appname):
 	parser.add_argument("--dbuser", default="torq", help="dbname", action="store")
 	parser.add_argument("--dbpass", default="qrot", help="dbname", action="store")
 	parser.add_argument('-d', '--debug', default=False, help="debugmode", action="store_true", dest='debug')
+	parser.add_argument('--db_limit', default=False, help="db_limit", action="store", dest='db_limit')
+	parser.add_argument('--extradebug', default=False, help="extradebug", action="store_true", dest='extradebug')
+
 	return parser
 
 def get_args(appname):
