@@ -200,8 +200,6 @@ schema_datatypes = {
     #'fileid': pl.Int64,
     #'gpstime': DateTime,
     #'devicetime': DateTime,
-    'readtime': pl.Float64,
-    'sendtime': pl.Float64,
     'barometricpressurefromvehiclepsi': pl.Float64,
     'airfuelratiomeasured1': pl.Float64,
     'barometricpressurefromvehiclekpa': pl.Float64,
