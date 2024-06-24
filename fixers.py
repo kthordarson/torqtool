@@ -364,13 +364,17 @@ def split_file(logfile:str, session=None):
 	devicetime_diff = 0
 	try:
 		for idx,marker in enumerate(split_list):
-			gpstime_before_split = convert_string_to_datetime(rawdata[marker.get('linenumber')-1].split(',')[0])
-			gpstime_after_split = convert_string_to_datetime(rawdata[marker.get('linenumber')+1].split(',')[0])
-			devicetime_before_split = convert_string_to_datetime(rawdata[marker.get('linenumber')-1].split(',')[1])
-			devicetime_after_split = convert_string_to_datetime(rawdata[marker.get('linenumber')+1].split(',')[1])
+			try:
+				gpstime_before_split = convert_string_to_datetime(rawdata[marker.get('linenumber')-1].split(',')[0])
+				gpstime_after_split = convert_string_to_datetime(rawdata[marker.get('linenumber')+1].split(',')[0])
+				devicetime_before_split = convert_string_to_datetime(rawdata[marker.get('linenumber')-1].split(',')[1])
+				devicetime_after_split = convert_string_to_datetime(rawdata[marker.get('linenumber')+1].split(',')[1])
 
-			gpstime_diff += (gpstime_after_split - gpstime_before_split).seconds
-			devicetime_diff += (devicetime_after_split - devicetime_before_split).seconds
+				gpstime_diff += (gpstime_after_split - gpstime_before_split).seconds
+				devicetime_diff += (devicetime_after_split - devicetime_before_split).seconds
+			except TypeError as e:
+				logger.error(f'{e} failed to convert date {logfile} {idx=} {marker=}')
+				raise e
 
 		if gpstime_diff <= 900: # 900=15minutes, combine file parts into one
 			logger.info(f'Remove extra header lines from {logfile} at line  {gpstime_diff=} {devicetime_diff=} ') # \n\tgpsbefore: {gpstime_before_split} gpsafter: {gpstime_after_split}\n\tdevtimebefore: {devicetime_before_split} devtimeafter: {devicetime_after_split}' )
@@ -406,7 +410,7 @@ def split_file(logfile:str, session=None):
 				basename = 'trackLog-split-' + newdate.strftime('%Y-%b-%d_%H-%M') + '.csv'
 			except TypeError as e:
 				logger.error(f'{e} failed to convert date {logfile} {rawdate=}')
-				return None # basename = 'trackLog-split-' + datetime.now().strftime('%Y-%b-%d_%H-%M') + '.csv'
+				raise e # return None # basename = 'trackLog-split-' + datetime.now().strftime('%Y-%b-%d_%H-%M') + '.csv'
 			newlogfile = os.path.join(Path(logfile).parent,basename)
 			start_line = [k.get('linenumber') for k in split_list][0]
 			new_rawdata = rawdata[start_line:]
@@ -433,10 +437,10 @@ def split_file(logfile:str, session=None):
 
 	except TypeError as e:
 		logger.error(f'splitter failed {type(e)} {e} {logfile=}')
-		return None
+		raise e
 	except Exception as e:
 		logger.error(f'unhandled Exception splitter failed {type(e)} {e} {logfile=}')
-		return None
+		raise e
 
 
 if __name__ == '__main__':

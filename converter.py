@@ -112,7 +112,7 @@ def transfer_older_logs(args):
 	return transfered_logs
 
 
-def read_csv_file(logfile):
+def read_csv_file(logfile, args):
 	"""
 	read csv file
 	param: logfile = full path and name of file
@@ -176,7 +176,7 @@ def read_csv_file(logfile):
 		logger.warning(f'replaced {len(longcheck)} long values in {logfile}')# column: {col} lc:  {longcheck[0:1]}')
 
 	columns_with_wrong_dtype = set([k['col'] for k in string_check])
-	if len(columns_with_wrong_dtype) > 0:
+	if len(columns_with_wrong_dtype) > 0 and args.extradebug:
 		logger.warning(f'found {len(columns_with_wrong_dtype)} columns with {len(string_check)} string values in {logfile}')# columns: {columns_with_wrong_dtype=} ')
 
 	# for col in df.columns:
@@ -638,7 +638,7 @@ def cli_main(args):
 						db_set_file_flag(session, filename=f, flag='split')
 						continue
 			try:
-				data = read_csv_file(logfile=f)
+				data = read_csv_file(logfile=f, args=args)
 			except Polarsreaderror as e:
 				logger.error(f'polarsreaderror {type(e)} {e} for {f}')
 				broken_files.append(f)
