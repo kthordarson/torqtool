@@ -160,6 +160,7 @@ def collect_db_filestats(args):
 		session.execute(text('pragma synchronous = normal;'))
 		session.execute(text('pragma temp_store = memory;'))
 		session.execute(text('pragma mmap_size = 30000000000;'))
+		#session.execute(text('pragma journal_mode = memory;'))
 	if not args.db_limit:
 		file_ids = pd.DataFrame(session.execute(text('select fileid from torqfiles ')))
 	else:
@@ -170,31 +171,27 @@ def collect_db_filestats(args):
 		if args.extradebug:
 			logger.debug(f'[{fileidx}/{len(file_ids)}] working on fileid {file.fileid} ')
 		#results[file.fileid] = []
-		total_rows = pd.DataFrame(session.execute(text(f'select count(id) from torqlogs where fileid={file.fileid}'))).values[0][0]
+		total_rows = pd.DataFrame(session.execute(text(f'select count(id) from torqlogs where id>0 and fileid={file.fileid}'))).values[0][0]
 		if total_rows == 0:
 			logger.warning(f'no rows for {file.fileid}')
+			continue
 		else:
-			logger.info(f'total_rows={total_rows}')
+			logger.info(f'total_rows={total_rows} for {file.fileid}')
 		for idx,column in enumerate(schema_datatypes):
-			try:
-				if args.extradebug:
-					logger.debug(f'[{fileidx}/{len(file_ids)}] fileid {file.fileid}  col: {column} ')
-				nulls = pd.DataFrame(session.execute(text(f'select count(id) as count from torqlogs where fileid={file.fileid} and {column} is null ')).all()).values[0][0]
-				notnulls = total_rows - nulls
-				#dfval = df.values[0][0]
-				if args.extradebug:
-					logger.debug(f'[{fileidx}/{len(file_ids)}/{idx}/{len(schema_datatypes)}] {file.fileid} - {column} nulls {nulls} ratio:  {nulls/total_rows} notnulls:{notnulls} ratio: {notnulls/total_rows}')
+			if args.extradebug:
+				pass # logger.debug(f'[{fileidx}/{len(file_ids)}] fileid {file.fileid}  col: {column} ')
+			nulls = pd.DataFrame(session.execute(text(f'select count(id) as count from torqlogs where id>0 and fileid={file.fileid} and {column} is null ')).all()).values[0][0]
+			notnulls = total_rows - nulls
+			#dfval = df.values[0][0]
+			if args.extradebug and nulls>0:
+				logger.debug(f'[{fileidx}/{len(file_ids)}/{idx}/{len(schema_datatypes)}] {file.fileid} - {column} nulls {nulls} ratio:  {nulls/total_rows} notnulls:{notnulls} ratio: {notnulls/total_rows}')
 
-				results.append( {'fileid': file.fileid, 'column':column, 'nulls':nulls, 'nullratio':nulls/total_rows})
-			except (OperationalError,RuntimeWarning) as e:
-				logger.warning(f'{type(e)} {e} for {column} {total_rows=} {nulls=}')
-			except Exception as e:
-				logger.error(f'{type(e)} {e} for {column}')
+			results.append( {'fileid': file.fileid, 'column':column, 'nulls':nulls, 'nullratio':nulls/total_rows})
 		logger.info(f'[{fileidx}/{len(file_ids)}] {file.fileid} ')
 	df = pd.DataFrame([k for k in results])
 	logger.debug(f'sending {len(df)} filestats to db...')
 	try:
-		pass #df.to_sql(con=engine, name='filestats',if_exists='append')
+		df.to_sql(con=engine, name='filestats',if_exists='append')
 	except Exception as e:
 		logger.error(f'{type(e)} {e} for\n{df=}\n {results=}\n')
 	return df
@@ -203,7 +200,7 @@ def collect_db_columnstats(args):
 	engine, session = get_engine_session(args)
 	results = {}
 	session.execute(text('drop table if exists columnstats'))
-	total_rows = pd.DataFrame(session.execute(text('select count(*) from torqlogs'))).values[0][0]
+	total_rows = pd.DataFrame(session.execute(text('select count(id) from torqlogs'))).values[0][0]
 	logger.info(f'{total_rows} in db')
 	for idx,column in enumerate(schema_datatypes):
 		try:

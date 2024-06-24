@@ -125,6 +125,9 @@ def read_csv_file(logfile):
 	try: # schema_overrides=so, # schema_overrides=schema_datatypes,
 		data = pl.read_csv(logfile,  ignore_errors=True, try_parse_dates=True,truncate_ragged_lines=True, n_threads=4, use_pyarrow=True) # .to_pandas()
 		#, schema=schema)
+	except TypeError as e:
+		logger.error(f'typeerror {type(e)} {e} {logfile}')
+		raise e
 	except pl.exceptions.NoDataError as e:
 		msg = f'NoDataError {type(e)} {e} {logfile}'
 		logger.error(msg)
@@ -378,7 +381,7 @@ def date_column_fixer(data:pd.DataFrame=None, datecol:str=None, f:str=None):
 	try:
 		fmt_selector = len(testdate) # use value in middle to check.....
 	except TypeError as e:
-		logger.error(f'datefix {type(e)} {e}  {type(datecol)} datecol: {datecol}')
+		logger.error(f'datefix {type(e)} {e}  {type(datecol)} datecol: {datecol} {testdate=}')
 		raise e
 	fixed_datecol = data[datecol]# copy pd.DataFrame()
 	# chk = [k for k in fixed_datecol if isinstance(k,str) and '-' in k]
@@ -614,6 +617,26 @@ def cli_main(args):
 		for idx,f in enumerate(fixed_newfiles['files_to_read']):
 			readstart = datetime.now()
 			logger.debug(f'[{idx}/{len(fixed_newfiles["files_to_read"])}] reading {Path(f).name}')
+			if split_check(f):
+				if not args.repairsplit:
+					logger.warning(f'{f} needs splitting...')
+					broken_files.append(f)
+					db_set_file_flag(session, filename=f, flag='split')
+					continue
+				elif args.repairsplit:
+					logger.warning(f'{f} needs splitting...')
+					try:
+						fsplit = split_file(f, session)
+					except Exception as e:
+						logger.error(f'unhandled error while splitting {f} {e} {type(e)}')
+						continue
+					if fsplit:
+						f = fsplit
+					else:
+						logger.warning(f'splitting failed for {f}')
+						broken_files.append(f)
+						db_set_file_flag(session, filename=f, flag='split')
+						continue
 			try:
 				data = read_csv_file(logfile=f)
 			except Polarsreaderror as e:
@@ -624,11 +647,6 @@ def cli_main(args):
 			# if successful, make TorqFile entry in database
 			if send_filename_to_db(args, f):
 				db_set_file_flag(session, filename=f, flag='readok')
-				if split_check(f):
-					logger.warning(f'{f} needs splitting...')
-					broken_files.append(f)
-					db_set_file_flag(session, filename=f, flag='split')
-					continue
 				# ok to send csvdata
 				try:
 					fixed_data = data_fixer(data, f)
@@ -658,9 +676,12 @@ def cli_main(args):
 		if len(broken_files)>0:
 			print(f'{len(broken_files)} {broken_files}')
 			# todo select split files from db and fix them, for now use the list
+			
 			if args.repairsplit:
-				for idx,f in enumerate(broken_files):
-					logger.debug(f'[{idx}/{len(broken_files)}] splitting {f}')
+				files_to_split = session.execute(text('select csvfile from torqfiles where error_flag=2')).all()
+				logger.info(f'found {len(files_to_split)} files to split')
+				for idx,f in enumerate(files_to_split):
+					logger.debug(f'[{idx}/{len(files_to_split)}] splitting {f}')
 					try:
 						split_file(f, session)
 					except Exception as e:
