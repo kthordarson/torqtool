@@ -57,7 +57,7 @@ class TripplotModel(QtSql.QSqlQueryModel):
 class Torqfilemodel(QtSql.QSqlQueryModel):
 	def __init__(self):
 		super().__init__()
-		self.setQuery('select fileid,trip_start,sent_rows from torqfiles')
+		self.setQuery('select fileid,trip_start,sent_rows from torqfiles where error_flag=0')
 		self.setHeaderData(0, QtCore.Qt.Horizontal, "fileid")
 		self.setHeaderData(1, QtCore.Qt.Horizontal, "trip_start")
 		self.setHeaderData(2, QtCore.Qt.Horizontal, "entries")
@@ -101,8 +101,7 @@ class MainApp(QMainWindow):
 
 	def populate_torqfiles(self):
 		self.filemodel = QSqlQueryModel()
-		self.filemodel.setQuery('select fileid,trip_start, sent_rows from torqfiles')
-		#data = self.session.query(TorqFile.fileid, TorqFile.sent_rows).all()
+		self.filemodel.setQuery('select fileid,trip_start, sent_rows from torqfiles where error_flag=0')
 		self.filemodel.setHeaderData(0, QtCore.Qt.Horizontal, "fileid")
 		self.filemodel.setHeaderData(1, QtCore.Qt.Horizontal, "trip_start")
 		self.filemodel.setHeaderData(2, QtCore.Qt.Horizontal, "entries")
@@ -213,10 +212,9 @@ class MainApp(QMainWindow):
 
 	def create_start_stops_plot(self):
 		# self.startstopmodel = QSqlQueryModel()
-		#self.startstopmodel.setQuery('select * from startstops;')
 		# x = latitude y = longitude !
 
-		data = np.array(session.execute(text('select latmin,lonmin,latmax,lonmax from startstops')).all())
+		data = np.array(session.execute(text('select latmin,lonmin,latmax,lonmax from startends')).all())
 		scatter = QScatterSeries()
 		[scatter.append(k[0],k[1]) for k in data]
 		[scatter.append(k[2],k[3]) for k in data]
