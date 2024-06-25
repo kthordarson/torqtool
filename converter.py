@@ -269,7 +269,10 @@ def send_csv_data_to_db(engine, session, args:argparse.Namespace, data:pd.DataFr
 	# fileid_series = pl.Series("fileid", [fileid for k in range(len(data))])
 
 	if insertid:
-		data.insert(column='fileid', loc=0, value=fileid)
+		logger.debug(f'insertid {fileid} {len(data)}')
+		fileidcol = pd.DataFrame([fileid for k in range(len(data))], columns=['fileid',])
+		# data.insert(column='fileid', loc=0, value=fileid)
+		data = pd.concat((data,fileidcol),axis=1)
 	fn = Path(csvfilename).name
 	datacols = [k for k in data.columns] # get column names
 	# todropcols = [k for k in datacols if k not in schema_datatypes]
