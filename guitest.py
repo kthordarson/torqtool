@@ -156,10 +156,13 @@ class MainApp(QMainWindow):
 		# [latlonscatter.append(lat_lon_data[k].values[0],lat_lon_data[k].values[1]) for k in lat_lon_data]
 		[latlonscatter.append(k.latitude,k.longitude) for k in lat_lon_data.itertuples()]
 
-		for k in speed_data.itertuples():
-			[speedgpskmh.append(k.id,k.speedgpskmh) for k in k[speed_data].itertuples()]
-			[gpsspeedkmh.append(k.id,k.gpsspeedkmh) for k in k[speed_data].itertuples()]
-			[speedobdkmh.append(k.id,k.speedobdkmh) for k in k[speed_data].itertuples()]
+		try:
+			for k in speed_data.itertuples():
+				[speedgpskmh.append(k.id,k.speedgpskmh) for k in k[speed_data].itertuples()]
+				[gpsspeedkmh.append(k.id,k.gpsspeedkmh) for k in k[speed_data].itertuples()]
+				[speedobdkmh.append(k.id,k.speedobdkmh) for k in k[speed_data].itertuples()]
+		except TypeError as e:
+			logger.error(f'{e}')
 			#[speedgpskmh.append(speed_data[k].values[0],speed_data[k].values[1]) for k in speed_data]
 			#[speedgpskmh.append(speed_data[k].values[0],speed_data[k].values[2]) for k in speed_data]
 			#[speedgpskmh.append(speed_data[k].values[0],speed_data[k].values[3]) for k in speed_data]
@@ -248,8 +251,8 @@ class MainApp(QMainWindow):
 			kgpstime_ = str(k.gpstime)#.toMSecsSinceEpoch()
 			try:
 				kgpstime = QtCore.QDateTime.fromString(kgpstime_).toMSecsSinceEpoch()
-				scatter.append(k.fileid,k.speed)
-				scatter.append(kgpstime,k.speed)
+				scatter.append(k.fileid,k.gpsspeedkmh)
+				scatter.append(kgpstime,k.gpsspeedkmh)
 			except TypeError as e:
 				logger.warning(f'{e} {kgpstime=} {k=} {k.gpstime=}')
 		#[scatter.append(k.fileid,k.speed) for k in data.itertuples()]

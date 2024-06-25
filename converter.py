@@ -269,7 +269,8 @@ def send_csv_data_to_db(engine, session, args:argparse.Namespace, data:pd.DataFr
 	# fileid_series = pl.Series("fileid", [fileid for k in range(len(data))])
 
 	if insertid:
-		logger.debug(f'insertid {fileid} {len(data)}')
+		if args.extradebug:
+			logger.debug(f'insertid {fileid} {len(data)}')
 		fileidcol = pd.DataFrame([fileid for k in range(len(data))], columns=['fileid',])
 		# data.insert(column='fileid', loc=0, value=fileid)
 		data = pd.concat((data,fileidcol),axis=1)
