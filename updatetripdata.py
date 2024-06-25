@@ -18,7 +18,7 @@ from sqlalchemy.exc import (
 from sqlalchemy.orm import sessionmaker
 
 from datamodels import TorqFile, Torqlogs
-from converter import get_parser
+from utils import get_parser
 from utils import get_engine_session
 from schemas import schema_datatypes
 
@@ -27,26 +27,27 @@ def send_torqdata(tfid, dburl, debug=False):
 	logger.warning('not implemented')
 	return None
 
-def collect_db_filestats(args):
+def collect_db_filestats(args, todatabase=True, droptable=True):
 	engine, session = get_engine_session(args)
-	session.execute(text('drop table if exists filestats'))
+	if droptable:
+		session.execute(text('drop table if exists filestats'))
 	if args.dbmode == 'sqlite':
 		session.execute(text('PRAGMA journal_mode=WAL;'))
 		session.execute(text('pragma synchronous = normal;'))
 		session.execute(text('pragma temp_store = memory;'))
 		session.execute(text('pragma mmap_size = 30000000000;'))
 		#session.execute(text('pragma journal_mode = memory;'))
-	if not args.db_limit:
-		file_ids = pd.DataFrame(session.execute(text('select fileid from torqfiles where error_flag=0')))
-	else:
-		file_ids = pd.DataFrame(session.execute(text(f'select fileid from torqfiles where error_flag=0 limit {args.db_limit}')))
+	q = 'select fileid from torqfiles where error_flag=0'
+	if args.db_limit:
+		q += f' limit {args.db_limit}'
+	file_ids = pd.DataFrame(session.execute(text(q)))
 	logger.debug(f'fileids={len(file_ids)} ')
 	results = []
 	for fileidx, file in enumerate(file_ids.itertuples()):
 		if args.extradebug:
 			logger.debug(f'[{fileidx}/{len(file_ids)}] working on fileid {file.fileid} ')
 		#results[file.fileid] = []
-		total_rows = pd.DataFrame(session.execute(text(f'select count(id) from torqlogs where id>0 and fileid={file.fileid}'))).values[0][0]
+		total_rows = pd.DataFrame(session.execute(text(f'select count(*) from torqlogs where id>0 and fileid={file.fileid}'))).values[0][0]
 		if total_rows == 0:
 			logger.warning(f'no rows for {file.fileid}')
 			continue
@@ -54,8 +55,8 @@ def collect_db_filestats(args):
 			logger.info(f'total_rows={total_rows} for {file.fileid}')
 		for idx,column in enumerate(schema_datatypes):
 			if args.extradebug:
-				pass # logger.debug(f'[{fileidx}/{len(file_ids)}] fileid {file.fileid}  col: {column} ')
-			nulls = pd.DataFrame(session.execute(text(f'select count(id) as count from torqlogs where id>0 and fileid={file.fileid} and {column} is null ')).all()).values[0][0]
+				logger.debug(f'[{fileidx}/{len(file_ids)}] fileid {file.fileid}  col: {column} ')
+			nulls = pd.DataFrame(session.execute(text(f'select count(*) as count from torqlogs where id>0 and fileid={file.fileid} and {column} is null ')).all()).values[0][0]
 			notnulls = total_rows - nulls
 			#dfval = df.values[0][0]
 			if args.extradebug and nulls>0:
@@ -64,22 +65,65 @@ def collect_db_filestats(args):
 			results.append( {'fileid': file.fileid, 'column':column, 'nulls':nulls, 'nullratio':nulls/total_rows})
 		logger.info(f'[{fileidx}/{len(file_ids)}] {file.fileid} ')
 	df = pd.DataFrame([k for k in results])
-	logger.debug(f'sending {len(df)} filestats to db...')
 	try:
-		df.to_sql(con=engine, name='filestats',if_exists='append')
+		if todatabase:
+			logger.debug(f'sending {len(df)} filestats to db...')
+			df.to_sql(con=engine, name='filestats',if_exists='append')
+		else:
+			logger.debug(f'returning {len(df)} filestats ...')
+			return df
 	except Exception as e:
 		logger.error(f'{type(e)} {e} for\n{df=}\n {results=}\n')
-	return df
+		return None
+
+def create_db_filestats(session, args, fileid, todatabase=False, droptable=False):
+	engine, session = get_engine_session(args)
+	results = []
+	logger.info(f'create_db_filestats for {fileid}')
+	# file = pd.DataFrame(session.execute(text(f'select * from torqfiles where fileid={fileid}'))).values[0][0]
+	if args.extradebug:
+		logger.debug(f'working on fileid {fileid} ')
+	#results[file.fileid] = []
+	total_rows = pd.DataFrame(session.execute(text(f'select count(*) from torqlogs where id>0 and fileid={fileid}'))).values[0][0]
+	if total_rows == 0:
+		logger.warning(f'no rows for {fileid}')
+		return None
+	else:
+		logger.info(f'total_rows={total_rows} for {fileid}')
+	for idx,column in enumerate(schema_datatypes):
+		if args.extradebug:
+			logger.debug(f'fileid {fileid}  col: {column} ')
+		nulls = pd.DataFrame(session.execute(text(f'select count(*) as count from torqlogs where id>0 and fileid={fileid} and {column} is null ')).all()).values[0][0]
+		notnulls = total_rows - nulls
+		#dfval = df.values[0][0]
+		if args.extradebug and nulls>0:
+			logger.debug(f'[{idx}/{len(schema_datatypes)}] {fileid} - {column} nulls {nulls} ratio:  {nulls/total_rows} notnulls:{notnulls} ratio: {notnulls/total_rows}')
+
+		results.append( {'fileid': fileid, 'column':column, 'nulls':nulls, 'nullratio':nulls/total_rows})
+	logger.info(f'{fileid} ')
+	df = pd.DataFrame([k for k in results])
+	try:
+		if todatabase:
+			logger.debug(f'sending {len(df)} filestats to db...')
+			df.to_sql(con=engine, name='filestats',if_exists='append')
+		else:
+			logger.debug(f'returning {len(df)} filestats ...')
+			return df
+	except Exception as e:
+		logger.error(f'{type(e)} {e} for\n{df=}\n {results=}\n')
+		return None
+
+
 
 def collect_db_columnstats(args):
 	engine, session = get_engine_session(args)
 	results = {}
 	session.execute(text('drop table if exists columnstats'))
-	total_rows = pd.DataFrame(session.execute(text('select count(id) from torqlogs'))).values[0][0]
+	total_rows = pd.DataFrame(session.execute(text('select count(*) from torqlogs'))).values[0][0]
 	logger.info(f'{total_rows} in db')
 	for idx,column in enumerate(schema_datatypes):
 		try:
-			nulls = pd.DataFrame(session.execute(text(f'select count(id) as count from torqlogs where {column} is null')).all()).values[0][0]
+			nulls = pd.DataFrame(session.execute(text(f'select count(*) as count from torqlogs where {column} is null')).all()).values[0][0]
 			notnulls = total_rows - nulls
 			#dfval = df.values[0][0]
 			logger.debug(f'[{idx}/{len(schema_datatypes)}-{len(results)}] {column} nulls {nulls} ratio:  {nulls/total_rows} notnulls:{notnulls} ratio: {notnulls/total_rows}')

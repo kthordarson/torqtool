@@ -16,6 +16,7 @@ import sqlalchemy
 import pymysql
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import DataError, OperationalError, NoResultFound
+from sqlalchemy.orm.exc import DetachedInstanceError
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.exc import MultipleResultsFound
 from psycopg2.errors import UndefinedColumn
@@ -23,8 +24,9 @@ import sqlite3
 from commonformats import fmt_19, fmt_20, fmt_24, fmt_26, fmt_28, fmt_30, fmt_34, fmt_36
 from datamodels import TorqFile, database_init
 from schemas import ncc, schema_datatypes
-from utils import get_engine_session, get_fixed_lines, get_sanatized_column_names,MIN_FILESIZE
+from utils import get_parser, get_engine_session, get_fixed_lines, get_sanatized_column_names,MIN_FILESIZE
 from fixers import split_file, test_pandas_csv_read, test_polars_csv_read, run_fixer, get_cols, check_and_fix_logs, fix_column_names, replace_headers
+from updatetripdata import create_db_filestats
 
 pd.set_option('future.no_silent_downcasting', True)
 # x = latitude y = longitude !
@@ -171,20 +173,11 @@ def read_csv_file(logfile, args):
 	for col in nanfix:
 		df[col] = df[col].replace('NaN',0)
 
-	# bigvalfix = [k for k in df.columns if '340282346638528860000000000000000000000' in df[k].values or '612508207723425200000000000000000000000' in df[k].values]
-	#for col in bigvalfix:
-	#	df[col] = df[col].replace('340282346638528860000000000000000000000',0)
-	#	df[col] = df[col].replace('612508207723425200000000000000000000000',0)
-
 	# bigval check v2
 	longcheck = None
-	# todo ....
-	# find strings in dataframe
-	# should be converted to float or number
 	string_check = []
 	for col in df.columns:
 		# must be longer than 13, must be str and not contain 'time'
-		# chk = [print(f'{col} {k} {type(k)}') for k in df[col]  if isinstance(k,str) and len(k) > 13 and 'time' not in col]
 		longcheck = None
 		if 'time' not in col: # skip gpstime and devicetime, check other columns
 			string_check.extend([{'col':col, 'value': k, 'idx': idx} for idx,k in enumerate(df[col]) if isinstance(k,str)])
@@ -192,48 +185,21 @@ def read_csv_file(logfile, args):
 			if longcheck:
 				# remove the long bad values
 				df[col] = df[col].replace(longcheck,0)
-	if longcheck:
+	if longcheck and args.extradebug:
 		logger.warning(f'replaced {len(longcheck)} long values in {logfile}')# column: {col} lc:  {longcheck[0:1]}')
 
 	columns_with_wrong_dtype = set([k['col'] for k in string_check])
 	if len(columns_with_wrong_dtype) > 0 and args.extradebug:
 		logger.warning(f'found {len(columns_with_wrong_dtype)} columns with {len(string_check)} string values in {logfile}')# columns: {columns_with_wrong_dtype=} ')
 
-	# for col in df.columns:
-	#	if 'time' not in col:
-	#		string_check = [print(f'col:{col} value: {k} {type(k)}') for k in df[col] if not isinstance(k,str)]
-
-	# bignumbers:
-	# 340282346638528860000000000000000000000
-	# 612508207723425200000000000000000000000
-
-	#subchars = [',Â','∞','Â°F','Â°','â°','â', '-', 'NaN',] # ', ',
-	#need_to_fix = [k for k in df.columns if df[k].values.any() in subchars]
-	#need_to_fix = [k[1] for k in df[col].items() if '-' in k for col in df.columns]
-	#for col in need_to_fix:
-	#	df[col] = df[col].replace(subchars,0)
-	#	logger.debug(f'fixes: {len(need_to_fix)} f:{logfile} {col}')
-	#if len(need_to_fix) > 0:
-		#logger.debug(f'fixes: {len(need_to_fix)} in {logfile}')
-	# drop columns with all null values
-	#df = df_.dropna(axis='columns', how='all')
-
-	# df = fix_bad_values(df,logfile) # fix bad values, broken maybe...
-	#pldrops = len(data.columns)-len(filtered_data.columns)
-	#pddrops = len(df_.columns)-len(df.columns)
-
-
-	#if pldrops != 0 or pddrops != 0:
-	#	logger.warning(f'filtered pl: {pldrops} pd:{pddrops} columns in {logfile}')
-
-	try:
-		ncren = {k:ncc[k] for k in df.columns if k in ncc} # get columns to rename
-		# df = df.rename(ncren) # rename them
-		df = df.rename(columns=ncren)
-	except KeyError as e:
-		msg = f'keyerror {type(e)} {e} {logfile}\ndatacols: {df.columns} \n'
-		logger.warning(msg)
-		raise Polarsreaderror(msg)
+	# try:
+	# 	ncren = {k:ncc[k] for k in df.columns if k in ncc} # get columns to rename
+	# 	# df = df.rename(ncren) # rename them
+	# 	df = df.rename(columns=ncren)
+	# except KeyError as e:
+	# 	msg = f'keyerror {type(e)} {e} {logfile}\ndatacols: {df.columns} \n'
+	# 	logger.warning(msg)
+	# 	raise Polarsreaderror(msg)
 	# dfout = df.fillna(0)
 	return df
 
@@ -272,31 +238,31 @@ def colreplacer(df):
 
 
 
-def send_filename_to_db(args, filename):
+def send_filename_to_db(session, args, filename):
 	"""
 	send this filename to database, catch all exceptions in here
-	return True if ok, else False
+	return torqfile if ok, else None
 	"""
 	engine, session = get_engine_session(args)
-	with session.no_autoflush:
-		try:
-			csvhash = md5(open(filename, 'rb').read()).hexdigest()
-			t = TorqFile(csvfile=filename,csvhash=csvhash)
-			session.add(t)
-			session.commit()
-			session.close()
-			return True
-		except Exception as e:
-			session.close()
-			logger.error(f'unhandled {type(e)} {e} from {filename}')
-			return False
+	#with session.no_autoflush:
+	try:
+		csvhash = md5(open(filename, 'rb').read()).hexdigest()
+		t = TorqFile(csvfile=filename,csvhash=csvhash)
+		session.add(t)
+		session.commit()
+		#session.close()
+		return t.fileid
+	except Exception as e:
+		#session.close()
+		logger.error(f'unhandled {type(e)} {e} from {filename}')
+		return None
 
-def send_csv_data_to_db(args:argparse.Namespace, data:pd.DataFrame, csvfilename:str, insertid:bool=True):
+def send_csv_data_to_db(engine, session, args:argparse.Namespace, data:pd.DataFrame, csvfilename:str, insertid:bool=True):
 	"""
 	send this csvdata to database, catch all exceptions in here
 	return True if ok, else False
 	"""
-	engine, session = get_engine_session(args)
+	#engine, session = get_engine_session(args)
 	csvhash = md5(open(csvfilename, 'rb').read()).hexdigest()
 	fileid = session.query(TorqFile.fileid).filter(TorqFile.csvhash==csvhash).one()[0]
 	#fileid = session.query(TorqFile.fileid).filter(TorqFile.csvfile==csvfilename).one()[0]
@@ -692,7 +658,8 @@ def cli_main(args):
 				db_set_file_flag(session, filename=f, flag='polarreaderror')
 				continue
 			# if successful, make TorqFile entry in database
-			if send_filename_to_db(args, f):
+			tfileid = send_filename_to_db(session, args, f)
+			if tfileid:
 				db_set_file_flag(session, filename=f, flag='readok')
 				# ok to send csvdata
 				try:
@@ -705,11 +672,21 @@ def cli_main(args):
 				try:
 					readtime = (datetime.now()-readstart).total_seconds()
 					sendstart = datetime.now()
-					sent_rows = send_csv_data_to_db(args=args, data=fixed_data, csvfilename=f)
+					try:
+						sent_rows = send_csv_data_to_db(engine, session, args=args, data=fixed_data, csvfilename=f)
+					except (sqlalchemy.orm.exc.DetachedInstanceError,DetachedInstanceError) as e:
+						logger.error(f'{type(e)} {e} from send_csv_data_to_db {f}')
+						sent_rows = 0
 					if sent_rows>0:
-						# todo maybe update torqfile flags in database
+						# todo create filestats now ?
 						sendtime = (datetime.now()-sendstart).total_seconds()
 						db_set_file_flag(session, filename=f, flag='ok', sent_rows=sent_rows, readtime=readtime, sendtime=sendtime) # pass # logger.debug(f'Sent data from {f} to database')
+						print(f'got tfile  {tfileid}')
+						try:
+							filestats = create_db_filestats(session, args, tfileid, todatabase=True, droptable=False)
+							# print(filestats)
+						except (sqlalchemy.orm.exc.DetachedInstanceError,DetachedInstanceError) as e:
+							logger.error(f'{type(e)} {e} from create_db_filestats {f} {tfileid}')
 					else:
 						logger.warning(f'Sent rows = {sent_rows} from {f} to db...')
 						db_set_file_flag(session, filename=f, flag='senderror')
@@ -717,6 +694,8 @@ def cli_main(args):
 				except TypeError as e:
 					logger.error(f'{type(e)} {e} from send_csv_data_to_db {f}')
 					broken_files.append(f)
+				except (sqlalchemy.orm.exc.DetachedInstanceError,DetachedInstanceError) as e:
+					logger.error(f'{type(e)} {e} from send_csv_data_to_db {f}')
 				except Exception as e:
 					logger.error(f'unhandled {type(e)} {e} from send_csv_data_to_db {f}')
 					broken_files.append(f)
@@ -778,34 +757,6 @@ def cli_main(args):
 		print(f'{fixed=}')
 		sys.exit(0)
 
-def get_parser(appname):
-	parser = argparse.ArgumentParser(description=appname)
-	parser.add_argument('--scanpath', default=False, help="run scanpath", action="store_true", dest='scanpath')
-
-	parser.add_argument("--logpath", nargs="?", default=".", help="logpath", action="store")
-	parser.add_argument("--oldlogpath", nargs="?", default=".", help="oldlogpath", action="store")
-	parser.add_argument("--bakpath", nargs="?", default="/home/kth/development/torq/backups2", help="where to put backups", action="store")
-
-	parser.add_argument('--getcols', default=False, help="prep cols", action="store_true", dest='getcols')
-	parser.add_argument('--transfer', default=False, help="transfer old logs, set oldlogpath to location of old triplogs", action="store_true", dest='transfer')
-	parser.add_argument('--fixer', default=False, help="run fixer, set --bakpath", action="store_true", dest='fixer')
-	parser.add_argument('--repairsplit', default=False, help="enable splitting of strange log files", action="store_true", dest='repairsplit')
-	parser.add_argument('--skipwrites', default=False, help="skipwrites", action="store_true", dest='skipwrites')
-	parser.add_argument('--showdrops', default=False, help="show dropped columns", action="store_true", dest='showdrops')
-
-	parser.add_argument('--testnewreader', default=False, help="run testnewreader", action="store_true", dest='testnewreader')
-	parser.add_argument('--samplemode', default=False, help="use samplemode, select small random number of logs-for debugging", action="store_true", dest='samplemode')
-	parser.add_argument("--dbmode", default="sqlite", help="sqlmode mysql/psql/sqlite/mariadb", action="store")
-	parser.add_argument('--dbfile', default='torqfiskur.db', help='database file', action='store')
-	parser.add_argument("--dbname", default="torq", help="dbname", action="store")
-	parser.add_argument("--dbhost", default="localhost", help="dbname", action="store")
-	parser.add_argument("--dbuser", default="torq", help="dbname", action="store")
-	parser.add_argument("--dbpass", default="qrot", help="dbname", action="store")
-	parser.add_argument('-d', '--debug', default=False, help="debugmode", action="store_true", dest='debug')
-	parser.add_argument('--db_limit', default=False, help="db_limit", action="store", dest='db_limit')
-	parser.add_argument('--extradebug', default=False, help="extradebug", action="store_true", dest='extradebug')
-
-	return parser
 
 def get_args(appname):
 	parser = get_parser(appname)
