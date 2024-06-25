@@ -79,10 +79,9 @@ def collect_db_filestats(args, todatabase=True, droptable=True):
 def create_db_filestats(session, args, fileid, todatabase=False, droptable=False):
 	engine, session = get_engine_session(args)
 	results = []
-	logger.info(f'create_db_filestats for {fileid}')
-	# file = pd.DataFrame(session.execute(text(f'select * from torqfiles where fileid={fileid}'))).values[0][0]
 	if args.extradebug:
-		logger.debug(f'working on fileid {fileid} ')
+		logger.info(f'create_db_filestats for {fileid}')
+	# file = pd.DataFrame(session.execute(text(f'select * from torqfiles where fileid={fileid}'))).values[0][0]
 	#results[file.fileid] = []
 	total_rows = pd.DataFrame(session.execute(text(f'select count(*) from torqlogs where id>0 and fileid={fileid}'))).values[0][0]
 	if total_rows == 0:
@@ -100,7 +99,6 @@ def create_db_filestats(session, args, fileid, todatabase=False, droptable=False
 			logger.debug(f'[{idx}/{len(schema_datatypes)}] {fileid} - {column} nulls {nulls} ratio:  {nulls/total_rows} notnulls:{notnulls} ratio: {notnulls/total_rows}')
 
 		results.append( {'fileid': fileid, 'column':column, 'nulls':nulls, 'nullratio':nulls/total_rows})
-	logger.info(f'{fileid} ')
 	df = pd.DataFrame([k for k in results])
 	try:
 		if todatabase:

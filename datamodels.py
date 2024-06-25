@@ -224,7 +224,7 @@ def send_torqfiles(filelist=[], session=None, debug=False): # returns list of ne
 		if csvhash in hlist.values: #[k.csvhash for k in torqdbfiles]:
 			# check existing entry
 			fid = session.execute(text(f'select fileid from torqfiles where csvhash="{csvhash}"')).one()[0]
-			check = session.execute(text(f'select count(id) from torqlogs where fileid={fid}')).one()[0]
+			check = session.execute(text(f'select count(*) from torqlogs where fileid={fid}')).one()[0]
 			if debug:
 				logger.warning(f'[st {idx}/{len(filelist)}] {csvfile} {fid=} already in db with {check}') # {tf}')
 		else:
