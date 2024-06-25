@@ -97,7 +97,12 @@ def collect_db_columnstats(args):
 
 def collect_db_speeds(args):
 	engine, session = get_engine_session(args)
-	session.execute(text('drop table if exists speeds'))
+	try:
+		pass # session.execute(text('drop table if exists speeds;'))
+	except Exception as e:
+		logger.error(f'{type(e)} {e}')
+		session.rollback()
+		return -1
 	#res = session.execute(text('drop table speeds'))
 	#print(res)
 	q = 'select fileid,avg(gpsspeedkmh) as gpsspeedkmh, avg(speedobdkmh) as speedobdkmh, avg(speedgpskmh) as speedgpskmh, min(gpstime) as gpstime  from torqlogs where gpsspeedkmh is not null and gpsspeedkmh>0 and speedobdkmh is not null and speedobdkmh>0  and speedgpskmh is not null and speedgpskmh>0 group by fileid '
