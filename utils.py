@@ -35,6 +35,35 @@ from schemas import ncc
 
 MIN_FILESIZE = 3000
 
+def get_parser(appname):
+	parser = argparse.ArgumentParser(description=appname)
+	parser.add_argument('--scanpath', default=False, help="run scanpath", action="store_true", dest='scanpath')
+
+	parser.add_argument("--logpath", nargs="?", default=".", help="logpath", action="store")
+	parser.add_argument("--oldlogpath", nargs="?", default=".", help="oldlogpath", action="store")
+	parser.add_argument("--bakpath", nargs="?", default="/home/kth/development/torq/backups2", help="where to put backups", action="store")
+
+	parser.add_argument('--getcols', default=False, help="prep cols", action="store_true", dest='getcols')
+	parser.add_argument('--transfer', default=False, help="transfer old logs, set oldlogpath to location of old triplogs", action="store_true", dest='transfer')
+	parser.add_argument('--fixer', default=False, help="run fixer, set --bakpath", action="store_true", dest='fixer')
+	parser.add_argument('--repairsplit', default=False, help="enable splitting of strange log files", action="store_true", dest='repairsplit')
+	parser.add_argument('--skipwrites', default=False, help="skipwrites", action="store_true", dest='skipwrites')
+	parser.add_argument('--showdrops', default=False, help="show dropped columns", action="store_true", dest='showdrops')
+
+	parser.add_argument('--testnewreader', default=False, help="run testnewreader", action="store_true", dest='testnewreader')
+	parser.add_argument('--samplemode', default=False, help="use samplemode, select small random number of logs-for debugging", action="store_true", dest='samplemode')
+	parser.add_argument("--dbmode", default="sqlite", help="sqlmode mysql/psql/sqlite/mariadb", action="store")
+	parser.add_argument('--dbfile', default='torqfiskur.db', help='database file', action='store')
+	parser.add_argument("--dbname", default="torq", help="dbname", action="store")
+	parser.add_argument("--dbhost", default="localhost", help="dbname", action="store")
+	parser.add_argument("--dbuser", default="torq", help="dbname", action="store")
+	parser.add_argument("--dbpass", default="qrot", help="dbname", action="store")
+	parser.add_argument('-d', '--debug', default=False, help="debugmode", action="store_true", dest='debug')
+	parser.add_argument('--db_limit', default=False, help="db_limit", action="store", dest='db_limit')
+	parser.add_argument('--extradebug', default=False, help="extradebug", action="store_true", dest='extradebug')
+
+	return parser
+
 class TimeZoneAwareConstructorWarning():
 	pass
 
