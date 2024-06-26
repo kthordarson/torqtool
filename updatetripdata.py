@@ -67,10 +67,10 @@ def collect_db_filestats(args, todatabase=True, droptable=True):
 	df = pd.DataFrame([k for k in results])
 	try:
 		if todatabase:
-			logger.debug(f'sending {len(df)} filestats to db...')
 			df.to_sql(con=engine, name='filestats',if_exists='append')
+			logger.debug(f'Sent filestats for {file.fileid} to db...')
 		else:
-			logger.debug(f'returning {len(df)} filestats ...')
+			# logger.debug(f'returning {len(df)} filestats ...')
 			return df
 	except Exception as e:
 		logger.error(f'{type(e)} {e} for\n{df=}\n {results=}\n')
