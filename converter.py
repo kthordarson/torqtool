@@ -685,7 +685,6 @@ def cli_main(args):
 						# todo create filestats now ?
 						sendtime = (datetime.now()-sendstart).total_seconds()
 						db_set_file_flag(session, filename=f, flag='ok', sent_rows=sent_rows, readtime=readtime, sendtime=sendtime) # pass # logger.debug(f'Sent data from {f} to database')
-						print(f'got tfile  {tfileid}')
 						try:
 							filestats = create_db_filestats(session, args, tfileid, todatabase=True, droptable=False)
 							# print(filestats)

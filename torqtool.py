@@ -10,6 +10,7 @@ import pandas as pd
 from loguru import logger
 from sqlalchemy.exc import OperationalError
 # sys.path.append('c:/apps/torqtool/torqtool')
+from utils import get_parser
 from datamodels import (
 	TorqFile,
 	Torqlogs,
@@ -249,39 +250,6 @@ def maincli():
 	print('hello world')
 
 if __name__ == '__main__':
-	parser = argparse.ArgumentParser(description="torqtool")
-	parser.add_argument('-d', '--debug', default=False, help="debugmode", action="store_true", dest='debug')
-
-	parser.add_argument("--logpath", nargs="?", default=".", help="path to csv files", action="store")
-	parser.add_argument("--file", nargs="?", default=".", help="path to single csv file", action="store")
-
-	parser.add_argument('--torqdata', default=False, help="create torqdata", action="store_true", dest='torqdata')
-	parser.add_argument('-dbdrop', '--database_dropall', default=False, help="drop database", action="store_true", dest='database_dropall')
-	parser.add_argument("--create-trips", default=False, help="create trip database", action="store_true", dest='create_trips')
-	parser.add_argument("--check-db", default=False, help="check database", action="store_true", dest='check_db')
-	parser.add_argument("--dump-db", nargs="?", default=None, help="dump database to file", action="store")
-	parser.add_argument("-i", "--info", default=False, help="show dbinfo", action="store_true", dest='dbinfo')
-
-	parser.add_argument("-s", "--scanpath", default=False, help="start scanpath", action="store_true", dest='scanpath')
-
-	parser.add_argument("--fixcsv", default=False, help="repair csv", action="store_true", dest='fixcsv')
-	parser.add_argument("--combinecsv", default=False, help="make big csv", action="store_true", dest='combinecsv')
-	parser.add_argument("--check-file", default=False, help="check database", action="store_true", dest='check_file')
-	parser.add_argument("--webstart", default=False, help="start web listener", action="store_true", dest='web')
-	parser.add_argument("--sqlchunksize", nargs="?", default="1000", help="sql chunk", action="store")
-	parser.add_argument("--max_workers", nargs="?", default="4", help="max_workers", action="store")
-	parser.add_argument("--chunks", nargs="?", default="4", help="chunks", action="store")
-	parser.add_argument("--dbmode", default="sqlite", help="sqlmode mysql/psql/sqlite/mariadb", action="store")
-	parser.add_argument('--dbfile', default='torqfiskur.db', help='database file', action='store')
-	parser.add_argument("--dbname", default="torq", help="dbname", action="store")
-	parser.add_argument("--dbhost", default="localhost", help="dbname", action="store")
-	parser.add_argument("--dbuser", default="torq", help="dbname", action="store")
-	parser.add_argument("--dbpass", default="qrot", help="dbname", action="store")
-	parser.add_argument('--threadmode', default='ppe', help='threadmode ppe/oldppe/tpe', action='store')
-	parser.add_argument('--foobar', default=False, help='foobar', action='store_true')
-	# parser.add_argument("--gui", default=False, help="Run gui", action="store_true", dest='gui')
-	# parser.add_argument("--init-db", default=False, help="init database", action="store_true", dest='init_db')
-
-
+	parser = get_parser('torqtool')
 	args = parser.parse_args()
 	asyncio.run(main(args))
