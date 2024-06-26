@@ -15,6 +15,33 @@ def genuuid():
 
 # x = latitude y = longitude !
 
+class Filestats(Base):
+	__tablename__ = 'filestats'
+	index: Mapped[int] = mapped_column(primary_key=True)
+	fileid: Mapped[int] = mapped_column(ForeignKey('torqfiles.fileid'))
+	column = Column('column', Text)
+	nulls = Column('nulls', Integer, default=0, unique=False)
+	nullratio = Column('nullratio', Float, default=0, unique=False)
+
+class Speeds(Base):
+	__tablename__ = 'speeds'
+	index: Mapped[int] = mapped_column(primary_key=True)
+	fileid: Mapped[int] = mapped_column(ForeignKey('torqfiles.fileid'))
+	gpsspeedkmh = Column('gpsspeedkmh', Float, default=0, unique=False)
+	speedobdkmh = Column('speedobdkmh', Float, default=0, unique=False)
+	speedgpskmh = Column('speedgpskmh', Float, default=0, unique=False)
+	gpstime = Column('gpstime', DateTime)
+
+class Startends(Base):
+	__tablename__ = 'startends'
+	index: Mapped[int] = mapped_column(primary_key=True)
+	fileid: Mapped[int] = mapped_column(ForeignKey('torqfiles.fileid'))
+
+class Columnstats(Base):
+	__tablename__ = 'columnstats'
+	index: Mapped[int] = mapped_column(primary_key=True)
+	column = Column('column', Text)
+
 class TorqFile(Base):
 	__tablename__ = 'torqfiles'
 	fileid: Mapped[int] = mapped_column(primary_key=True)

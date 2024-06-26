@@ -47,7 +47,7 @@ def collect_db_filestats(args, todatabase=True, droptable=True):
 		if args.extradebug:
 			logger.debug(f'[{fileidx}/{len(file_ids)}] working on fileid {file.fileid} ')
 		#results[file.fileid] = []
-		total_rows = pd.DataFrame(session.execute(text(f'select count(*) from torqlogs where id>0 and fileid={file.fileid}'))).values[0][0]
+		total_rows = pd.DataFrame(session.execute(text(f'select count(*) from torqlogs where  fileid={file.fileid}'))).values[0][0] # id>0 and
 		if total_rows == 0:
 			logger.warning(f'no rows for {file.fileid}')
 			continue
@@ -56,7 +56,7 @@ def collect_db_filestats(args, todatabase=True, droptable=True):
 		for idx,column in enumerate(schema_datatypes):
 			if args.extradebug:
 				logger.debug(f'[{fileidx}/{len(file_ids)}] fileid {file.fileid}  col: {column} ')
-			nulls = pd.DataFrame(session.execute(text(f'select count(*) as count from torqlogs where id>0 and fileid={file.fileid} and {column} is null ')).all()).values[0][0]
+			nulls = pd.DataFrame(session.execute(text(f'select count(*) as count from torqlogs where  fileid={file.fileid} and {column} is null ')).all()).values[0][0]  # id>0 and
 			notnulls = total_rows - nulls
 			#dfval = df.values[0][0]
 			if args.extradebug and nulls>0:
@@ -83,7 +83,7 @@ def create_db_filestats(session, args, fileid, todatabase=False, droptable=False
 		logger.info(f'create_db_filestats for {fileid}')
 	# file = pd.DataFrame(session.execute(text(f'select * from torqfiles where fileid={fileid}'))).values[0][0]
 	#results[file.fileid] = []
-	total_rows = pd.DataFrame(session.execute(text(f'select count(*) from torqlogs where id>0 and fileid={fileid}'))).values[0][0]
+	total_rows = pd.DataFrame(session.execute(text(f'select count(*) from torqlogs where fileid={fileid}'))).values[0][0] # where id>0 and
 	if total_rows == 0:
 		logger.warning(f'no rows for {fileid}')
 		return None
@@ -92,18 +92,17 @@ def create_db_filestats(session, args, fileid, todatabase=False, droptable=False
 	for idx,column in enumerate(schema_datatypes):
 		if args.extradebug:
 			logger.debug(f'fileid {fileid}  col: {column} ')
-		nulls = pd.DataFrame(session.execute(text(f'select count(*) as count from torqlogs where id>0 and fileid={fileid} and {column} is null ')).all()).values[0][0]
+		nulls = pd.DataFrame(session.execute(text(f'select count(*) as count from torqlogs where  fileid={fileid} and {column} is null ')).all()).values[0][0] # id>0 and
 		notnulls = total_rows - nulls
 		#dfval = df.values[0][0]
 		if args.extradebug and nulls>0:
 			logger.debug(f'[{idx}/{len(schema_datatypes)}] {fileid} - {column} nulls {nulls} ratio:  {nulls/total_rows} notnulls:{notnulls} ratio: {notnulls/total_rows}')
-
 		results.append( {'fileid': fileid, 'column':column, 'nulls':nulls, 'nullratio':nulls/total_rows})
 	df = pd.DataFrame([k for k in results])
 	try:
 		if todatabase:
 			logger.debug(f'sending {len(df)} filestats to db...')
-			df.to_sql(con=engine, name='filestats',if_exists='append')
+			df.to_sql(con=engine, name='filestats',if_exists='append',index=False)
 		else:
 			logger.debug(f'returning {len(df)} filestats ...')
 			return df
