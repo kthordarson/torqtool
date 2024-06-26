@@ -690,7 +690,7 @@ def cli_main(args):
 							# print(filestats)
 						except (sqlalchemy.orm.exc.DetachedInstanceError,DetachedInstanceError) as e:
 							logger.error(f'{type(e)} {e} from create_db_filestats {f} {tfileid}')
-					else:
+					else: # no rows sent ?
 						logger.warning(f'Sent rows = {sent_rows} from {f} to db...')
 						db_set_file_flag(session, filename=f, flag='senderror')
 						broken_files.append(f)
