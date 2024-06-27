@@ -866,6 +866,77 @@ def convert_string_to_datetime(s:str):
 		return datetimeobject
 
 
+def colreplacer(df):
+	# todo for checking try :
+	# test = [float(k) for k in data['enginecoolanttemperaturef'].values ] # raises exception if not float
+	# test = [float(k) for k in data[columntocheck].values ] # raises exception if not float
+
+	for col in df.columns:
+		# df[col] = df[col].replace('.',',')
+		df[col] = df[col].replace('-',0)
+		df[col] = df[col].replace('Â','')
+		df[col] = df[col].replace('â','')
+		df[col] = df[col].replace('°','')
+		df[col] = df[col].replace('₂','')
+		df[col] = df[col].replace('∞','')
+		df[col] = df[col].replace('£','')
+		df[col] = df[col].replace('\n','')
+		df[col] = df[col].replace('612508207723425200000000000000000000000',0)
+		df[col] = df[col].replace('340282346638528860000000000000000000000',0)
+		df[col] = df[col].replace('-3402823618710077500000000000000000000',0)
+		df[col] = df[col].replace('6.125082077234252e+38',0)
+		df[col] = df[col].replace('3.4028234663852886e+38',0)
+		df[col] = df[col].replace('-5.481e-05',0)
+		df[col] = df[col].replace('â\x88\x9e',0)
+		# â\x88\x9e
+		#-5.481e-05
+		#6.125082077234252e+38
+		#3.4028234663852886e+38
+		# 6.125082077234252e+38
+		# 612508207723425200000000000000000000000
+		# df[col] = rcol
+	# data = df.fill_null(0).fill_nan(0)
+	# df = data.to_pandas()
+	# df1 = df.rename(columns=ncc)
+
+
+def fix_bad_values(data:pd.DataFrame, f:str):
+	"""
+	search and replace bad values from databuffer
+	param: data dataframe, f filename (for ref)
+	returns fixed data if possible, else orginal
+	"""
+	# fixed_data = pd.DataFrame()
+	# 'â\x88\x9e' found in tracklog-2021-jul-05_17-53-16.csv
+	# badhex
+	# C3 A2 C2 88 C2 9E
+	# C3 82 C2 B0
+	# C3 A2 C2 82 C2 82
+	# C3 82 C2 B0
+	# Â°
+	try:
+		#needs_fix = [k for k in data.columns if '-' in data[k].values]
+		for c in data:
+			data[c] = data[c].replace('-',0)
+			data[c] = data[c].replace('∞',0)
+			data[c] = data[c].replace('NaN',0)
+			data[c] = data[c].replace('6.125082077234252e+38',0)
+			#6.125082077234252e+38
+		# fixcount = 0
+		# for fix in needs_fix:
+
+		# 	data[fix] = data[fix].replace('340282346638528860000000000000000000000',0)
+		# 	data[fix] = data[fix].replace('-3402823618710077500000000000000000000',0)
+		# 	data[fix] = data[fix].replace('612508207723425200000000000000000000000',0)
+		# 	data[fix] = data[fix].replace('â\x88\x9e',0)
+		# 	fixcount += 1
+		# if fixcount>0:
+		# 	logger.debug(f'fixed {fixcount} things in {f}')
+		return data
+	except Exception as e:
+		logger.error(f'error in fixer: {type(e)} {e} for {f}')
+		raise e
+
 
 if __name__ == '__main__':
 	pass
