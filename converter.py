@@ -192,49 +192,7 @@ def read_csv_file(logfile, args):
 	if len(columns_with_wrong_dtype) > 0 and args.extradebug:
 		logger.warning(f'found {len(columns_with_wrong_dtype)} columns with {len(string_check)} string values in {logfile}')# columns: {columns_with_wrong_dtype=} ')
 
-	# try:
-	# 	ncren = {k:ncc[k] for k in df.columns if k in ncc} # get columns to rename
-	# 	# df = df.rename(ncren) # rename them
-	# 	df = df.rename(columns=ncren)
-	# except KeyError as e:
-	# 	msg = f'keyerror {type(e)} {e} {logfile}\ndatacols: {df.columns} \n'
-	# 	logger.warning(msg)
-	# 	raise Polarsreaderror(msg)
-	# dfout = df.fillna(0)
 	return df
-
-def colreplacer(df):
-	# todo for checking try :
-	# test = [float(k) for k in data['enginecoolanttemperaturef'].values ] # raises exception if not float
-	# test = [float(k) for k in data[columntocheck].values ] # raises exception if not float
-
-	for col in df.columns:
-		# df[col] = df[col].replace('.',',')
-		df[col] = df[col].replace('-',0)
-		df[col] = df[col].replace('Â','')
-		df[col] = df[col].replace('â','')
-		df[col] = df[col].replace('°','')
-		df[col] = df[col].replace('₂','')
-		df[col] = df[col].replace('∞','')
-		df[col] = df[col].replace('£','')
-		df[col] = df[col].replace('\n','')
-		df[col] = df[col].replace('612508207723425200000000000000000000000',0)
-		df[col] = df[col].replace('340282346638528860000000000000000000000',0)
-		df[col] = df[col].replace('-3402823618710077500000000000000000000',0)
-		df[col] = df[col].replace('6.125082077234252e+38',0)
-		df[col] = df[col].replace('3.4028234663852886e+38',0)
-		df[col] = df[col].replace('-5.481e-05',0)
-		df[col] = df[col].replace('â\x88\x9e',0)
-		# â\x88\x9e
-		#-5.481e-05
-		#6.125082077234252e+38
-		#3.4028234663852886e+38
-		# 6.125082077234252e+38
-		# 612508207723425200000000000000000000000
-		# df[col] = rcol
-	# data = df.fill_null(0).fill_nan(0)
-	# df = data.to_pandas()
-	# df1 = df.rename(columns=ncc)
 
 
 
@@ -268,7 +226,7 @@ def send_csv_data_to_db(engine, session, args:argparse.Namespace, data:pd.DataFr
 	#fileid = session.query(TorqFile.fileid).filter(TorqFile.csvfile==csvfilename).one()[0]
 	# fileid_series = pl.Series("fileid", [fileid for k in range(len(data))])
 
-	if insertid:
+	if insertid: # add fileid column
 		if args.extradebug:
 			logger.debug(f'insertid {fileid} {len(data)}')
 		fileidcol = pd.DataFrame([fileid for k in range(len(data))], columns=['fileid',])
@@ -415,44 +373,6 @@ def date_column_fixer(data:pd.DataFrame=None, datecol:str=None, f:str=None):
 	#if len(chk)>0:
 	#	logger.warning(f'CHECK2 {len(chk)} things in {f} {datecol=}')
 	return fixed_datecol
-
-
-def fix_bad_values(data:pd.DataFrame, f:str):
-	"""
-	search and replace bad values from databuffer
-	param: data dataframe, f filename (for ref)
-	returns fixed data if possible, else orginal
-	"""
-	# fixed_data = pd.DataFrame()
-	# 'â\x88\x9e' found in tracklog-2021-jul-05_17-53-16.csv
-	# badhex
-	# C3 A2 C2 88 C2 9E
-	# C3 82 C2 B0
-	# C3 A2 C2 82 C2 82
-	# C3 82 C2 B0
-	# Â°
-	try:
-		#needs_fix = [k for k in data.columns if '-' in data[k].values]
-		for c in data:
-			data[c] = data[c].replace('-',0)
-			data[c] = data[c].replace('∞',0)
-			data[c] = data[c].replace('NaN',0)
-			data[c] = data[c].replace('6.125082077234252e+38',0)
-			#6.125082077234252e+38
-		# fixcount = 0
-		# for fix in needs_fix:
-
-		# 	data[fix] = data[fix].replace('340282346638528860000000000000000000000',0)
-		# 	data[fix] = data[fix].replace('-3402823618710077500000000000000000000',0)
-		# 	data[fix] = data[fix].replace('612508207723425200000000000000000000000',0)
-		# 	data[fix] = data[fix].replace('â\x88\x9e',0)
-		# 	fixcount += 1
-		# if fixcount>0:
-		# 	logger.debug(f'fixed {fixcount} things in {f}')
-		return data
-	except Exception as e:
-		logger.error(f'error in fixer: {type(e)} {e} for {f}')
-		raise e
 
 def split_check(csvfile:str):
 	"""
@@ -614,8 +534,6 @@ def cli_main(args):
 
 		with session.no_autoflush:
 			newfiles = get_files_to_send(session, args=args)
-		# todo fix colum names, some files have colum names with a leading space (eg ''GPS Time, Device Time, Longitude, Latitude,GPS Speed(km/h), Horizontal Dilution of Precision, Altitude(m), Bearing,')
-		# maybe replace this before read_csv ?
 		if args.db_limit:
 			print(args)
 			newfiles = newfiles[:int(args.db_limit)]
@@ -686,7 +604,7 @@ def cli_main(args):
 						sendtime = (datetime.now()-sendstart).total_seconds()
 						db_set_file_flag(session, filename=f, flag='ok', sent_rows=sent_rows, readtime=readtime, sendtime=sendtime) # pass # logger.debug(f'Sent data from {f} to database')
 						try:
-							filestats = create_db_filestats(session, args, tfileid, todatabase=True, droptable=False)
+							filestats = create_db_filestats(data=fixed_data, fileid=tfileid)
 							# print(filestats)
 						except (sqlalchemy.orm.exc.DetachedInstanceError,DetachedInstanceError) as e:
 							logger.error(f'{type(e)} {e} from create_db_filestats {f} {tfileid}')
