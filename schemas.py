@@ -1,5 +1,4 @@
 import polars as pl
-from sqlalchemy import VARCHAR, Column, DateTime, Float, ForeignKey, Integer, Text, text
 ncc = {
     "0-100kph Time(s)": "kphTime0-100",
     "0-100mph Time(s)": "mphTime0-100",

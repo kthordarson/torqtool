@@ -1,7 +1,4 @@
 import numpy as np
-import pandas as pd
-from datetime import datetime
-from sqlalchemy import ForeignKey, create_engine, Table, MetaData, Column, Integer, String, inspect, select, BigInteger, Float, DateTime, text, BIGINT, Numeric, DATE,TIME,DATETIME
 entry_datamap = {
 'accelerationsensortotalg':np.float64,
 'accelerationsensorxaxisg':np.float64,
