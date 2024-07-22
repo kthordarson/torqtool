@@ -1,8 +1,5 @@
 #!/usr/bin/python3
 import sys
-import os
-import datetime
-from argparse import ArgumentParser
 import pandas as pd
 import PySide6
 from loguru import logger
@@ -14,8 +11,7 @@ from PySide6.QtSql import QSqlQueryModel
 import PySide6.QtCharts
 # from PySide6.QtWidgets import (QApplication, QSizePolicy, QWidget)
 from PySide6.QtWidgets import QApplication, QMainWindow
-from sqlalchemy import create_engine, text
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy import text
 import numpy as np
 
 from datamodels import Torqlogs, TorqFile
@@ -151,8 +147,6 @@ class MainApp(QMainWindow):
 		speedobdkmh = QLineSeries()
 		pen.setColor('red')
 		speedobdkmh.setPen(pen)
-		invalid_latlon_points = 0
-		invalid_speed_points = 0
 		# [latlonscatter.append(lat_lon_data[k].values[0],lat_lon_data[k].values[1]) for k in lat_lon_data]
 		[latlonscatter.append(k.latitude,k.longitude) for k in lat_lon_data.itertuples()]
 

@@ -13,8 +13,7 @@ import polars as pl
 import pytz
 from loguru import logger
 import sqlalchemy
-import pymysql
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from sqlalchemy.exc import DataError, OperationalError, NoResultFound
 from sqlalchemy.orm.exc import DetachedInstanceError
 from sqlalchemy.orm import sessionmaker
@@ -23,9 +22,9 @@ from psycopg2.errors import UndefinedColumn
 import sqlite3
 from commonformats import fmt_19, fmt_20, fmt_24, fmt_26, fmt_28, fmt_30, fmt_34, fmt_36
 from datamodels import TorqFile, database_init
-from schemas import ncc, schema_datatypes
-from utils import get_parser, get_engine_session, get_fixed_lines, get_sanatized_column_names,MIN_FILESIZE
-from fixers import split_file, test_pandas_csv_read, test_polars_csv_read, run_fixer, get_cols, check_and_fix_logs, fix_column_names, replace_headers
+from schemas import schema_datatypes
+from utils import get_parser, get_engine_session, MIN_FILESIZE
+from fixers import split_file, test_pandas_csv_read, test_polars_csv_read, run_fixer, get_cols, check_and_fix_logs, replace_headers
 from updatetripdata import create_db_filestats
 
 pd.set_option('future.no_silent_downcasting', True)
@@ -605,7 +604,8 @@ def cli_main(args):
 						db_set_file_flag(session, filename=f, flag='ok', sent_rows=sent_rows, readtime=readtime, sendtime=sendtime) # pass # logger.debug(f'Sent data from {f} to database')
 						try:
 							filestats = create_db_filestats(data=fixed_data, fileid=tfileid)
-							# print(filestats)
+							if args.debug:
+								print(filestats)
 						except (sqlalchemy.orm.exc.DetachedInstanceError,DetachedInstanceError) as e:
 							logger.error(f'{type(e)} {e} from create_db_filestats {f} {tfileid}')
 					else: # no rows sent ?

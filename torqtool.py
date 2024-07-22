@@ -1,11 +1,9 @@
 #!/usr/bin/python3
-import argparse
 import asyncio
 import sys
 from collections.abc import AsyncIterable
 from datetime import datetime
 from pathlib import Path
-from timeit import default_timer as timer
 import pandas as pd
 from loguru import logger
 from sqlalchemy.exc import OperationalError
@@ -52,9 +50,9 @@ async def scanpath(session, args):
 	'results' : {'unfixed' : list_of_unfixed_files}}
 	}
 	"""
-	results = { 'results': {'unfixed': []}}
+	# results = { 'results': {'unfixed': []}}
 	newfilelist = []
-	t0 = datetime.now()
+	# t0 = datetime.now()
 	#Session = sessionmaker(bind=engine)
 	#session = Session()
 
@@ -98,10 +96,10 @@ async def check_unfixedfiles(session, args):
 
 async def send_torq_logs(filelist, session, args):
 	# get files from db that are fixed but not read or sent to db
-	tripstart = timer()
+	# tripstart = timer()
 	# dbtorqfiles = session.query(TorqFile).filter(TorqFile.read_flag == 1).filter(TorqFile.fixed_flag == 1).all() # type: ignore
-	tripend = timer()
-	t0 = datetime.now()
+	# tripend = timer()
+	# t0 = datetime.now()
 	if args.debug:
 		logger.debug(f'sendtorqlogs  starting torq_worker_ppe for {len(filelist)} files mode={args.threadmode}')
 	async with asyncio.TaskGroup() as tg:

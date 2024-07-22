@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime
 import pandas as pd
 from loguru import logger
-from sqlalchemy import VARCHAR, Column, DateTime, Float, ForeignKey, Integer, Text, text
+from sqlalchemy import Column, DateTime, Float, ForeignKey, Integer, Text, text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.sql.sqltypes import Double

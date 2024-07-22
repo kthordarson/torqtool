@@ -30,8 +30,7 @@ from sqlalchemy.exc import (
 from sqlalchemy.orm import sessionmaker
 
 from commonformats import fmt_20, fmt_24, fmt_26, fmt_28, fmt_30, fmt_34, fmt_36
-from datamodels import TorqFile, database_init, Torqlogs
-from schemas import ncc
+from datamodels import TorqFile, database_init
 
 MIN_FILESIZE = 3000
 
@@ -110,22 +109,6 @@ def get_sanatized_column_names(orgcol):
 def get_fixed_lines(logfile, debug=True):
 	# read csv file, replace badvals and fix column names
 	# returns a buff with the fixed csv file
-	badvals = {
-			#'-': '0',
-			#"'-'": '0',
-			#'"-"': '0',
-			#'-,': ',0,',
-			'∞': '0',
-			# '-,' : ',0',
-			#'â': '0',
-			#₂': '',
-			#'°': '',
-			#'Â°': '0',
-			#'Â': '0',
-			#'612508207723425200000000000000000000000': '0',
-			# '340282346638528860000000000000000000000': '0',
-			# '-3402823618710077500000000000000000000': '0'
-			}
 	with open(logfile, 'r') as reader:
 		data0 = reader.readlines()
 	orgcol = data0[0].split(',')
@@ -212,7 +195,7 @@ def get_bad_vals(csvfile: str):
 		l0 = line.split(',')
 		for lx in l0:
 			try:
-				l1 = lx.encode('ascii')
+				lx.encode('ascii')
 			except (UnicodeEncodeError, UnicodeDecodeError) as e:
 				logger.error(f'unicodeerr: {e} in {csvfile} lt={type(line)} l={line}')
 			except AttributeError as e:
@@ -242,7 +225,7 @@ def get_engine_session(args):
 		# Session = sessionmaker(bind=engine)
 		# session = Session()
 	if not engine:
-		logger.error(f'no engine')
+		logger.error('no engine')
 		sys.exit(-1)
 	Session = sessionmaker(bind=engine)
 	session = Session()
@@ -446,32 +429,9 @@ def sqlsender_ppe(buffer, session, debug=False):
 		logger.error(f'[!]{type(e)}\n{e}\n')
 	return results
 
-def read_buf_2(logdir,maxfiles=100):
-	dfx = pd.DataFrame()
-	errors=0
-	readfiles=0
-	files_with_errors = []
-	for k in Path(logdir).glob('*.csv'):
-		if readfiles>=maxfiles:
-			logger.warning(f'MAX: {maxfiles} {readfiles=}')
-			break
-		try:
-			d=pl.read_csv(k, ignore_errors=True, try_parse_dates=True,truncate_ragged_lines=True)
-			# dfx=pd.concat([d.to_pandas(),dfx])
-			print(f'{errors} {len(dfx)} {readfiles}')
-			readfiles+=1
-		except Exception as e:
-			print(f'{errors} {type(e)} {e}')
-			errors+=1
-			files_with_errors.append(k)
-	if errors>0:
-		print(f'Errors: {files_with_errors}')
-	return dfx
 
 def read_buff(csvfile, tf_fileid,  debug=False):
 	error_files = []
-	devicetime = []
-	gpstime = []
 	rb = {
 		'torqbuffer' : pd.DataFrame(),
 		'fileid' : tf_fileid,
@@ -609,7 +569,6 @@ def fix_timestamps(torqbuffer, csvfile, tf_fileid):
 async def torq_worker_ppe(tf, session, debug=False):
 	buffer = None
 	results = None
-	datares = None
 	t0 = datetime.now()
 	timetotal = 0
 	try:
@@ -630,7 +589,7 @@ async def torq_worker_ppe(tf, session, debug=False):
 		results = sqlsender_ppe(buffer,session, debug=debug) # send triplog data
 		timetotal += (datetime.now()-t0).seconds
 		if debug:
-			pass # logger.debug(f't: {(datetime.now()-t0).seconds}/{timetotal} fileid {results.get("fileid")} {results.get("status")} buffer: {len(buffer["torqbuffer"])}')
+			logger.debug(f't: {(datetime.now()-t0).seconds}/{timetotal} fileid {results.get("fileid")} {results.get("status")} buffer: {len(buffer["torqbuffer"])}')
 	except (ValueError, TypeError, PicklingError) as e:
 		logger.error(f'[!] {type(e)} {e} in sqlsender buffer.is_empty() {buffer["torqbuffer"].is_empty()}')
 		return None

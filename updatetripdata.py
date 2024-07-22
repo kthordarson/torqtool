@@ -1,23 +1,15 @@
 # todo fix only create tripdata for new trips
 
-from datetime import datetime
 
 import pandas as pd
-import polars as pl
 from loguru import logger
 from sqlalchemy import (
-	create_engine,
-	inspect,
 	text,
 )
 from sqlalchemy.exc import (
-	IntegrityError,
 	OperationalError,
-	ProgrammingError,
 )
-from sqlalchemy.orm import sessionmaker
 
-from datamodels import TorqFile, Torqlogs
 from utils import get_parser
 from utils import get_engine_session
 from schemas import schema_datatypes
@@ -213,18 +205,18 @@ def main(args):
 	elif args.db_speed:
 		return collect_db_speeds(args)
 	elif args.db_allstats:
-		logger.debug(f'starting all stats')
+		logger.debug('starting all stats')
 		dbspeed = collect_db_speeds(args)
-		logger.debug(f'all stats dbspeed done')
+		logger.debug('all stats dbspeed done')
 		dbstartends = collect_db_startends(args)
-		logger.debug(f'all stats dbstartends done')
+		logger.debug('all stats dbstartends done')
 		dbcolumstats = collect_db_columnstats(args)
-		logger.debug(f'all stats dbcolumstats done')
+		logger.debug('all stats dbcolumstats done')
 		dbfilestats = collect_db_filestats(args)
-		logger.debug(f'all stats dbfilestats done')
+		logger.debug('all stats dbfilestats done')
 		return {'dbspeed':dbspeed, 'dbstartends':dbstartends, 'dbcolumstats':dbcolumstats, 'dbfilestats':dbfilestats}
 	else:
-		logger.warning(f'missing args')
+		logger.warning('missing args')
 if __name__ == '__main__':
 	parser = get_parser('dataupdate')
 	parser.add_argument('--db_speed', default=False, help="db_speed", action="store_true", dest='db_speed')

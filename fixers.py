@@ -2,28 +2,18 @@
 
 # fixers in here
 
-import argparse
 import os
-import re
 import shutil
-import sys
-from datetime import datetime
 from hashlib import md5
 from pathlib import Path
 import random
 import pandas as pd
 import polars as pl
-import pytz
 from loguru import logger
-from sqlalchemy import create_engine
-from sqlalchemy.exc import DataError, OperationalError, NoResultFound
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.exc import MultipleResultsFound
+from sqlalchemy.exc import NoResultFound
 
-from commonformats import fmt_20, fmt_24, fmt_26, fmt_28, fmt_30, fmt_34, fmt_36
-from datamodels import TorqFile, database_init
-from schemas import ncc, schema_datatypes
-from utils import get_engine_session, get_fixed_lines, get_sanatized_column_names,MIN_FILESIZE, convert_string_to_datetime
+from datamodels import TorqFile
+from utils import get_engine_session, get_fixed_lines, get_sanatized_column_names,convert_string_to_datetime
 
 def replace_headers(newfiles:list, args):
 	"""
@@ -53,7 +43,7 @@ def fix_column_names(csvfile:str, args):
 	strip leading spaces from column names and saves the fil
 	# todo skip files that have been fixed already, by checking in the database
 	"""
-	subchars = [', ',',Â','∞','Â°F','Â°','â°','â']
+	# subchars = [', ',',Â','∞','Â°F','Â°','â°','â']
 	try:
 		with open(csvfile,'r') as f:
 			rawdata = f.readlines()
@@ -85,64 +75,12 @@ def fix_column_names(csvfile:str, args):
 		return True
 
 
-def test_polars_csv_read(logdir,maxfiles=100):
-	dfx = pd.DataFrame()
-	errors=0
-	readfiles=0
-	files_with_errors = []
-	filecount = len([k for k in Path(logdir).glob('*.csv')][0:maxfiles])
-	x = filecount//10
-	for idx,k in enumerate(Path(logdir).glob('*.csv')):
-		if readfiles>=maxfiles:
-			logger.warning(f'MAX: {maxfiles} {readfiles=}')
-			break
-		if idx % x == 0:
-			logger.info(f'[{idx}/{filecount}] rf={readfiles} e:{errors}')
-		try:
-			d=pl.read_csv(k, ignore_errors=True, try_parse_dates=True,truncate_ragged_lines=True, n_threads=4, use_pyarrow=True)
-			#dfx=pd.concat([d.to_pandas(),dfx])
-			#print(f'{errors} {len(dfx)} {readfiles}')
-			readfiles+=1
-		except Exception as e:
-			print(f'{errors} {type(e)} {e}')
-			errors+=1
-			files_with_errors.append(k)
-	if errors>0:
-		print(f'plErrors: {files_with_errors}')
-	return dfx
-
-def test_pandas_csv_read(logdir,maxfiles=100):
-	dfx = pd.DataFrame()
-	errors=0
-	readfiles=0
-	files_with_errors = []
-	filecount = len([k for k in Path(logdir).glob('*.csv')][0:maxfiles])
-	x = filecount//10
-	for idx,k in enumerate(Path(logdir).glob('*.csv')):
-		if readfiles>=maxfiles:
-			logger.warning(f'MAX: {maxfiles} {readfiles=}')
-			break
-		if idx % x == 0:
-			logger.info(f'[{idx}/{filecount}] rf={readfiles} e:{errors}')
-		try:
-			d=pd.read_csv(k,engine='pyarrow', na_values=['-'], on_bad_lines='skip')
-			# dfx=pd.concat([d,dfx])
-			#print(f'{errors} {len(dfx)} {readfiles}')
-			readfiles+=1
-		except Exception as e:
-			print(f'{errors} {type(e)} {e}')
-			errors+=1
-			files_with_errors.append(k)
-	if errors>0:
-		print(f'pdErrors: {files_with_errors}')
-	return dfx
-
 
 def check_and_fix_logs(logfiles, args):
 	# iterate all log files (that have not been fixed) , check for bad chars, remove them
 	# skip files that have been fixed already, by checking in the database
 	# return a list of log files that have been fixed, TorqFile.fixed_flag should be 1
-	new_log_files = []
+	# new_log_files = []
 	#dburl = 'sqlite:///torqfiskur.db'
 	#engine = create_engine(dburl, echo=False, connect_args={'check_same_thread': False})
 	#Session = sessionmaker(bind=engine)
@@ -224,8 +162,6 @@ def get_cols(logpath:str, extglob:str="**/*.csv", debug=False):
 				stats[c]['count'] += 1
 				stats[c]['files'].append(logfile.name)
 	if debug:
-		avg_cols = 0
-		avh_chars = 0
 		total_cols = 0
 		total_chars = 0
 		for f in filestats:
@@ -325,12 +261,14 @@ def get_files_with_errors(logdir:str):
 	all_columns = []
 	filecount = len([k for k in Path(logdir).glob('*.csv')])
 	x = filecount//10
+	test_read = None
 	for idx,k in enumerate(Path(logdir).glob('*.csv')):
 		if idx % x == 0:
 			logger.info(f'[{idx}/{filecount}] rf={readfiles} e:{errors} ac: {len(all_columns)}')
 		try:
 			test_read = pl.read_csv(k,  try_parse_dates=True, ignore_errors=True)
-			readfiles+=1
+			if test_read:
+				readfiles+=1
 		except Exception as e:
 			print(f'[{idx}/{filecount}] {type(e)} {e} {errors} in {k}')
 			errors+=1
@@ -414,7 +352,7 @@ def split_file(logfile:str, session=None):
 					torqfile = session.query(TorqFile).filter(TorqFile.csvfile == logfile).one()
 				except NoResultFound as e:
 					torqfile = TorqFile(csvfile=logfile, csvhash=md5(open(logfile, 'rb').read()).hexdigest())
-					logger.warning(f'creating new torqfile: {torqfile}')
+					logger.warning(f'{e} creating new torqfile: {torqfile}')
 				torqfile.fixed_flag = 1
 				torqfile.error_flag = 0
 				session.add(torqfile)
