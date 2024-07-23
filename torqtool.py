@@ -56,7 +56,7 @@ async def scanpath(session, args):
 	#Session = sessionmaker(bind=engine)
 	#session = Session()
 
-	filelist = get_csv_files(searchpath=Path(args.logpath), dbmode=args.dbmode, debug=args.debug)
+	filelist = get_csv_files(searchpath=Path(args.logpath), args=args)
 	filelist = sorted(filelist, key=lambda x: x['csvfile']) # sort by filename (date)
 
 	if len(filelist) == 0:
