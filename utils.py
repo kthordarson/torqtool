@@ -57,7 +57,7 @@ def get_parser(appname):
 	parser.add_argument("--check-db", default=False, help="check database", action="store_true", dest='check_db')
 	parser.add_argument('--database_dropall', default=False, help="drop database", action="store_true", dest='database_dropall')
 	parser.add_argument("--dbhost", default="localhost", help="dbname", action="store")
-	parser.add_argument("--dbmode", default="sqlite", help="sqlmode mysql/psql/sqlite/mariadb", action="store")
+	parser.add_argument("--dbmode", default="sqlite", help="sqlmode mysql/psql/sqlite/mariadb", action="store", dest='dbmode')
 	parser.add_argument("--dbname", default="torq", help="dbname", action="store")
 	parser.add_argument("--dbpass", default="qrot", help="dbname", action="store")
 	parser.add_argument("--dbuser", default="torq", help="dbname", action="store")
@@ -178,13 +178,13 @@ def fix_logfile(logfile: Path, debug=False):
 		logger.error(f'[gcv] unhandled {type(e)} {e} in {logfile}')
 		return False
 
-def get_csv_files(searchpath: str,  dbmode=None, debug=False):
+def get_csv_files(searchpath: str,  args):
 	# scan searchpath for csv files
 	torqcsvfiles = [({
 		'csvfile': k, # original csv file
 		'csvhash': md5(open(k, 'rb').read()).hexdigest(),
 		'size': os.stat(k).st_size,
-		'dbmode': dbmode}) for k in Path(searchpath).glob("**/*.csv") if k.stat().st_size >= MIN_FILESIZE] # and not os.path.exists(f'{k}.fixed.csv')]
+		'dbmode': args.dbmode}) for k in Path(searchpath).glob("**/*.csv") if k.stat().st_size >= MIN_FILESIZE] # and not os.path.exists(f'{k}.fixed.csv')]
 	return torqcsvfiles
 
 

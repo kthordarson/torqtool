@@ -24,7 +24,7 @@ from commonformats import fmt_19, fmt_20, fmt_24, fmt_26, fmt_28, fmt_30, fmt_34
 from datamodels import TorqFile, database_init
 from schemas import schema_datatypes
 from utils import get_parser, get_engine_session, MIN_FILESIZE
-from fixers import split_file, test_pandas_csv_read, test_polars_csv_read, run_fixer, get_cols, check_and_fix_logs, replace_headers
+from fixers import split_file, run_fixer, get_cols, check_and_fix_logs, replace_headers
 from updatetripdata import create_db_filestats
 
 pd.set_option('future.no_silent_downcasting', True)
@@ -283,7 +283,7 @@ def send_csv_data_to_db(engine, session, args:argparse.Namespace, data:pd.DataFr
 		return 0
 	session.close()
 	if args.debug:
-		logger.debug(f'Sent {len(data)} rows from {fn} id:{fileid}  to database {args.dbmode}')
+		logger.debug(f'Sent {len(data)} rows from {fn} id:{fileid}  to database {args}')
 	return len(data)
 
 def get_files_to_send(session:sessionmaker, args):
@@ -303,9 +303,9 @@ def get_files_to_send(session:sessionmaker, args):
 		error_dbfiles = session.query(TorqFile).filter(TorqFile.error_flag!=0).all()
 		files_to_send = set(csvfiles)-set([k.csvfile for k in read_dbfiles])
 	except UndefinedColumn as e:
-		logger.warning(f'UndefinedColumn {type(e)} {e} from {args.logpath} {args.dbmode}')
+		logger.warning(f'UndefinedColumn {type(e)} {e} from {args.logpath} args {args}')
 	except Exception as e:
-		logger.error(f'unhandled {type(e)} {e} from {args.logpath} {args.dbmode}')
+		logger.error(f'unhandled {type(e)} {e} from {args.logpath} args {args}')
 	finally:
 		session.close()
 		if len(files_to_send) > 0:
@@ -525,11 +525,11 @@ def cli_main(args):
 		except AssertionError as e:
 			logger.error(f'[maindbinit] {e} exit')
 			sys.exit(-1)
-		if args.dbmode == 'sqlite':
-			session.execute(text('PRAGMA journal_mode=WAL;'))
-			session.execute(text('pragma synchronous = normal;'))
-			session.execute(text('pragma temp_store = memory;'))
-			session.execute(text('pragma mmap_size = 30000000000;'))
+		# if args.dbmode == 'sqlite':
+		# 	session.execute(text('PRAGMA journal_mode=WAL;'))
+		# 	session.execute(text('pragma synchronous = normal;'))
+		# 	session.execute(text('pragma temp_store = memory;'))
+		# 	session.execute(text('pragma mmap_size = 30000000000;'))
 
 		with session.no_autoflush:
 			newfiles = get_files_to_send(session, args=args)
@@ -595,30 +595,37 @@ def cli_main(args):
 					sendstart = datetime.now()
 					try:
 						sent_rows = send_csv_data_to_db(engine, session, args=args, data=fixed_data, csvfilename=f)
-					except (sqlalchemy.orm.exc.DetachedInstanceError,DetachedInstanceError) as e:
+					except (sqlalchemy.orm.exc.DetachedInstanceError ,DetachedInstanceError, AttributeError, MultipleResultsFound) as e:
 						logger.error(f'{type(e)} {e} from send_csv_data_to_db {f}')
 						sent_rows = 0
 					if sent_rows>0:
 						# todo create filestats now ?
 						sendtime = (datetime.now()-sendstart).total_seconds()
-						db_set_file_flag(session, filename=f, flag='ok', sent_rows=sent_rows, readtime=readtime, sendtime=sendtime) # pass # logger.debug(f'Sent data from {f} to database')
 						try:
-							filestats = create_db_filestats(data=fixed_data, fileid=tfileid)
+							db_set_file_flag(session, filename=f, flag='ok', sent_rows=sent_rows, readtime=readtime, sendtime=sendtime) # pass # logger.debug(f'Sent data from {f} to database')
+						except AttributeError as e:
+							logger.error(f'{type(e)} {e} from db_set_file_flag {f} {tfileid}')
+						try:
+							filestats = create_db_filestats(data=fixed_data, fileid=tfileid, args=args)
 							if args.debug:
 								print(filestats)
-						except (sqlalchemy.orm.exc.DetachedInstanceError,DetachedInstanceError) as e:
+						except (sqlalchemy.orm.exc.DetachedInstanceError, DetachedInstanceError, AttributeError) as e:
 							logger.error(f'{type(e)} {e} from create_db_filestats {f} {tfileid}')
 					else: # no rows sent ?
 						logger.warning(f'Sent rows = {sent_rows} from {f} to db...')
 						db_set_file_flag(session, filename=f, flag='senderror')
 						broken_files.append(f)
+				# except AttributeError as e:
+				# 	logger.warning(f'AttributeError {e} from send_csv_data_to_db {f} {args=}')
+				# except MultipleResultsFound as e:
+				# 	logger.warning(f'MultipleResultsFound {e} from send_csv_data_to_db {f} {args=}')
 				except TypeError as e:
-					logger.error(f'{type(e)} {e} from send_csv_data_to_db {f}')
+					logger.error(f'{type(e)} {e} from file: {f}')
 					broken_files.append(f)
 				except (sqlalchemy.orm.exc.DetachedInstanceError,DetachedInstanceError) as e:
-					logger.error(f'{type(e)} {e} from send_csv_data_to_db {f}')
+					logger.error(f'{type(e)} {e} file {f}')
 				except Exception as e:
-					logger.error(f'unhandled {type(e)} {e} from send_csv_data_to_db {f}')
+					logger.error(f'unhandled {type(e)} {e} file: {f} args: {args}')
 					broken_files.append(f)
 		if len(broken_files)>0:
 			print(f'{len(broken_files)} {broken_files}')
@@ -634,17 +641,6 @@ def cli_main(args):
 					except Exception as e:
 						logger.error(f'unhandled error while splitting {f} {e} {type(e)}')
 			sys.exit(1)
-		sys.exit(0)
-	if args.testnewreader:
-		maxfiles = 100
-		t0 = datetime.now()
-		df_pd = test_polars_csv_read(logdir=args.logpath, maxfiles=maxfiles)
-		t_pd = (datetime.now()-t0)
-
-		t0 = datetime.now()
-		df_pl = test_pandas_csv_read(logdir=args.logpath, maxfiles=maxfiles)
-		t_pl = (datetime.now()-t0)
-		print(f'time: pl {t_pl} pd {t_pd} dfx: pd= {len(df_pd)} pl= {len(df_pl)} finished')
 		sys.exit(0)
 	if args.fixer:
 		# fixer mode
