@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/python3
 
 # fixers in here
 
@@ -233,9 +233,7 @@ def new_columns_collector(logdir: str):
     x = filecount // 10
     for idx, k in enumerate(Path(logdir).glob("*.csv")):
         if idx % x == 0:  # progress indicator
-            logger.info(
-                f"[{idx}/{filecount}] rf={readfiles} e:{errors} ac: {len(all_columns)}"
-            )
+            logger.info(f"[{idx}/{filecount}] rf={readfiles} e:{errors} ac: {len(all_columns)}")
         try:
             # only read first line of csv file and select columns
             columns = pl.read_csv(
@@ -328,20 +326,14 @@ def split_file(logfile: str, session=None):
     rawdata = [k for k in rawdata if not k.startswith("-")]
     rawdatalen1 = len(rawdata)
     # find all lines with gps in them, skip first line
-    split_list = [
-        {"linenumber": idx, "linedata": k}
-        for idx, k in enumerate(rawdata)
-        if "gps" in k.lower()
-    ][1:]
+    split_list = [{"linenumber": idx, "linedata": k} for idx, k in enumerate(rawdata) if "gps" in k.lower()][1:]
 
     # grab timestamps of lines before and after split to determine if split is needed or not
     # if timestamps are close, no split is needed, combine file and rescan else split into multiple files
     if len(split_list) == 0:
         logger.warning(f"no split markers found in {logfile} should not happen!")
         return
-    logger.info(
-        f"found {len(split_list)} split markers in {logfile} {rawdatalen0=} {rawdatalen1=}"
-    )
+    logger.info(f"found {len(split_list)} split markers in {logfile} {rawdatalen0=} {rawdatalen1=}")
     gpstime_diff = 0
     devicetime_diff = 0
     line_offset = 1
@@ -351,54 +343,33 @@ def split_file(logfile: str, session=None):
                 logger.warning(f"invalid {marker=} {logfile=}\n{split_list=}")
                 break
 
-            rawgpstime_before_split = rawdata[
-                marker.get("linenumber") - line_offset
-            ].split(",")[0]
+            rawgpstime_before_split = rawdata[marker.get("linenumber") - line_offset].split(",")[0]
             if rawgpstime_before_split == "-":
                 line_offset = random.randint(1, 5)
-                rawgpstime_before_split = rawdata[
-                    marker.get("linenumber") - line_offset
-                ].split(",")[0]
+                rawgpstime_before_split = rawdata[marker.get("linenumber") - line_offset].split(",")[0]
 
-            rawgpstime_after_split = rawdata[
-                marker.get("linenumber") + line_offset
-            ].split(",")[0]
+            rawgpstime_after_split = rawdata[marker.get("linenumber") + line_offset].split(",")[0]
             if rawgpstime_after_split == "-":
                 line_offset = random.randint(1, 5)
-                rawgpstime_after_split = rawdata[
-                    marker.get("linenumber") + line_offset
-                ].split(",")[0]
+                rawgpstime_after_split = rawdata[marker.get("linenumber") + line_offset].split(",")[0]
             if rawgpstime_after_split == "-" or rawgpstime_before_split == "-":
                 logger.warning(f"invalid {marker=} {logfile=}\n{split_list=}")
                 break
             try:
-                gpstime_before_split = convert_string_to_datetime(
-                    rawgpstime_before_split
-                )
+                gpstime_before_split = convert_string_to_datetime(rawgpstime_before_split)
                 gpstime_after_split = convert_string_to_datetime(rawgpstime_after_split)
-                devicetime_before_split = convert_string_to_datetime(
-                    rawdata[marker.get("linenumber") - line_offset].split(",")[1]
-                )
-                devicetime_after_split = convert_string_to_datetime(
-                    rawdata[marker.get("linenumber") + line_offset].split(",")[1]
-                )
+                devicetime_before_split = convert_string_to_datetime(rawdata[marker.get("linenumber") - line_offset].split(",")[1])
+                devicetime_after_split = convert_string_to_datetime(rawdata[marker.get("linenumber") + line_offset].split(",")[1])
 
                 gpstime_diff += (gpstime_after_split - gpstime_before_split).seconds
-                devicetime_diff += (
-                    devicetime_after_split - devicetime_before_split
-                ).seconds
+                devicetime_diff += (devicetime_after_split - devicetime_before_split).seconds
             except (IndexError, TypeError) as e:
                 raw1 = rawdata[marker.get("linenumber") - line_offset]
-                logger.error(
-                    f"{e} failed to convert date {logfile} {idx=} \n{marker=}\n{raw1=}"
-                )
+                logger.error(f"{e} failed to convert date {logfile} {idx=} \n{marker=}\n{raw1=}")
                 raise e
 
         if gpstime_diff <= 900:  # 900=15minutes, combine file parts into one
-            logger.info(
-                f"Remove extra header lines from {logfile} at line  {gpstime_diff=} {devicetime_diff=} "
-            )  # \n\tgpsbefore: {gpstime_before_split} gpsafter: {gpstime_after_split}\n\tdevtimebefore: {devicetime_before_split} devtimeafter: {devicetime_after_split}' )
-            # {marker.get("linenumber")}
+            logger.info(f"Remove extra header lines from {logfile} at line  {gpstime_diff=} {devicetime_diff=} ")
             # remove lines that start with GPS, keep first line, write to file (overwrite)
             skip_lines = [k.get("linenumber") for k in split_list]
             shutil.copy(logfile, f"{logfile}.splitbak")
@@ -410,24 +381,15 @@ def split_file(logfile: str, session=None):
             # mark the file as fixed in the database, TorqFile.fixed_flag = 1 and TorqFile.error_flag = 0, read again
             if session:
                 try:
-                    torqfile = (
-                        session.query(TorqFile)
-                        .filter(TorqFile.csvfile == logfile)
-                        .one()
-                    )
+                    torqfile = (session.query(TorqFile).filter(TorqFile.csvfile == logfile).one())
                 except NoResultFound as e:
-                    torqfile = TorqFile(
-                        csvfile=logfile,
-                        csvhash=md5(open(logfile, "rb").read()).hexdigest(),
-                    )
+                    torqfile = TorqFile(csvfile=logfile, csvhash=md5(open(logfile, "rb").read()).hexdigest(), )
                     logger.warning(f"{e} creating new torqfile: {torqfile}")
                 torqfile.fixed_flag = 1
                 torqfile.error_flag = 0
                 session.add(torqfile)
                 session.commit()
-                logger.debug(
-                    f"database updated for {logfile} torqfileid: {torqfile.fileid} tf={torqfile}"
-                )
+                logger.debug(f"database updated for {logfile} torqfileid: {torqfile.fileid} tf={torqfile}")
             return logfile
         elif gpstime_diff >= 900:  # more that five seconds, split file
             # newbufferlen = len(rawdata[marker['linenumber']:])
@@ -439,9 +401,7 @@ def split_file(logfile: str, session=None):
             rawdate = rawdata[marker.get("linenumber") + 1].split(",")[1]
             try:
                 newdate = convert_string_to_datetime(rawdate)
-                basename = (
-                    "trackLog-split-" + newdate.strftime("%Y-%b-%d_%H-%M") + ".csv"
-                )
+                basename = ("trackLog-split-" + newdate.strftime("%Y-%b-%d_%H-%M") + ".csv")
             except TypeError as e:
                 logger.error(f"{e} failed to convert date {logfile} {rawdate=}")
                 raise e  # return None # basename = 'trackLog-split-' + datetime.now().strftime('%Y-%b-%d_%H-%M') + '.csv'
