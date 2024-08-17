@@ -98,6 +98,8 @@ def create_db_filestats(data: pd.DataFrame, fileid: int, args=None):
 	t0 = datetime.now()
 	engine, session = get_engine_session(args)
 	results = []
+	nulls = 0
+	notnulls = 0
 	# file = pd.DataFrame(session.execute(text(f'select * from torqfiles where fileid={fileid}'))).values[0][0]
 	# results[file.fileid] = []
 	total_rows = pd.DataFrame(session.execute(text(f"select count(*) from torqlogs where fileid={fileid}"))).values[0][0]  # where id>0 and
@@ -114,17 +116,10 @@ def create_db_filestats(data: pd.DataFrame, fileid: int, args=None):
 		# dfval = df.values[0][0]
 		if args.extradebug and nulls > 0:
 			pass  # logger.debug(f"[{idx}/{len(schema_datatypes)}] {fileid} - {column} nulls {nulls} ratio:  {nulls/total_rows} notnulls:{notnulls} ratio: {notnulls/total_rows}")
-		results.append(
-			{
-				"fileid": fileid,
-				"column": column,
-				"nulls": nulls,
-				"nullratio": nulls / total_rows,
-			}
-		)
+		results.append({"fileid": fileid, "column": column, "nulls": nulls, "nullratio": nulls / total_rows, })
 	df = pd.DataFrame([k for k in results])
 	# logger.debug(f"t: {(datetime.now()-t0).seconds} scanpath returned {len(results)} files")
-	logger.info(f"total_rows={total_rows} for {fileid} df: {len(df)} t: {(datetime.now()-t0).seconds} ")
+	logger.info(f"total_rows={total_rows} for {fileid} df: {len(df)} t: {(datetime.now()-t0).seconds} nulls: {nulls}/{notnulls}")
 	return df
 
 def collect_db_columnstats(args):

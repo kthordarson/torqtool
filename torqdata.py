@@ -3,11 +3,11 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
 
-from torqcols import allcols as cols
+from torqcols import allcols
 
 def get_trip_data(trip, session):
 	resdata = []
-	for c in cols:
+	for c in allcols:
 		# print(f'[c] c:{c} t:{trip}')
 		res = None
 		try:
@@ -27,7 +27,7 @@ if __name__ == '__main__':
 	TORQDBPASS = 'dzt3f5jCvMlbUvRG'
 
 	dburl = f"mysql+pymysql://{TORQDBUSER}:{TORQDBPASS}@{TORQDBHOST}/torq?charset=utf8mb4"
-	engine=create_engine(dburl)
+	engine = create_engine(dburl)
 	logger.info(f'[engine] {engine}')
 	Session = sessionmaker(bind=engine)
 	session = Session()
@@ -47,5 +47,5 @@ if __name__ == '__main__':
 		logger.error(f'[e] code={e} args={e.args[0]} {type(toptrips)}')
 	for t in topdata:
 		for c in t:
-			logger.info(f'[topdata] {c} ') #{c.tripid} {c.name} {c.values}')
+			logger.info(f'[topdata] {c} ')  # {c.tripid} {c.name} {c.values}')
 
