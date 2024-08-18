@@ -39,6 +39,7 @@ def get_parser(appname):
 	parser.add_argument("--scanpath", default=False, help="run scanpath", action="store_true", dest="scanpath", )
 	parser.add_argument("--showdrops", default=False, help="show dropped columns", action="store_true", dest="showdrops", )
 	parser.add_argument("--skipwrites", default=False, help="skipwrites", action="store_true", dest="skipwrites", )
+	parser.add_argument("--filestats", default=True, help="create filestats", action="store_true", dest="filestats", )
 	parser.add_argument("--testnewreader", default=False, help="run testnewreader", action="store_true", dest="testnewreader", )
 	parser.add_argument("--threadmode", default="ppe", help="threadmode ppe/oldppe/tpe", action="store")
 	parser.add_argument("--torqdata", default=False, help="create torqdata", action="store_true", dest="torqdata", )

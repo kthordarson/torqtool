@@ -20,14 +20,10 @@ from utils import get_engine_session
 from converter import get_args
 # x = latitude y = longitude !
 
-## Define main window class from template
-
-
 class Mymodel(QAbstractTableModel):
 	pass
 
 mymodel = Mymodel()
-
 
 class KeyPressFilter(QObject):
 	def eventFilter(self, widget, event):
@@ -35,7 +31,7 @@ class KeyPressFilter(QObject):
 			text = event.text()
 			print(f'Key {text} {event=}')
 			if event.modifiers():
-				text = event.keyCombination().key().name#.decode(encoding="utf-8")
+				text = event.keyCombination().key().name   # .decode(encoding="utf-8")
 				print(f'event.modifierskeyboard {event.keyCombination().key().name} {event.keyCombination().key()} {event.keyCombination()}')
 			# widget.label1.setText(text)
 		return False
@@ -65,7 +61,7 @@ class CustomSqlModel(QtSql.QSqlQueryModel):
 			if index.column() == 0:
 				return '#%d' % value
 			elif index.column() == 2:
-				return value # .upper()
+				return value  # .upper()
 		if role == QtCore.Qt.ForegroundRole and index.column() == 1:
 			return QtGui.QColor(QtCore.Qt.blue)
 		return value
@@ -104,7 +100,6 @@ class MainApp(QMainWindow):
 		self.ui.tableView.setModel(self.filemodel)
 		self.ui.tableView.resizeColumnsToContents()
 
-
 	def doubleClicked_table(self):
 		font = QFont('Ariel', 8)
 		font.setPixelSize(8)
@@ -112,9 +107,9 @@ class MainApp(QMainWindow):
 		row = self.ui.tableView.selectedIndexes()[0].row()
 		celldata = self.ui.tableView.model().data(index)
 		fileid = row+1
-		lat_lon_data = self.session.query(Torqlogs.latitude, Torqlogs.longitude).filter(Torqlogs.fileid==fileid).all()
+		lat_lon_data = self.session.query(Torqlogs.latitude, Torqlogs.longitude).filter(Torqlogs.fileid == fileid).all()
 		lat_lon_data = pd.DataFrame(lat_lon_data).fillna(0)
-		speed_data = self.session.query(Torqlogs.id, Torqlogs.speedgpskmh, Torqlogs.gpsspeedkmh, Torqlogs.speedobdkmh).filter(Torqlogs.fileid==fileid).all()
+		speed_data = self.session.query(Torqlogs.id, Torqlogs.speedgpskmh, Torqlogs.gpsspeedkmh, Torqlogs.speedobdkmh).filter(Torqlogs.fileid == fileid).all()
 		speed_data = pd.DataFrame(speed_data).fillna(0)
 		logger.debug(f'{fileid=} row={row}  data={celldata} lld={len(lat_lon_data)} spd={len(speed_data)}')
 		font = QFont('Ariel', 8)
@@ -138,12 +133,9 @@ class MainApp(QMainWindow):
 		pen.setWidth(1)
 		pen.setColor('blue')
 		speedgpskmh.setPen(pen)
-
-
 		gpsspeedkmh = QLineSeries()
 		pen.setColor('green')
 		gpsspeedkmh.setPen(pen)
-
 		speedobdkmh = QLineSeries()
 		pen.setColor('red')
 		speedobdkmh.setPen(pen)
@@ -157,9 +149,9 @@ class MainApp(QMainWindow):
 				[speedobdkmh.append(k.id,k.speedobdkmh) for k in k[speed_data].itertuples()]
 		except TypeError as e:
 			logger.error(f'{e}')
-			#[speedgpskmh.append(speed_data[k].values[0],speed_data[k].values[1]) for k in speed_data]
-			#[speedgpskmh.append(speed_data[k].values[0],speed_data[k].values[2]) for k in speed_data]
-			#[speedgpskmh.append(speed_data[k].values[0],speed_data[k].values[3]) for k in speed_data]
+			# [speedgpskmh.append(speed_data[k].values[0],speed_data[k].values[1]) for k in speed_data]
+			# [speedgpskmh.append(speed_data[k].values[0],speed_data[k].values[2]) for k in speed_data]
+			# [speedgpskmh.append(speed_data[k].values[0],speed_data[k].values[3]) for k in speed_data]
 		try:
 			self.ui.triplayout.removeWidget(self.trip_plot_view)
 			self.ui.speedlayout.removeWidget(self.speed_plot_view)
@@ -178,13 +170,13 @@ class MainApp(QMainWindow):
 		axis_y.setLabelFormat("%.2f")
 		self.trip_plot.addAxis(axis_x, Qt.AlignBottom)
 		self.trip_plot.addAxis(axis_y, Qt.AlignLeft)
-		[k.attachAxis(axis_x) for k in  self.trip_plot.series()]
-		[k.attachAxis(axis_y) for k in  self.trip_plot.series()]
+		[k.attachAxis(axis_x) for k in self.trip_plot.series()]
+		[k.attachAxis(axis_y) for k in self.trip_plot.series()]
 
 		self.speed_plot.addSeries(speedgpskmh)
 		self.speed_plot.addSeries(gpsspeedkmh)
 		self.speed_plot.addSeries(speedobdkmh)
-		#self.speed_plot.createDefaultAxes()
+		# self.speed_plot.createDefaultAxes()
 		axis_x = PySide6.QtCharts.QValueAxis(titleFont=font, labelsFont=font)
 		axis_y = PySide6.QtCharts.QValueAxis(titleFont=font, labelsFont=font)
 		axis_x.setLabelFormat("%d")
@@ -193,14 +185,14 @@ class MainApp(QMainWindow):
 		axis_y.setTitleText('speed')
 		self.speed_plot.addAxis(axis_x, Qt.AlignBottom)
 		self.speed_plot.addAxis(axis_y, Qt.AlignLeft)
-		[k.attachAxis(axis_x) for k in  self.speed_plot.series()]
-		[k.attachAxis(axis_y) for k in  self.speed_plot.series()]
+		[k.attachAxis(axis_x) for k in self.speed_plot.series()]
+		[k.attachAxis(axis_y) for k in self.speed_plot.series()]
 
-		#self.speed_plot.legend().hide()
-		#self.trip_plot.legend().hide()
+		# self.speed_plot.legend().hide()
+		# self.trip_plot.legend().hide()
 		self.trip_plot_view = QChartView(self.trip_plot)
 		self.speed_plot_view = QChartView(self.speed_plot)
-		#scatter.setModel(self.tripplotmodel)
+		# scatter.setModel(self.tripplotmodel)
 		self.ui.triplayout.addWidget(self.trip_plot_view)
 		self.ui.speedlayout.addWidget(self.speed_plot_view)
 		self.setLayout(self.ui.triplayout)
@@ -218,7 +210,7 @@ class MainApp(QMainWindow):
 		self.speed_plot = QChart()
 		self.speed_plot_view = QChartView(self.speed_plot)
 		self.ui.main_layout.addWidget(self.speed_plot_view)
-		#self.setLayout(self.ui.main_layout)
+		# self.setLayout(self.ui.main_layout)
 
 		self.speed_plot.addSeries(scatter)
 		# scatter.setName('start/end')
@@ -231,37 +223,36 @@ class MainApp(QMainWindow):
 		# self.start_stop_plot.axes()[1].setMax(self.start_stop_plot.axes()[1].max()+1)
 		# self.start_stop_plot.axes()[0].setMin(self.start_stop_plot.axes()[0].min()-1)
 		# self.start_stop_plot.axes()[1].setMin(self.start_stop_plot.axes()[1].min()-1)
-		#self.ui.tableView.setModel(self.tripdist_series_model)
-		#self.ui.tableView.resizeColumnsToContents()
+		# self.ui.tableView.setModel(self.tripdist_series_model)
+		# self.ui.tableView.resizeColumnsToContents()
 
 	def create_speed_plot(self):
-		#data = np.array(session.execute(text('select * from speeds')).all())
+		# data = np.array(session.execute(text('select * from speeds')).all())
 		data = pd.DataFrame(session.execute(text('select * from speeds')).all())
-		#data = np.array(df.fillna(0))
+		# data = np.array(df.fillna(0))
 		scatter = QScatterSeries()
 		# [scatter.append(k.gpstime,k.speed) for k in data.itertuples()]
 		for k in data.itertuples():
 			kgpstime = None
-			kgpstime_ = str(k.gpstime)#.toMSecsSinceEpoch()
+			kgpstime_ = str(k.gpstime)  # .toMSecsSinceEpoch()
 			try:
 				kgpstime = QtCore.QDateTime.fromString(kgpstime_).toMSecsSinceEpoch()
 				scatter.append(k.fileid,k.gpsspeedkmh)
 				scatter.append(kgpstime,k.gpsspeedkmh)
 			except TypeError as e:
 				logger.warning(f'{e} {kgpstime=} {k=} {k.gpstime=}')
-		#[scatter.append(k.fileid,k.speed) for k in data.itertuples()]
+		# [scatter.append(k.fileid,k.speed) for k in data.itertuples()]
 		# [scatter.append(k[3],k[2]) for k in data ]
-		#[scatter.append(k[0],k[2]) for k in data ]
+		# [scatter.append(k[0],k[2]) for k in data ]
 		scatter.setMarkerSize(5)
 		# [scatter.append(k[0]) for k in (data.fileid, data.speed) ]
 		# [scatter.append(k[0],k[1]) for k in (data.fileid, data.speed) ]
-		#[scatter.append(k[0],str(k[2])) for k in data if k[0] and k[1] and k[2]]
+		# [scatter.append(k[0],str(k[2])) for k in data if k[0] and k[1] and k[2]]
 		self.speed_plot = QChart()
 		self.speed_plot.addSeries(scatter)
 		self.speed_plot_view = QChartView(self.speed_plot)
 		self.ui.main_layout.addWidget(self.speed_plot_view)
-		#self.setLayout(self.ui.main_layout)
-
+		# self.setLayout(self.ui.main_layout)
 		# scatter.setName('start/end')
 		# self.start_stop_plot.createDefaultAxes()
 		# self.start_stop_plot.setTitleFont(QFont('Arial', 10))
@@ -273,19 +264,17 @@ class MainApp(QMainWindow):
 		# self.start_stop_plot.axes()[1].setMax(self.start_stop_plot.axes()[1].max()+1)
 		# self.start_stop_plot.axes()[0].setMin(self.start_stop_plot.axes()[0].min()-1)
 		# self.start_stop_plot.axes()[1].setMin(self.start_stop_plot.axes()[1].min()-1)
-		#self.ui.tableView.setModel(self.tripdist_series_model)
-		#self.ui.tableView.resizeColumnsToContents()
+		# self.ui.tableView.setModel(self.tripdist_series_model)
+		# self.ui.tableView.resizeColumnsToContents()
 
 	def xcreate_speed_plot(self):
-		#
-		#lat_lon_data = self.session.query(Torqlogs.latitude, Torqlogs.longitude).filter(Torqlogs.fileid==fileid).all()
+		# lat_lon_data = self.session.query(Torqlogs.latitude, Torqlogs.longitude).filter(Torqlogs.fileid==fileid).all()
 		self.speedmodel = QSqlQueryModel()
 		self.speedmodel.setQuery('select * from speeds')
 		self.speedmodel.setHeaderData(0, QtCore.Qt.Horizontal, "fileid")
 		self.speedmodel.setHeaderData(1, QtCore.Qt.Horizontal, "speed")
 		self.speedmodel.setHeaderData(2, QtCore.Qt.Horizontal, "gpstime")
 		self.speed_series = QLineSeries()
-
 
 	def create_entries_plot(self):
 		self.fileentries_series = QLineSeries()
@@ -317,24 +306,11 @@ class MainApp(QMainWindow):
 		self.entries_chart.addSeries(self.fileentries_series)
 		self.entries_chart.addAxis(axis_x, Qt.AlignBottom)
 		self.entries_chart.addAxis(axis_y, Qt.AlignLeft)
-		[k.attachAxis(axis_x) for k in  self.entries_chart.series()]
-		[k.attachAxis(axis_y) for k in  self.entries_chart.series()]
+		[k.attachAxis(axis_x) for k in self.entries_chart.series()]
+		[k.attachAxis(axis_y) for k in self.entries_chart.series()]
 		self.entries_chart.legend().hide()
 		self.ui.entrieslayout.addWidget(self.entries_view)
 		self.setLayout(self.ui.main_layout)
-
-		# self.fileentries_series.setName('file entries')
-		# self.fileentries_series.setMarkerSize(5)
-		#self.entries_chart.createDefaultAxes()
-		# self.entries_chart.setTitleFont(QFont('Arial', 10))
-		#self.entries_chart.setTitle('entries')
-		#self.entries_chart.legend().hide()
-		#self.ui.tableView.setModel(self.tripdist_series_model)
-		#self.ui.tableView.resizeColumnsToContents()
-		#self.ui.listView.setModel(self.tripdist_series_model)
-		#self.ui.listView.resizeContents(25,25)
-
-
 
 def createConnection(args):
 	if args.dbmode == 'sqlite':
@@ -353,7 +329,7 @@ def createConnection(args):
 		con.setUserName(args.dbuser)
 		con.setPassword(args.dbpass)
 	if not con.open():
-		#QMessageBox.critical(None, "Cannot open database",			con.lastError().text())
+		# QMessageBox.critical(None, "Cannot open database",			con.lastError().text())
 		return False
 	return con
 
@@ -361,15 +337,8 @@ def createConnection(args):
 if __name__ == '__main__':
 	args = get_args(appname='testgui')
 	engine, session = get_engine_session(args)
-	#Session = sessionmaker(bind=engine)
-	#session = Session()
 	app = QApplication(sys.argv)
 	c = createConnection(args)
 	w = MainApp(args=args, dbconn=c)
 	w.show()
 	sys.exit(app.exec())
-#	if not createConnection():
-#		sys.exit(1)
-#	w = MainApp()
-#	w.show()
-#	sys.exit(app.exec())

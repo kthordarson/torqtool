@@ -56,9 +56,7 @@ def fix_column_names(csvfile: str, args):
         with open(csvfile, "r") as f:
             rawdata = f.readlines()
         # for badchar in subchars:
-        rawdata[0] = get_sanatized_column_names(
-            rawdata[0]
-        )  # re.sub(badchar,',',rawdata[0])
+        rawdata[0] = get_sanatized_column_names(rawdata[0])  # re.sub(badchar,',',rawdata[0])
         # rawdata[0] = re.sub(', ',',',rawdata[0])
         # rawdata[0] = re.sub('Â','',rawdata[0])
         # rawdata[0] = re.sub('∞','',rawdata[0])
