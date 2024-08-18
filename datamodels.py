@@ -8,7 +8,7 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.sql.sqltypes import Double
 class Base(DeclarativeBase):
-    pass
+	pass
 
 def genuuid():
 	return str(uuid.uuid4())
@@ -54,9 +54,9 @@ class TorqFile(Base):
 	readtime = Column('readtime', Float)
 	sendtime = Column('sendtime', Float)
 	sent_rows = Column('sent_rows', Integer, default=0, unique=False)
-	read_flag = Column('read_flag', Integer, default=0, unique=False) # 0 = not read, 1 = read
-	send_flag = Column('send_flag', Integer, default=0, unique=False) # 0 = not sent, 1 = sent
-	fixed_flag = Column('fixed_flag', Integer, default=0, unique=False) # 0 = not fixed, 1 = fixed
+	read_flag = Column('read_flag', Integer, default=0, unique=False)  # 0 = not read, 1 = read
+	send_flag = Column('send_flag', Integer, default=0, unique=False)  # 0 = not sent, 1 = sent
+	fixed_flag = Column('fixed_flag', Integer, default=0, unique=False)  # 0 = not fixed, 1 = fixed
 
 	data_flag = Column('data_flag', Integer, default=0, unique=False)
 	# 0 = need tripdata, 1 = have tripdata
@@ -94,6 +94,7 @@ class Torqtrips(Base):
 	tripdate = Column('tripdate', DateTime)
 	profile = Column('profile', Text)
 	time = Column('time', Integer)
+
 	def __init__(self, fileid=None, csvfile=None, csvhash=None, distance=None, fuelcost=None, fuelused=None, distancewhilstconnectedtoobd=None, tripdate=None, profile=None, triptime=None):
 		self.fileid = fileid
 		self.csvfile = csvfile
@@ -113,10 +114,10 @@ class Torqlogs(Base):
 	id: Mapped[int] = mapped_column(primary_key=True)
 	fileid: Mapped[int] = mapped_column(ForeignKey('torqfiles.fileid'))
 	# fileid = Mapped[int] = mapped_column(ForeignKey('torqfiles.fileid')) #
-	# fileid = Column('fileid', Integer) # Mapped[int] = mapped_column(ForeignKey('torqfiles.fileid'))
+	# fileid = Column('fileid', Integer)  # Mapped[int] = mapped_column(ForeignKey('torqfiles.fileid'))
 	gpstime = Column('gpstime', DateTime)
 	devicetime = Column('devicetime', DateTime)
-	longitude = Column('longitude', Double) # 'longitude':np.float64,
+	longitude = Column('longitude', Double)  # 'longitude':np.float64,
 	latitude = Column('latitude', Double)
 	horizontaldilutionofprecision = Column('horizontaldilutionofprecision', Double)
 	bearing = Column('bearing', Double)
@@ -241,7 +242,7 @@ class Torqlogs(Base):
 	barometricpressurefromvpsi = Column('barometricpressurefromvpsi', Double)
 	voltagecontrolmodulev = Column('voltagecontrolmodulev', Double)
 	costpermilekminstantkm = Column('costpermilekminstantkm', Double)
-	costpermilekmtripkm = Column('costpermilekmtripkm', Double) # costpermilekmtripntkm
+	costpermilekmtripkm = Column('costpermilekmtripkm', Double)  # costpermilekmtripntkm
 	gpsspeedmeterssecond = Column('gpsspeedmeterssecond', Double)
 	altitude = Column('altitude', Double)
 	gx = Column('gx', Double)
@@ -277,24 +278,24 @@ class Torqlogs(Base):
 		self.fileid = fileid
 
 
-def database_dropall(engine): # drop all tables
+def database_dropall(engine):  # drop all tables
 	logger.warning(f'[database_dropall] engine:{engine}')
 	Base.metadata.drop_all(bind=engine)
 	Base.metadata.create_all(bind=engine)
 
-def database_init(engine): # create tables
+def database_init(engine):  # create tables
 	try:
 		Base.metadata.create_all(bind=engine)
 	except (OperationalError, AssertionError) as e:
 		logger.error(f'[dbinit] {type(e)} {e}')
 		sys.exit(-1)
 
-def send_torqfiles(filelist=[], session=None, debug=False): # returns list of new files
+def send_torqfiles(filelist=[], session=None, debug=False):  # returns list of new files
 	"""
 	send list of files to db
 	returns list of TorqFile objects to be processed and sent to db
 	"""
-	torqdbfiles = session.query(TorqFile).all() # get list of files from db
+	torqdbfiles = session.query(TorqFile).all()  # get list of files from db
 	hlist = pd.DataFrame(session.query(TorqFile.csvhash).all())
 	if debug:
 		logger.debug(f'filelist: {len(filelist)} dbfiles: {len(torqdbfiles)}  hashes: {len(hlist)} fl: {len(filelist)}')
@@ -302,25 +303,25 @@ def send_torqfiles(filelist=[], session=None, debug=False): # returns list of ne
 	for idx,tf in enumerate(filelist):
 		csvfile = str(tf['csvfile'])
 		csvhash = tf['csvhash']
-		if csvhash in hlist.values: #[k.csvhash for k in torqdbfiles]:
+		if csvhash in hlist.values:  # [k.csvhash for k in torqdbfiles]:
 			# check existing entry
 			fid = session.execute(text(f'select fileid from torqfiles where csvhash="{csvhash}"')).one()[0]
 			check = session.execute(text(f'select count(*) from torqlogs where fileid={fid}')).one()[0]
 			if debug:
-				logger.warning(f'[st {idx}/{len(filelist)}] {csvfile} {fid=} already in db with {check}') # {tf}')
+				logger.warning(f'[st {idx}/{len(filelist)}] {csvfile} {fid=} already in db with {check}')  # {tf}')
 		else:
-			torqfile = TorqFile(csvfile=csvfile,  csvhash=csvhash)
+			torqfile = TorqFile(csvfile=csvfile, csvhash=csvhash)
 			torqfile.send_flag = 1
 			session.add(torqfile)
 
 			if debug:
-				pass # logger.info(f'[st {idx}/{len(filelist)}] {csvfile} not in db tf: {tf} torqfile: {torqfile}')
+				pass   # logger.info(f'[st {idx}/{len(filelist)}] {csvfile} not in db tf: {tf} torqfile: {torqfile}')
 			newfiles.append(torqfile)
 	session.commit()
 	torqdbfiles = session.query(TorqFile).all()
 	# newfiles = [k for k in filelist if k['csvhash'] not in hlist]
 	logger.info(f'[st] done sending {len(newfiles)} newfilelist torqdbfiles: {len(torqdbfiles)}')
-	return newfiles # return list of new files
+	return newfiles   # return list of new files
 
 
 if __name__ == '__main__':

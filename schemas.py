@@ -19,7 +19,7 @@ ncc = {
     '0200kphtimes': "kphTime0200",
     '100200kphtimes': "kphTime100200",
     '030mphtimes': "mphtimes030",
-    '060mphtimes' : "mphtimes060",
+    '060mphtimes': "mphtimes060",
     '60130mphtimes': "mphtimes60130",
     '8mphtimes0100': "mphtimes01008",
     '6080mphtimes': "mphtimes6080",
@@ -196,9 +196,9 @@ ncc = {
 }
 
 schema_datatypes = {
-    #'fileid': pl.Int64,
-    #'gpstime': DateTime,
-    #'devicetime': DateTime,
+    # 'fileid': pl.Int64,
+    # 'gpstime': DateTime,
+    # 'devicetime': DateTime,
     'barometricpressurefromvehiclepsi': pl.Float64,
     'airfuelratiomeasured1': pl.Float64,
     'barometricpressurefromvehiclekpa': pl.Float64,

@@ -240,23 +240,11 @@ def get_files_to_send(session: sessionmaker, args):
 	files_to_send = []
 	all_db_files = []
 	unread_dbfiles = []
-	csvfiles = [
-		str(k)
-		for k in Path(args.logpath).glob("*.csv")
-		if k.stat().st_size > MIN_FILESIZE
-	]
-	smallcsvfiles = [
-		str(k)
-		for k in Path(args.logpath).glob("*.csv")
-		if k.stat().st_size < MIN_FILESIZE
-	]
+	csvfiles = [str(k) for k in Path(args.logpath).glob("*.csv") if k.stat().st_size > MIN_FILESIZE]
+	smallcsvfiles = [str(k) for k in Path(args.logpath).glob("*.csv") if k.stat().st_size < MIN_FILESIZE]
 	try:
 		all_db_files = session.query(TorqFile).count()
-		unread_dbfiles = (session.query(TorqFile)
-			.filter(TorqFile.read_flag == 0)
-			.filter(TorqFile.error_flag == 0)
-			.all()
-		)
+		unread_dbfiles = (session.query(TorqFile).filter(TorqFile.read_flag == 0).filter(TorqFile.error_flag == 0).all())
 		read_dbfiles = session.query(TorqFile).filter(TorqFile.read_flag == 1).all()
 		error_dbfiles = session.query(TorqFile).filter(TorqFile.error_flag != 0).all()
 		files_to_send = set(csvfiles) - set([k.csvfile for k in read_dbfiles])
@@ -275,12 +263,8 @@ def get_files_to_send(session: sessionmaker, args):
 		files_to_send = sorted(files_to_send)  # sort by filename (date)
 		if args.samplemode:
 			# select small number of random logs
-			files_to_send = [
-				random.choice(files_to_send) for k in range(random.randint(10, 30))
-			]
-
+			files_to_send = [random.choice(files_to_send) for k in range(random.randint(10, 30))]
 		return files_to_send
-
 
 def date_column_fixer(data: pd.DataFrame = None, datecol: str = None, f: str = None):
 	"""
@@ -426,15 +410,16 @@ def db_set_file_flag(session, filename=None, flag=None, flagval=None, sent_rows=
 					logger.warning(f"no gpstime found for {filename} using devicetime {datemin=}")
 					if isinstance(datemin, str):
 						datemin = datetime.fromisoformat(datemin)
-					datemax = session.execute(text(f"select gpstime from torqlogs where fileid={torqfile.fileid} order by gpstime desc limit 1 ")).all()[0][0]
-					if not datemax:
-						datemax = session.execute(text(f"select devicetime from torqlogs where fileid={torqfile.fileid} order by devicetime desc limit 1 ")).all()[0][0]
-						logger.warning(f"no gpstime found for {filename} using devicetime {datemax=}")
-					if isinstance(datemax, str):
-						datemax = datetime.fromisoformat(datemax)
-					torqfile.trip_start = datemin
-					torqfile.trip_end = datemax
-					torqfile.trip_duration = (datemax - datemin).total_seconds()
+				datemax = session.execute(text(f"select gpstime from torqlogs where fileid={torqfile.fileid} order by gpstime desc limit 1 ")).all()[0][0]
+				if not datemax:
+					datemax = session.execute(text(f"select devicetime from torqlogs where fileid={torqfile.fileid} order by devicetime desc limit 1 ")).all()[0][0]
+					logger.warning(f"no gpstime found for {filename} using devicetime {datemax=}")
+				if isinstance(datemax, str):
+					datemax = datetime.fromisoformat(datemax)
+				torqfile.trip_start = datemin
+				torqfile.trip_end = datemax
+				torqfile.trip_duration = (datemax - datemin).total_seconds()
+				logger.info(f'torqfile: {torqfile} {datemin=} {datemax=}')
 			except TypeError as e:
 				logger.warning(f"{e} while calculating trip_duration for {filename} ")  # {datemin=} {datemax=}
 				torqfile.trip_duration = 0
@@ -497,12 +482,11 @@ def cli_main(args):
 		for idx, f in enumerate(fixed_newfiles["files_to_read"]):
 			readstart = datetime.now()
 			logger.debug(f'[{idx}/{len(fixed_newfiles["files_to_read"])}] reading {Path(f).name} {Path(f).stat().st_size} bytes')
-			if split_check(f):
+			if split_check(f):  # todo: maybe move this check elsewhere and append to filelist before arriving here ....
 				if not args.repairsplit:
 					logger.warning(f"{f} needs splitting args.repairsplit={args.repairsplit}")
 					broken_files.append(f)
 					db_set_file_flag(session, filename=f, flag="split")
-					continue
 				elif args.repairsplit:
 					logger.warning(f"{f} needs splitting, sending to split_file ...")
 					try:
@@ -584,7 +568,6 @@ def cli_main(args):
 		if len(broken_files) > 0:
 			logger.warning(f"[*] {len(broken_files)} {broken_files}")
 			# todo select split files from db and fix them, for now use the list
-
 			if args.repairsplit:
 				files_to_split = session.execute(text("select csvfile from torqfiles where error_flag=2")).all()
 				logger.info(f"found {len(files_to_split)} files to split")
@@ -608,8 +591,7 @@ def cli_main(args):
 		# get columns from all log files in the path
 		stats, columns = get_cols(args.logpath, debug=args.debug)
 		# columns = sorted(columns, key=lambda x: columns[x]['count'], reverse=True)
-		columns = sorted(columns, key=lambda x: (columns[x]["count"], columns[x]), reverse=True
-		)
+		columns = sorted(columns, key=lambda x: (columns[x]["count"], columns[x]), reverse=True)
 		for c in columns:
 			if "date" in c or "time" in c:
 				lineout = f"{c} = Column('{c}', DateTime)"
