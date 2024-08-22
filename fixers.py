@@ -40,9 +40,7 @@ def replace_headers(newfiles: list, args):
     if len(res["errorfiles"]) > 0:
         logger.warning(f"errors: {len(res['errorfiles'])} {res['errorfiles']}")
     else:
-        logger.info(
-            f'replace_headers fixed {len(res["files_to_read"])} / {len(res["errorfiles"])} / {len(newfiles)} files'
-        )
+        logger.info(f'replace_headers fixed {len(res["files_to_read"])} / {len(res["errorfiles"])} / {len(newfiles)} files')
     return res
 
 

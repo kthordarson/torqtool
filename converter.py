@@ -57,8 +57,9 @@ def read_csv_file(logfile, args):
 	"""
 	# todo handle missing gpstime, if not present, copy from devicetime
 	t0 = datetime.now()
+	nullvals = ['-','∞']
 	try:
-		data = pl.read_csv(logfile, ignore_errors=True, try_parse_dates=True, truncate_ragged_lines=True, n_threads=4, use_pyarrow=True)
+		data = pl.read_csv(logfile, ignore_errors=True, try_parse_dates=True, truncate_ragged_lines=True, n_threads=4, use_pyarrow=True,null_values=nullvals)
 	except TypeError as e:
 		logger.error(f"typeerror {type(e)} {e} {logfile}")
 		raise e
@@ -66,48 +67,76 @@ def read_csv_file(logfile, args):
 		msg = f"NoDataError {type(e)} {e} {logfile}"
 		logger.error(msg)
 		raise Polarsreaderror(msg)
+	# data.filter(pl.col('gpstime').str.starts_with('T'))
+	if 'gpstime' in data.columns:
+		data = data.filter(pl.col('gpstime') != '-')
+	elif 'GPS Time' in data.columns:
+		data = data.filter(pl.col('GPS Time') != '-')
 	# filtered_data = data.drop_nulls() # drop columns with all null values
 	df = data.to_pandas()
-
+	return df
 	# do the fixing here ˆž 0ˆž â  Ã¢ÂÂ â  â° âÂ°F â
-	asbadval = "Ã¢Â\x88Â\x9e"
-	bc = "â\x88\x9e"
+	# asbadval = "Ã¢Â\x88Â\x9e"
+	# bc = "â\x88\x9e"
 
-	bcsymbs = [k for k in df.columns if bc in df[k].values]
-	for col in bcsymbs:
-		df[col] = df[col].replace(bc, 0)
+	# bcsymbs = [k for k in df.columns if bc in df[k].values]
+	# for col in bcsymbs:
+	# 	df[col] = df[col].replace(bc, 0)
 
-	aasymbs = [k for k in df.columns if asbadval in df[k].values]
-	for col in aasymbs:
-		df[col] = df[col].replace(asbadval, 0)
+	# aasymbs = [k for k in df.columns if asbadval in df[k].values]
+	# for col in aasymbs:
+	# 	df[col] = df[col].replace(asbadval, 0)
 
-	asymbs = [k for k in df.columns if "â" in df[k].values]
-	for col in asymbs:
-		df[col] = df[col].replace("â", 0)
+	# asymbs = [k for k in df.columns if "â" in df[k].values]
+	# for col in asymbs:
+	# 	df[col] = df[col].replace("â", 0)
 
-	zsymbs = [k for k in df.columns if "ž" in df[k].values]
-	for col in zsymbs:
-		df[col] = df[col].replace("ž", 0)
+	# zsymbs = [k for k in df.columns if "ž" in df[k].values]
+	# for col in zsymbs:
+	# 	df[col] = df[col].replace("ž", 0)
 
-	zsymbs = [k for k in df.columns if "0ˆž" in df[k].values]
-	for col in zsymbs:
-		df[col] = df[col].replace("0ˆž", 0)
+	# zsymbs = [k for k in df.columns if "0ˆž" in df[k].values]
+	# for col in zsymbs:
+	# 	df[col] = df[col].replace("0ˆž", 0)
 
-	infsymbs = [k for k in df.columns if "∞" in df[k].values]
-	for col in infsymbs:
-		df[col] = df[col].replace("∞", 0)
+	# infsymbs = [k for k in df.columns if "∞" in df[k].values]
+	# for col in infsymbs:
+	# 	df[col] = df[col].replace("∞", 0)
 
-	dashfix = [k for k in df.columns if "-" in df[k].values]
-	for col in dashfix:
-		df[col] = df[col].replace("-", 0)
+	# nanfix = [k for k in df.columns if "NaN" in df[k].values]
+	# for col in nanfix:
+	# 	df[col] = df[col].replace("NaN", 0)
 
-	nanfix = [k for k in df.columns if "NaN" in df[k].values]
-	for col in nanfix:
-		df[col] = df[col].replace("NaN", 0)
+	# dashfix = [k for k in df.columns if "-" in df[k].values]
+	# for col in dashfix:
+	# 	df[col] = df[col].replace("-", 0)
 
+
+def bigval_check_v2(df,args):
 	# bigval check v2
+	logfile = None
+	t0 = 0
 	longcheck = None
 	string_check = []
+	probcols = []
+	data = df
+	for c in data.columns:
+		try:
+			dx = data.filter(pl.col(c) == '∞')
+			probcols.append(c)
+			# logger.warning(f'filtering {c}')
+		except Exception as e:
+			pass  #  logger.error(f'err {e}')
+	if len(probcols) > 0:
+		logger.warning(f"found {len(probcols)} problem  in {logfile}")
+		for c in probcols:
+			len0 = len(data)
+			data = data.filter(pl.col(c) != '∞')
+			len1 = len(data)
+			if len0 != len1:
+				logger.warning(f"fixing {c} in {len0}/{len1} {logfile}")
+			else:
+				logger.info(f"fixing {c} in {len0}/{len1} {logfile}")
 	for col in df.columns:
 		# must be longer than 13, must be str and not contain 'time'
 		longcheck = None
@@ -238,12 +267,11 @@ def get_files_to_send(session: sessionmaker, args):
 	returns list of files not in the database, filenames as str, NOT Path!
 	"""
 	files_to_send = []
-	all_db_files = []
 	unread_dbfiles = []
 	csvfiles = [str(k) for k in Path(args.logpath).glob("*.csv") if k.stat().st_size > MIN_FILESIZE]
 	smallcsvfiles = [str(k) for k in Path(args.logpath).glob("*.csv") if k.stat().st_size < MIN_FILESIZE]
 	try:
-		all_db_files = session.query(TorqFile).count()
+		dbfilecount = session.query(TorqFile).count()
 		unread_dbfiles = (session.query(TorqFile).filter(TorqFile.read_flag == 0).filter(TorqFile.error_flag == 0).all())
 		read_dbfiles = session.query(TorqFile).filter(TorqFile.read_flag == 1).all()
 		error_dbfiles = session.query(TorqFile).filter(TorqFile.error_flag != 0).all()
@@ -255,9 +283,9 @@ def get_files_to_send(session: sessionmaker, args):
 	finally:
 		session.close()
 		if len(files_to_send) > 0:
-			logger.info(f"found {len(files_to_send)} files_to_send, skipping {len(smallcsvfiles)} files under MIN_FILESIZE - unread_dbfiles:{len(unread_dbfiles)} error_dbfiles: {len(error_dbfiles)} all_db_files:{all_db_files}")
+			logger.info(f"found {len(files_to_send)} files_to_send, skipping {len(smallcsvfiles)} files under MIN_FILESIZE - unread_dbfiles:{len(unread_dbfiles)} error_dbfiles: {len(error_dbfiles)} all_db_files:{dbfilecount}")
 		else:
-			logger.warning(f"no valid files found in {args.logpath} ! dbfiles: all= {len(all_db_files)} / unread= {len(unread_dbfiles)} csvfiles:{len(csvfiles)} ... Exit!")
+			logger.warning(f"no valid files found in {args.logpath} ! dbfiles: all= {dbfilecount} / unread= {len(unread_dbfiles)} csvfiles:{len(csvfiles)} ... Exit!")
 			sys.exit(-1)
 
 		files_to_send = sorted(files_to_send)  # sort by filename (date)
@@ -294,11 +322,11 @@ def date_column_fixer(data: pd.DataFrame = None, datecol: str = None, f: str = N
 			case 20:
 				fixed_datecol = pd.DataFrame({datecol: [datetime.strptime(k, fmt_20).astimezone(pytz.timezone("UTC")) for k in fixed_datecol if isinstance(k, str)]})
 			case 24:
-				fixed_datecol = pd.DataFrame({datecol: [datetime.strptime(k, fmt_24).astimezone(pytz.timezone("UTC")) for k in fixed_datecol if isinstance(k, str)]})
+				fixed_datecol = pd.DataFrame({datecol: [datetime.strptime(k, fmt_24).astimezone(pytz.timezone("UTC")) for k in fixed_datecol if isinstance(k, str) and 'time' not in k.lower()]})
 			case 26:
 				fixed_datecol = pd.DataFrame({datecol: [datetime.strptime(k, fmt_26).astimezone(pytz.timezone("UTC")) for k in fixed_datecol if isinstance(k, str)]})
 			case 28:
-				fixed_datecol = pd.DataFrame({datecol: [datetime.strptime(k, fmt_28).astimezone(pytz.timezone("UTC")) for k in fixed_datecol if isinstance(k, str)]})
+				fixed_datecol = pd.DataFrame({datecol: [datetime.strptime(k, fmt_28).astimezone(pytz.timezone("UTC")) for k in fixed_datecol if isinstance(k, str) and 'time' not in k.lower()]})
 			case 30:
 				fixed_datecol = pd.DataFrame({datecol: [datetime.strptime(k, fmt_30).astimezone(pytz.timezone("UTC")) for k in fixed_datecol if isinstance(k, str)]})
 			case 34:
