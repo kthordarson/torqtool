@@ -1,3 +1,5 @@
+*.sql
+old*
 *.db*
 test*
 temp*

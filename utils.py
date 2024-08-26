@@ -27,7 +27,6 @@ from datamodels import TorqFile, database_init
 
 MIN_FILESIZE = 3000
 
-
 def get_parser(appname):
 	parser = argparse.ArgumentParser(description=appname)
 	parser.add_argument("--fixer", default=False, help="run fixer, set --bakpath", action="store_true", dest="fixer")
@@ -44,7 +43,7 @@ def get_parser(appname):
 	parser.add_argument("--threadmode", default="ppe", help="threadmode ppe/oldppe/tpe", action="store")
 	parser.add_argument("--torqdata", default=False, help="create torqdata", action="store_true", dest="torqdata", )
 	parser.add_argument("--transfer", default=False, help="transfer old logs, set oldlogpath to location of old triplogs", action="store_true", dest="transfer", )
-	parser.add_argument("--bakpath", nargs="?", default="/home/kth/development/torq/backups2", help="where to put backups", action="store", )
+	parser.add_argument("--bakpath", nargs="?", default="/home/kth/development/torq/backups3", help="where to put backups", action="store", )
 	parser.add_argument("--check-file", default=False, help="check database", action="store_true", dest="check_file", )
 	parser.add_argument("--chunks", nargs="?", default="4", help="chunks", action="store")
 	parser.add_argument("--combinecsv", default=False, help="make big csv", action="store_true", dest="combinecsv", )
@@ -58,6 +57,8 @@ def get_parser(appname):
 	parser.add_argument("--dbuser", default="torq", help="dbname", action="store")
 	parser.add_argument("--dbfile", default="torqfiskur.db", help="database file", action="store")
 	parser.add_argument("--db_limit", default=False, help="db_limit", action="store", dest="db_limit")
+	parser.add_argument("--db_rowlimit", default=False, help="db_rowlimit", action="store", dest="db_rowlimit")
+	parser.add_argument("--db_minrows", default=100, help="db_minrows", action="store", dest="db_minrows")
 	parser.add_argument("--dump-db", nargs="?", default=None, help="dump database to file", action="store", )
 	parser.add_argument("--file", nargs="?", default=".", help="path to single csv file", action="store")
 	parser.add_argument("--logpath", nargs="?", default=".", help="path to csv files", action="store")

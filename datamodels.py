@@ -32,15 +32,24 @@ class Speeds(Base):
 	speedgpskmh = Column('speedgpskmh', Float, default=0, unique=False)
 	gpstime = Column('gpstime', DateTime)
 
-class Startends(Base):
-	__tablename__ = 'startends'
-	index: Mapped[int] = mapped_column(primary_key=True)
-	fileid: Mapped[int] = mapped_column(ForeignKey('torqfiles.fileid'))
+class Startpos(Base):
+	__tablename__ = 'startpos'
+	startid: Mapped[int] = mapped_column(primary_key=True)
+	# fileid: Mapped[int] = mapped_column(ForeignKey('torqfiles.fileid'))
+	latstart = Column('latstart', Float, default=0, unique=False)
+	lonstart = Column('lonstart', Float, default=0, unique=False)
+	count = Column('count', Integer, default=0, unique=False)
+	label = Column('label', Text)
 
-class Columnstats(Base):
-	__tablename__ = 'columnstats'
-	index: Mapped[int] = mapped_column(primary_key=True)
-	column = Column('column', Text)
+
+class Endpos(Base):
+	__tablename__ = 'endpos'
+	endid: Mapped[int] = mapped_column(primary_key=True)
+	# fileid: Mapped[int] = mapped_column(ForeignKey('torqfiles.fileid'))
+	latend = Column('latend', Float, default=0, unique=False)
+	lonend = Column('lonend', Float, default=0, unique=False)
+	count = Column('count', Integer, default=0, unique=False)
+	label = Column('label', Text)
 
 class TorqFile(Base):
 	__tablename__ = 'torqfiles'
@@ -218,6 +227,10 @@ class Torqlogs(Base):
 	dpftemperaturec = Column('dpftemperaturec', Double)
 	dpfpressurebar = Column('dpfpressurebar', Double)
 	driversdemandenginetorque = Column('driversdemandenginetorque', Double)
+	o2sensor1widerangeequivalenceratio = Column('o2sensor1widerangeequivalenceratio', Double)
+	o2sensor1widerangevoltagev = Column('o2sensor1widerangevoltagev', Double)
+	voltagecontrolmodulev = Column('voltagecontrolmodulev', Double)
+	volumetricefficiencycalculated = Column('volumetricefficiencycalculated', Double)
 	# 0200kphtimes dpfpressurepsi 030mphtimes 060mphtimes 14miletimes 18miletimes 1000kphtimes
 
 	def __init__(self, fileid):

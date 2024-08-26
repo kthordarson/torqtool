@@ -63,7 +63,8 @@ def fix_column_names(csvfile: str, args):
         # rawdata[0] = re.sub('â°','',rawdata[0])
         # rawdata[0] = re.sub('â','',rawdata[0])
         if not args.skipwrites:
-            bakfile = f"{csvfile}.colfixbak"
+            bf = f"{csvfile}.colfixbak"
+            bakfile = Path(args.bakpath).joinpath(Path(bf).parts[-1])
             if not os.path.exists(bakfile):
                 shutil.copy(csvfile, bakfile)
                 logger.info(f"writing columns to {csvfile}")
