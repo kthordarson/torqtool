@@ -14,6 +14,7 @@ import pytz
 from loguru import logger
 import sqlalchemy
 from sqlalchemy import text
+from sqlalchemy.exc import ArgumentError, DataError, IntegrityError, InternalError, OperationalError, ProgrammingError
 from sqlalchemy.exc import DataError, OperationalError, NoResultFound
 from sqlalchemy.orm.exc import DetachedInstanceError
 from sqlalchemy.orm import sessionmaker
@@ -107,6 +108,10 @@ def send_filename_to_db(session:sessionmaker, args:argparse.Namespace, filename:
 		session.commit()
 		# session.close()
 		return t.fileid
+	except IntegrityError as e:
+		# session.close()
+		logger.warning(f"{type(e)} {e} from {filename}")
+		return None
 	except Exception as e:
 		# session.close()
 		logger.error(f"unhandled {type(e)} {e} from {filename}")
@@ -125,10 +130,14 @@ def send_data_to_db(args: argparse.Namespace,
 	csvhash = md5(open(csvfilename, "rb").read()).hexdigest()
 
 	# user only stem part of filename in db
-	t = TorqFile(csvfile=Path(csvfilename).parts[-1], csvhash=csvhash)
-
-	session.add(t)
-	session.commit()
+	try:
+		t = TorqFile(csvfile=Path(csvfilename).parts[-1], csvhash=csvhash)
+		session.add(t)
+		session.commit()
+	except IntegrityError as e:
+		# session.close()
+		logger.error(f"{type(e)} {e} from {csvfilename}")
+		return None
 	todropcols = []
 	send_results = {'fileid': t.fileid, 'sent_rows': 0}
 	fileidcol = pd.DataFrame([t.fileid for k in range(len(data))], columns=["fileid",],)

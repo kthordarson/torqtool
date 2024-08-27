@@ -95,29 +95,33 @@ def update_torqfile(args: argparse.Namespace, fileinfo: dict):
 	if len(sp_updates) > 0:
 		for s in sp_updates:
 			s.count += 1
-			logger.warning(f"startpos already exists for {torqfile.fileid} {s.count=} {start_pos=}")
+			torqfile.startid = s.startid
+			logger.warning(f"startpos already exists for {torqfile.fileid} {torqfile.startid} {s.count=} {start_pos=}")
 			session.add(s)
 			session.commit()
 	else:
-		sp = Startpos(latstart=start_pos[1], lonstart=start_pos[2])
+		sp = Startpos(latstart=start_pos['latstart'], lonstart=start_pos['lonstart'],label=torqfile.csvfile)
 		sp.count = 1
 		session.add(sp)
 		session.commit()
+		torqfile.startid = sp.startid
+	session.add(torqfile)
+	session.commit()
 	# session.commit()
 	# end_pos = session.execute(text(f'select fileid,latitude as latend, longitude as lonend from torqlogs where fileid={torqfile.fileid} order by gpstime desc limit 1')).one()
-	end_pos = {'latend': float(datemax.loc[0].latend), 'lonend': float(datemax.loc[0].lonend)}
-	ep_updates = session.query(Endpos).filter(Endpos.latend == end_pos['latend']).filter(Endpos.lonend == end_pos['lonend']).all()
-	if len(ep_updates) > 0:
-		for e in ep_updates:
-			e.count += 1
-			logger.warning(f"endpos already exists for {torqfile.fileid} {e.count=} {end_pos=}")
-			session.add(e)
-			session.commit()
-	else:
-		ep = Endpos(latend=end_pos[1], lonend=end_pos[2])
-		ep.count = 1
-		session.add(ep)
-		session.commit()
+	# end_pos = {'latend': float(datemax.loc[0].latend), 'lonend': float(datemax.loc[0].lonend)}
+	# ep_updates = session.query(Endpos).filter(Endpos.latend == end_pos['latend']).filter(Endpos.lonend == end_pos['lonend']).all()
+	# if len(ep_updates) > 0:
+	# 	for e in ep_updates:
+	# 		e.count += 1
+	# 		logger.warning(f"endpos already exists for {torqfile.fileid} {e.count=} {end_pos=}")
+	# 		session.add(e)
+	# 		session.commit()
+	# else:
+	# 	ep = Endpos(latend=end_pos[1], lonend=end_pos[2])
+	# 	ep.count = 1
+	# 	session.add(ep)
+	# 	session.commit()
 
 	# session.commit()
 	if (datemin).empty or (datemax).empty or total_rows_db == 0:
