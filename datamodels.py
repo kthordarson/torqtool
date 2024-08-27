@@ -56,6 +56,7 @@ class TorqFile(Base):
 	fileid: Mapped[int] = mapped_column(primary_key=True)
 	#startid: Mapped[int] = mapped_column(ForeignKey('startpos.startid'))
 	startid = Column('startid', Integer, default=0, unique=False)
+	endid = Column('endid', Integer, default=0, unique=False)
 	csvfile = Column('csvfile', Text)
 	csvhash = Column('csvhash', Text)
 	import_date = Column('import_date', DateTime)

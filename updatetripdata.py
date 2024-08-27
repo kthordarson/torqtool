@@ -91,7 +91,9 @@ def update_torqfile(args: argparse.Namespace, fileinfo: dict):
 	#start_pos = datemin.values[0]
 	# todo check if startpos exists before creating new
 	start_pos = {'latstart': float(datemin.loc[0].latstart), 'lonstart': float(datemin.loc[0].lonstart)}
+	end_pos = {'latend': float(datemax.loc[0].latend), 'lonend': float(datemax.loc[0].lonend)}
 	sp_updates = session.query(Startpos).filter(Startpos.latstart == start_pos['latstart']).filter(Startpos.lonstart == start_pos['lonstart']).all()
+	ep_updates = session.query(Endpos).filter(Endpos.latend == end_pos['latend']).filter(Endpos.lonend == end_pos['lonend']).all()
 	if len(sp_updates) > 0:
 		for s in sp_updates:
 			s.count += 1
