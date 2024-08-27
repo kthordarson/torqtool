@@ -35,7 +35,7 @@ class Speeds(Base):
 class Startpos(Base):
 	__tablename__ = 'startpos'
 	startid: Mapped[int] = mapped_column(primary_key=True)
-	# fileid: Mapped[int] = mapped_column(ForeignKey('torqfiles.fileid'))
+	#fileid: Mapped[int] = mapped_column(ForeignKey('torqfiles.fileid'))
 	latstart = Column('latstart', Float, default=0, unique=False)
 	lonstart = Column('lonstart', Float, default=0, unique=False)
 	count = Column('count', Integer, default=0, unique=False)
@@ -54,6 +54,8 @@ class Endpos(Base):
 class TorqFile(Base):
 	__tablename__ = 'torqfiles'
 	fileid: Mapped[int] = mapped_column(primary_key=True)
+	#startid: Mapped[int] = mapped_column(ForeignKey('startpos.startid'))
+	startid = Column('startid', Integer, default=0, unique=False)
 	csvfile = Column('csvfile', Text)
 	csvhash = Column('csvhash', Text)
 	import_date = Column('import_date', DateTime)
@@ -66,10 +68,7 @@ class TorqFile(Base):
 	read_flag = Column('read_flag', Integer, default=0, unique=False)  # 0 = not read, 1 = read
 	send_flag = Column('send_flag', Integer, default=0, unique=False)  # 0 = not sent, 1 = sent
 	fixed_flag = Column('fixed_flag', Integer, default=0, unique=False)  # 0 = not fixed, 1 = fixed
-
-	data_flag = Column('data_flag', Integer, default=0, unique=False)
-	# 0 = need tripdata, 1 = have tripdata
-
+	data_flag = Column('data_flag', Integer, default=0, unique=False)	# 0 = need tripdata, 1 = have tripdata
 	error_flag = Column('error_flag', Integer, default=0, unique=False)
 	# 0 = no error,
 	# 1 = dupe entry in db,
