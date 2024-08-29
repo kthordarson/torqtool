@@ -60,7 +60,7 @@ def read_csv_file(logfile:str, args:argparse.Namespace):
 	t0 = datetime.now()
 	nullvals = ['-','∞']
 	try:
-		data0 = pl.read_csv(logfile, ignore_errors=True, try_parse_dates=True, truncate_ragged_lines=False, n_threads=4, use_pyarrow=True, null_values=nullvals, schema=dataschema, infer_schema=True)
+		data0 = pl.read_csv(logfile, ignore_errors=True, try_parse_dates=True, truncate_ragged_lines=False, n_threads=4, use_pyarrow=True, null_values=nullvals, schema=dataschema)  # , infer_schema=True
 	except pl.exceptions.ShapeError as e:
 		logger.error(f"{type(e)} {e} {logfile}")
 		raise e
@@ -80,17 +80,25 @@ def read_csv_file(logfile:str, args:argparse.Namespace):
 	if len(data) != len(data0):
 		logger.warning(f'filtered {len(data0)-len(data)} rows with - in gpstime {logfile}')
 	dupe_rows = [(idx,k) for idx,k in enumerate(data['gpstime']) if 'GPS Time' in k]
+	if len(dupe_rows) > 0:
+		logger.warning(f"found {len(dupe_rows)} dupe GPS Time in {logfile} ")
 	for row in dupe_rows:
 		datebefore = convert_string_to_datetime(data['gpstime'][row[0]-1])
 		dateafter = convert_string_to_datetime(data['gpstime'][row[0]+1])
 		date_diff = (dateafter - datebefore).total_seconds()
-		if date_diff > 10:
-			logger.warning(f"dupe GPS Time in {logfile} {row} date_diff:{date_diff}")
+		if date_diff > 60:  # todo check drop or fix file here ?
+			logger.warning(f"skipping {logfile} {row} date_diff:{date_diff} dupe GPS Time ")
 			return pd.DataFrame()
 	data_filter = data.filter(pl.col('gpstime') != 'GPS Time')
 	if len(data) != len(data_filter):
 		logger.warning(f'filtered {len(data)-len(data_filter)} rows with - in GPS Time {logfile}')
 
+	# check trip duration....
+	# starttime = convert_string_to_datetime(data_filter['gpstime'][0])
+	tripdur = (convert_string_to_datetime(data['gpstime'][-1]) - convert_string_to_datetime(data['gpstime'][0])).total_seconds()
+	if tripdur > 86400:  # todo maybe split file here ?
+		logger.warning(f'skipping {logfile} {tripdur=}')
+		return pd.DataFrame()
 	df = data_filter.to_pandas()
 	return df
 
@@ -142,10 +150,11 @@ def send_data_to_db(args: argparse.Namespace,
 	send_results = {'fileid': t.fileid, 'sent_rows': 0}
 	fileidcol = pd.DataFrame([t.fileid for k in range(len(data))], columns=["fileid",],)
 	data = pd.concat((data, fileidcol), axis=1)
-	logger.debug(f'start sending {len(data)} rows to db {csvfilename=} {t.fileid=}')
+
 	try:
 		sr = data.to_sql("torqlogs", con=engine, if_exists="append", index=False)
-		send_results["sent_rows"] = sr
+		send_results["sent_rows"] = session.execute(text(f"select count(*) from torqlogs where fileid={t.fileid} ; ")).one()[0]
+		logger.debug(f'{csvfilename=} {t.fileid=} sent {len(data)} rows to db  sentrows: {send_results["sent_rows"]}')
 	except DataError as e:
 		logger.warning(f"{type(e)} {e.args[0]} {csvfilename=}")
 	except (sqlalchemy.exc.OperationalError, OperationalError, sqlite3.OperationalError,) as e:
@@ -163,15 +172,16 @@ def get_files_to_send(session: sessionmaker, args):
 	"""
 	files_to_send = []
 	unread_dbfiles = []
-	csvfiles = [str(k) for k in Path(args.logpath).glob("*.csv") if k.stat().st_size > MIN_FILESIZE]
+	csvfiles = [str(k) for k in Path(args.logpath).glob("**/trackLog-*.csv") if k.stat().st_size > MIN_FILESIZE]
 	csvlist = [Path(k).parts[-1] for k in csvfiles]
-	smallcsvfiles = [str(k) for k in Path(args.logpath).glob("*.csv") if k.stat().st_size < MIN_FILESIZE]
+	smallcsvfiles = [str(k) for k in Path(args.logpath).glob("trackLog-*.csv") if k.stat().st_size < MIN_FILESIZE]
 	try:
 		dbfilecount = session.query(TorqFile).count()
 		alldbfiles = session.query(TorqFile).all()
 		dbfnlist = [k.csvfile for k in  alldbfiles]
 		# files_to_send = [k for k in csvlist if not k in dbfnlist]
-		files_to_send = [f'{args.logpath}/{k}' for k in csvlist if k not in dbfnlist]
+		# files_to_send = [f'{args.logpath}/{k}' for k in csvlist if k not in dbfnlist]
+		files_to_send = [k for k in csvfiles if Path(k).parts[-1] not in dbfnlist]
 		skipped_count = len([k for k in csvlist if k in dbfnlist])
 		unread_dbfiles = (session.query(TorqFile).filter(TorqFile.read_flag == 0).filter(TorqFile.error_flag == 0).all())
 		read_dbfiles = session.query(TorqFile).filter(TorqFile.read_flag == 1).all()
@@ -301,7 +311,17 @@ def data_fixer(data: pd.DataFrame, f):
 	return data  # fixed_data  if not fixed_data.empty else data
 
 def cli_main(args):
-	if args.scanpath:
+	if args.dbinfo:
+		logcount = 0
+		try:
+			engine, session = get_engine_session(args)
+			logcount = session.execute(text(f"select count(*) from torqlogs"))
+		except Exception as e:
+			logger.error(f'error {type(e)} {e}')
+			sys.exit(-1)
+		finally:
+			logger.info(f'{logcount=}')
+	elif args.scanpath:
 		# first collect sanatized column headers
 		# ncc, errorfiles = new_columns_collector(logdir=args.logpath)
 		# check if any of the files in args.logpath have been read, skip these
@@ -329,6 +349,9 @@ def cli_main(args):
 			except Exception as e:
 				logger.error(f"unhandled {type(e)} {e} for {csvfilename}")
 				continue
+			if len(data) == 0:
+				logger.warning(f'no data in {csvfilename}')
+				continue
 			# if read ok, send data
 			readt = (datetime.now()-readstart).total_seconds()
 			# logger.info(f'[{idx}/{len(newfiles)}] readt: {readt}')
@@ -348,7 +371,13 @@ def cli_main(args):
 					'fileid': send_result['fileid'],
 					'sent_rows': send_result['sent_rows'],
 					'sendtime': sendt,
-					'readtime': readt
+					'readtime': readt,
+					'dtripstart': data['gpstime'][0],
+					'dtripend': data['gpstime'][len(data)-1],
+					'dlatstart': float(data['latitude'][0]),
+					'dlonstart': float(data['longitude'][0]),
+					'dlatend': float(data['latitude'][len(data)-1]),
+					'dlonend': float(data['longitude'][len(data)-1]),
 				}
 				try:
 					upchk = update_torqfile(args, fileinfo)
