@@ -7,8 +7,7 @@ from loguru import logger
 import sys
 from sqlalchemy import (text)
 from sqlalchemy.exc import (OperationalError, DuplicateColumnError)
-from utils import get_parser
-from utils import get_engine_session
+from utils import get_parser, get_engine_session, convert_string_to_datetime
 from schemas import schema_datatypes, dataschema
 from datamodels import TorqFile, Startpos, Endpos
 
@@ -79,8 +78,7 @@ def send_db_filestats(args, todatabase=True, droptable=True, results=None):
 		return None
 
 
-def update_torqfile(args: argparse.Namespace, fileinfo: dict):
-	# todo fix this is very slow
+def oldspupdates(args: argparse.Namespace, fileinfo: dict):
 	engine, session = get_engine_session(args)
 	fileid = fileinfo.get("fileid", None)
 	torqfile = session.query(TorqFile).filter(TorqFile.fileid == fileid).first()
@@ -101,53 +99,82 @@ def update_torqfile(args: argparse.Namespace, fileinfo: dict):
 			logger.warning(f"startpos already exists for {torqfile.fileid} {torqfile.startid} {s.count=} {start_pos=}")
 			session.add(s)
 			session.commit()
-	else:
-		sp = Startpos(latstart=start_pos['latstart'], lonstart=start_pos['lonstart'],label=torqfile.csvfile)
-		sp.count = 1
-		session.add(sp)
-		session.commit()
-		torqfile.startid = sp.startid
+		else:
+			sp = Startpos(latstart=start_pos['latstart'], lonstart=start_pos['lonstart'],label=torqfile.csvfile)
+			sp.count = 1
+			session.add(sp)
+			session.commit()
+			torqfile.startid = sp.startid
 	session.add(torqfile)
 	session.commit()
-	# session.commit()
-	# end_pos = session.execute(text(f'select fileid,latitude as latend, longitude as lonend from torqlogs where fileid={torqfile.fileid} order by gpstime desc limit 1')).one()
-	# end_pos = {'latend': float(datemax.loc[0].latend), 'lonend': float(datemax.loc[0].lonend)}
-	# ep_updates = session.query(Endpos).filter(Endpos.latend == end_pos['latend']).filter(Endpos.lonend == end_pos['lonend']).all()
-	# if len(ep_updates) > 0:
-	# 	for e in ep_updates:
-	# 		e.count += 1
-	# 		logger.warning(f"endpos already exists for {torqfile.fileid} {e.count=} {end_pos=}")
-	# 		session.add(e)
-	# 		session.commit()
-	# else:
-	# 	ep = Endpos(latend=end_pos[1], lonend=end_pos[2])
-	# 	ep.count = 1
-	# 	session.add(ep)
-	# 	session.commit()
 
-	# session.commit()
-	if (datemin).empty or (datemax).empty or total_rows_db == 0:
-		logger.error(f"no datemin/max rows for {fileid} from db {fileinfo=} {total_rows_db=}")
-		return -1
+def get_start_end_info(args, fileinfo):
+	# guess the start and end positions
+	# returns startid and endid
+	gpsoffset = 0.00004
+	latoffset = 0.0001010 + gpsoffset
+	lonoffset = 0.0001421 + gpsoffset
+	engine, session = get_engine_session(args)
+	sp_updates = session.query(Startpos).filter(
+		Startpos.latstart >= fileinfo['dlatstart']-latoffset).filter(
+		Startpos.latstart <= fileinfo['dlatstart']+latoffset).filter(
+		Startpos.lonstart >= fileinfo['dlonstart']-lonoffset).filter(
+		Startpos.lonstart <= fileinfo['dlonstart']+lonoffset).all()
+	ep_updates = session.query(Endpos).filter(Endpos.latend > fileinfo['dlatend']-latoffset).filter(Endpos.latend < fileinfo['dlatend']+latoffset).filter(Endpos.lonend >= fileinfo['dlonend']-lonoffset).filter(Endpos.lonend <= fileinfo['dlonend']+lonoffset).all()
+	session.close()
+	return sp_updates, ep_updates
 
-	# logger.debug(f'{datemin=} {datemax=} {fileinfo=} {fileid} {torqfile.fileid=}')
-	trip_start = datetime.fromisoformat(str(datemin.values[0][0]))
-	trip_end = datetime.fromisoformat(str(datemax.values[0][0]))
+def update_torqfile(args: argparse.Namespace, fileinfo: dict):
+	# todo fix this is very slow
+	engine, session = get_engine_session(args)
+	fileid = fileinfo.get("fileid", None)
+	torqfile = session.query(TorqFile).filter(TorqFile.fileid == fileid).first()
+	trip_start = convert_string_to_datetime(fileinfo["dtripstart"])  # datetime.fromisoformat(str(datemin.values[0][0]))
+	trip_end = convert_string_to_datetime(fileinfo["dtripend"])  # datetime.fromisoformat(str(datemax.values[0][0]))
 	trip_duration = (trip_end - trip_start).total_seconds()
-
-	torqfile.sent_rows = total_rows_db
+	torqfile.startlat = float(fileinfo["dlatstart"])
+	torqfile.startlon = float(fileinfo["dlonstart"])
+	torqfile.endlat = float(fileinfo["dlatend"])
+	torqfile.endlon = float(fileinfo["dlonend"])
+	torqfile.sent_rows = fileinfo["sent_rows"]  # total_rows_db
 	torqfile.sendtime = fileinfo.get("sendtime", None)
 	torqfile.readtime = fileinfo.get("readtime", None)
 	torqfile.trip_start = trip_start
 	torqfile.trip_end = trip_end
 	torqfile.trip_duration = trip_duration
+
+	sp_updates, ep_updates = get_start_end_info(args, fileinfo)
+	if len(sp_updates) == 1:
+		# found startpos
+		sp = session.query(Startpos).filter(Startpos.startid == sp_updates[0].startid).one()
+		torqfile.startid = sp.startid
+		sp.count += 1
+		session.add(sp)
+		logger.info(f'found startpos id: {sp.startid} label: {sp.label} count: {sp.count} ')
+	elif len(sp_updates) > 1:
+		# multiple startpos
+		logger.warning(f'multiple startpos sp: {len(sp_updates)} {torqfile.csvfile}')
+	elif len(sp_updates) == 0:
+		# new startpos
+		logger.debug(f'new startpos ')
+
+	if len(ep_updates) == 1:
+		# found endpos
+		ep = ep_updates[0]
+		torqfile.endid = ep.endid
+		ep.count += 1
+		session.add(ep)
+		logger.info(f'found endpos id: {ep.endid} label: {ep.label} count: {ep.count} ')
+	elif len(ep_updates) > 1:
+		# multiple endpos
+		logger.warning(f'# multiple endpos ep: {len(ep_updates)} ')
+	elif len(ep_updates) == 0:
+		# new endpos
+		logger.debug(f'new endpos ')
+
 	session.add(torqfile)
 	session.commit()
-	if total_rows_db == 0:
-		logger.warning(f"no rows for {fileid} from db {fileinfo=}")
-	if total_rows_db != int(fileinfo.get("sent_rows")):
-		pass  # logger.warning(f"rows count mismatch fileid: {fileid} from db {total_rows_db=} --- {fileinfo=}")
-	logger.info(f"sent_rows={total_rows_db} for {fileid} from db {fileinfo=}")
+	logger.info(f"updatedone for fileid: {fileid} ")  # \n{fileinfo=}\n")
 	return 0
 
 def collect_db_columnstats(args):

@@ -65,6 +65,10 @@ class TorqFile(Base):
 	trip_duration = Column('trip_duration', Float)
 	readtime = Column('readtime', Float)
 	sendtime = Column('sendtime', Float)
+	startlon = Column('startlon', Float)
+	startlat = Column('startlat', Float)
+	endlon = Column('endlon', Float)
+	endlat = Column('endlat', Float)
 	sent_rows = Column('sent_rows', Integer, default=0, unique=False)
 	read_flag = Column('read_flag', Integer, default=0, unique=False)  # 0 = not read, 1 = read
 	send_flag = Column('send_flag', Integer, default=0, unique=False)  # 0 = not sent, 1 = sent
