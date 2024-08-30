@@ -108,10 +108,11 @@ def oldspupdates(args: argparse.Namespace, fileinfo: dict):
 	session.add(torqfile)
 	session.commit()
 
-def get_start_end_info(args, fileinfo):
+
+def get_start_pos_info(args, fileinfo, gpsoffset=0.00004):
 	# guess the start and end positions
 	# returns startid and endid
-	gpsoffset = 0.00004
+	# gpsoffset = 0.00004
 	latoffset = 0.0001010 + gpsoffset
 	lonoffset = 0.0001421 + gpsoffset
 	engine, session = get_engine_session(args)
@@ -120,9 +121,73 @@ def get_start_end_info(args, fileinfo):
 		Startpos.latstart <= fileinfo['dlatstart']+latoffset).filter(
 		Startpos.lonstart >= fileinfo['dlonstart']-lonoffset).filter(
 		Startpos.lonstart <= fileinfo['dlonstart']+lonoffset).all()
-	ep_updates = session.query(Endpos).filter(Endpos.latend > fileinfo['dlatend']-latoffset).filter(Endpos.latend < fileinfo['dlatend']+latoffset).filter(Endpos.lonend >= fileinfo['dlonend']-lonoffset).filter(Endpos.lonend <= fileinfo['dlonend']+lonoffset).all()
 	session.close()
+	return sp_updates
+
+def get_sp_updates(args, latstart, lonstart, gpsoffset=0.00004):
+	latoffset = 0.0000510 + gpsoffset
+	lonoffset = 0.0001221 + gpsoffset
+	engine, session = get_engine_session(args)
+	sp_updates = session.query(Startpos).filter(
+		Startpos.latstart >= latstart-latoffset).filter(
+		Startpos.latstart <= latstart+latoffset).filter(
+		Startpos.lonstart >= lonstart-lonoffset).filter(
+		Startpos.lonstart <= lonstart+lonoffset).all()
+	session.close()
+	return sp_updates
+
+def get_ep_updates(args, latend, lonend, gpsoffset=0.00004):
+	latoffset = 0.0000510 + gpsoffset
+	lonoffset = 0.0001221 + gpsoffset
+	engine, session = get_engine_session(args)
+	ep_updates = session.query(Endpos).filter(
+		Endpos.latend >= latend-latoffset).filter(
+		Endpos.latend <= latend+latoffset).filter(
+		Endpos.lonend >= lonend-lonoffset).filter(
+		Endpos.lonend <= lonend+lonoffset).all()
+	session.close()
+	return ep_updates
+
+def get_start_end_info(args, fileinfo, gpsoffset=0.00002):
+	# guess the start and end positions
+	# returns startid and endid
+	# gpsoffset = 0.00004
+	# latoffset = 0.0000510 + gpsoffset
+	# lonoffset = 0.0001221 + gpsoffset
+	# engine, session = get_engine_session(args)
+	sp_updates = get_sp_updates(args, fileinfo['dlatstart'], fileinfo['dlonstart'], gpsoffset)
+	ep_updates = get_ep_updates(args, fileinfo['dlatend'], fileinfo['dlonend'], gpsoffset)
+	# ep_updates = session.query(Endpos).filter(Endpos.latend > fileinfo['dlatend']-latoffset).filter(Endpos.latend < fileinfo['dlatend']+latoffset).filter(Endpos.lonend >= fileinfo['dlonend']-lonoffset).filter(Endpos.lonend <= fileinfo['dlonend']+lonoffset).all()
+	# session.close()
 	return sp_updates, ep_updates
+
+def get_bounding_box(args, fileinfo, gpsoffset=0.00002):
+	"""
+	"""
+	return 0
+
+def calculate_bounding_box(coordinates):
+# Example usage:
+# coordinates = [(34.05, -118.25), (36.16, -115.15), (40.71, -74.01), (37.77, -122.42)]
+# bounding_box = calculate_bounding_box(coordinates)
+# print(bounding_box)  # Output: (34.05, -122.42, 40.71, -74.01)
+	min_lat = float('inf')
+	min_lon = float('inf')
+	max_lat = float('-inf')
+	max_lon = float('-inf')
+
+	for lat, lon in coordinates:
+		if lat < min_lat:
+			min_lat = lat
+		if lon < min_lon:
+			min_lon = lon
+		if lat > max_lat:
+			max_lat = lat
+		if lon > max_lon:
+			max_lon = lon
+
+	return (min_lat, min_lon, max_lat, max_lon)
+
 
 def update_torqfile(args: argparse.Namespace, fileinfo: dict):
 	# todo fix this is very slow
@@ -142,7 +207,8 @@ def update_torqfile(args: argparse.Namespace, fileinfo: dict):
 	torqfile.trip_start = trip_start
 	torqfile.trip_end = trip_end
 	torqfile.trip_duration = trip_duration
-
+	session.close()
+	engine, session = get_engine_session(args)
 	sp_updates, ep_updates = get_start_end_info(args, fileinfo)
 	if len(sp_updates) == 1:
 		# found startpos
@@ -150,13 +216,20 @@ def update_torqfile(args: argparse.Namespace, fileinfo: dict):
 		torqfile.startid = sp.startid
 		sp.count += 1
 		session.add(sp)
-		logger.info(f'found startpos id: {sp.startid} label: {sp.label} count: {sp.count} ')
+		if sp.label is None:
+			logger.warning(f'found startpos id: {sp.startid} label: {sp.label} count: {sp.count} missing label')
+		else:
+			logger.info(f'found startpos id: {sp.startid} label: {sp.label} count: {sp.count} ')
 	elif len(sp_updates) > 1:
 		# multiple startpos
 		logger.warning(f'multiple startpos sp: {len(sp_updates)} {torqfile.csvfile}')
 	elif len(sp_updates) == 0:
 		# new startpos
-		logger.debug(f'new startpos ')
+		logger.debug(f'new startpos {fileinfo["dlatstart"]} {fileinfo["dlonstart"]} ')
+		sp = Startpos(latstart=fileinfo["dlatstart"], lonstart=fileinfo["dlonstart"])
+		sp.count = 1
+		session.add(sp)
+		# session.commit()
 
 	if len(ep_updates) == 1:
 		# found endpos
@@ -164,13 +237,20 @@ def update_torqfile(args: argparse.Namespace, fileinfo: dict):
 		torqfile.endid = ep.endid
 		ep.count += 1
 		session.add(ep)
-		logger.info(f'found endpos id: {ep.endid} label: {ep.label} count: {ep.count} ')
+		if ep.label is None:
+			logger.warning(f'found endpos id: {ep.endid} label: {ep.label} count: {ep.count} missing label')
+		else:
+			logger.info(f'found endpos id: {ep.endid} label: {ep.label} count: {ep.count} ')
 	elif len(ep_updates) > 1:
 		# multiple endpos
 		logger.warning(f'# multiple endpos ep: {len(ep_updates)} ')
 	elif len(ep_updates) == 0:
 		# new endpos
-		logger.debug(f'new endpos ')
+		logger.debug(f'new endpos {fileinfo["dlatend"]} {fileinfo["dlonend"]} ')
+		ep = Endpos(latend=fileinfo["dlatend"], lonend=fileinfo["dlonend"])
+		ep.count = 1
+		session.add(ep)
+		# session.commit()
 
 	session.add(torqfile)
 	session.commit()
