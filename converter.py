@@ -95,35 +95,12 @@ def read_csv_file(logfile:str, args:argparse.Namespace):
 
 	# check trip duration....
 	# starttime = convert_string_to_datetime(data_filter['gpstime'][0])
-	tripdur = (convert_string_to_datetime(data['gpstime'][-1]) - convert_string_to_datetime(data['gpstime'][0])).total_seconds()
+	tripdur = (convert_string_to_datetime(data_filter['gpstime'][-1]) - convert_string_to_datetime(data_filter['gpstime'][0])).total_seconds()
 	if tripdur > 86400:  # todo maybe split file here ?
 		logger.warning(f'skipping {logfile} {tripdur=}')
 		return pd.DataFrame()
 	df = data_filter.to_pandas()
 	return df
-
-def send_filename_to_db(session:sessionmaker, args:argparse.Namespace, filename:str):
-	"""
-	send this filename to database, catch all exceptions in here
-	return torqfile if ok, else None
-	"""
-	engine, session = get_engine_session(args)
-	# with session.no_autoflush:
-	try:
-		csvhash = md5(open(filename, "rb").read()).hexdigest()
-		t = TorqFile(csvfile=filename, csvhash=csvhash)
-		session.add(t)
-		session.commit()
-		# session.close()
-		return t.fileid
-	except IntegrityError as e:
-		# session.close()
-		logger.warning(f"{type(e)} {e} from {filename}")
-		return None
-	except Exception as e:
-		# session.close()
-		logger.error(f"unhandled {type(e)} {e} from {filename}")
-		return None
 
 def send_data_to_db(args: argparse.Namespace,
 	data: pd.DataFrame,
@@ -169,16 +146,20 @@ def get_files_to_send(session: sessionmaker, args):
 	"""
 	scan logpath for csv files, check if they have already been sent to data base
 	returns list of files not in the database, filenames as str, NOT Path!
+	# todo determine if file is split or not, if split, split it and send both parts
+	# todo check if file has been imported, if not, import it
+	# e.g. check filename and/or hash
 	"""
 	files_to_send = []
 	unread_dbfiles = []
 	csvfiles = [str(k) for k in Path(args.logpath).glob("**/trackLog-*.csv") if k.stat().st_size > MIN_FILESIZE]
+	csvfiles.extend([str(k) for k in Path(args.logpath).glob("**/trackLog*.csv") if k.stat().st_size > MIN_FILESIZE])
 	csvlist = [Path(k).parts[-1] for k in csvfiles]
 	smallcsvfiles = [str(k) for k in Path(args.logpath).glob("trackLog-*.csv") if k.stat().st_size < MIN_FILESIZE]
 	try:
 		dbfilecount = session.query(TorqFile).count()
 		alldbfiles = session.query(TorqFile).all()
-		dbfnlist = [k.csvfile for k in  alldbfiles]
+		dbfnlist = []  # [k.csvfile for k in alldbfiles]
 		# files_to_send = [k for k in csvlist if not k in dbfnlist]
 		# files_to_send = [f'{args.logpath}/{k}' for k in csvlist if k not in dbfnlist]
 		files_to_send = [k for k in csvfiles if Path(k).parts[-1] not in dbfnlist]
@@ -379,6 +360,7 @@ def cli_main(args):
 					'dlatend': float(data['latitude'][len(data)-1]),
 					'dlonend': float(data['longitude'][len(data)-1]),
 				}
+				session.close()
 				try:
 					upchk = update_torqfile(args, fileinfo)
 					logger.info(f'[{idx}/{len(newfiles)}] updone: {upchk} tr: {datetime.now()-readstart} ts: {datetime.now()-sendstart} rtst:{readt}/{sendt}')
