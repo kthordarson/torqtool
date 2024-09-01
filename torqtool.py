@@ -64,7 +64,7 @@ async def scanpath(session, args):
 async def check_unfixedfiles(session, args):
     # get list of unfixed files from db
     t0 = datetime.now()
-    unfixedfiles = session.query(TorqFile).filter(not TorqFile.fixed_flag).all()
+    unfixedfiles = session.query(TorqFile).all()
     results = {"results": {"unfixed": []}}
 
     if len(unfixedfiles) > 0:
@@ -75,7 +75,6 @@ async def check_unfixedfiles(session, args):
             if args.debug:
                 logger.debug(f"sending {punfix} to fixer {unfixed=} {type(unfixed)}")
             if fix_logfile(punfix):
-                unfixed.fixed_flag = 1
                 session.commit()
                 if args.debug:
                     logger.debug(f"t: {(datetime.now()-t0).seconds} fixed {unfixed}")
@@ -88,7 +87,6 @@ async def check_unfixedfiles(session, args):
 async def send_torq_logs(filelist, session, args):
     # get files from db that are fixed but not read or sent to db
     # tripstart = timer()
-    # dbtorqfiles = session.query(TorqFile).filter(TorqFile.read_flag == 1).filter(TorqFile.fixed_flag == 1).all() # type: ignore
     # tripend = timer()
     # t0 = datetime.now()
     if args.debug:
@@ -127,7 +125,6 @@ async def main(args):
     # 8. send csvdata to db
     # todo: create worker thread for each file, worker reads and processes file and sends to db.
     # todo: handle new columns from csv files, eg airfuelratiomeasured1
-    # todo: set read_flag and send_flag for processed files
     t0 = datetime.now()
     engine, session = get_engine_session(args)
     if args.torqdata:
@@ -191,7 +188,6 @@ async def main(args):
                 pass  # logger.debug(f"t: {(datetime.now()-t0).seconds} fixing {csvfile.csvfile} ")
             if fix_logfile(csvfile.csvfile):  # attempt to fix file, returns True if fixed
                 dbf = (session.query(TorqFile).filter(TorqFile.fileid == csvfile.fileid).first())
-                dbf.fixed_flag = 1
                 if args.debug:
                     logger.debug(f"t: {(datetime.now()-t0).seconds} fixed {dbf}")
             else:
@@ -208,9 +204,7 @@ async def main(args):
                 logger.debug(f"[{idx}/{unfixcount}/{fixcount}] t: {(datetime.now()-t0).seconds} fixing {pcsv}")
             try:
                 if fix_logfile(pcsv):  # attempt to fix file, returns True if fixed
-                    f.fixed_flag = 1  # fixed
                     dbf = (session.query(TorqFile).filter(TorqFile.fileid == f.fileid).first())
-                    dbf.fixed_flag = 1
                     if args.debug:
                         logger.debug(f"[{idx}/{unfixcount}/{fixcount}] t: {(datetime.now()-t0).seconds} fixed {dbf}")
                     fixcount += 1
@@ -229,7 +223,7 @@ async def main(args):
             # read and process files
             tasks = []
             # loop = asyncio.new_event_loop()
-            dbtorqfiles = (session.query(TorqFile).filter(TorqFile.read_flag == 0).filter(TorqFile.fixed_flag == 1).all())  # type: ignore
+            dbtorqfiles = (session.query(TorqFile).all())  # type: ignore
             async with asyncio.TaskGroup() as tg:
                 for idx, tf in enumerate(dbtorqfiles):
                     # asyncio.set_event_loop(loop)

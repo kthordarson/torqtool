@@ -70,28 +70,10 @@ class TorqFile(Base):
 	endlon = Column('endlon', Float)
 	endlat = Column('endlat', Float)
 	sent_rows = Column('sent_rows', Integer, default=0, unique=False)
-	read_flag = Column('read_flag', Integer, default=0, unique=False)  # 0 = not read, 1 = read
-	send_flag = Column('send_flag', Integer, default=0, unique=False)  # 0 = not sent, 1 = sent
-	fixed_flag = Column('fixed_flag', Integer, default=0, unique=False)  # 0 = not fixed, 1 = fixed
-	data_flag = Column('data_flag', Integer, default=0, unique=False)	# 0 = need tripdata, 1 = have tripdata
-	error_flag = Column('error_flag', Integer, default=0, unique=False)
-	# 0 = no error,
-	# 1 = dupe entry in db,
-	# 2 = need split
-	# 3 = header error,
-	# 4 = fixerror,
-	# 5 = senderror,
-	# 6 = polarreaderror
-	# 7 = unknowncolumnerror
 
 	def __init__(self, csvfile, csvhash):
 		self.csvfile = csvfile
 		self.csvhash = csvhash
-		self.read_flag = 0
-		self.send_flag = 0
-		self.fixed_flag = 0
-		self.error_flag = 0
-		self.data_flag = 0
 		self.import_date = datetime.now()
 
 class Torqtrips(Base):
@@ -328,7 +310,6 @@ def send_torqfiles(filelist=[], session=None, debug=False):  # returns list of n
 				logger.warning(f'[st {idx}/{len(filelist)}] {csvfile} {fid=} already in db with {check}')  # {tf}')
 		else:
 			torqfile = TorqFile(csvfile=csvfile, csvhash=csvhash)
-			torqfile.send_flag = 1
 			session.add(torqfile)
 
 			if debug:

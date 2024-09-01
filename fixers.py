@@ -85,7 +85,6 @@ def fix_column_names(csvfile: str, args):
 def check_and_fix_logs(logfiles, args):
     # iterate all log files (that have not been fixed) , check for bad chars, remove them
     # skip files that have been fixed already, by checking in the database
-    # return a list of log files that have been fixed, TorqFile.fixed_flag should be 1
     # new_log_files = []
     # dburl = 'sqlite:///torqfiskur.db'
     # engine = create_engine(dburl, echo=False, connect_args={'check_same_thread': False})
@@ -94,7 +93,6 @@ def check_and_fix_logs(logfiles, args):
     engine, session = get_engine_session(args)
     for log in logfiles:
         # check if log file has been fixed already, if not fix it
-        # mark the log file as fixed in the database, TorqFile.fixed_flag = True
         pass
 
 
@@ -375,15 +373,12 @@ def split_file(logfile: str, session=None):
                     if idx not in skip_lines:
                         f.write(line.strip() + "\n")
             logger.debug(f"wrote fixed {logfile}")
-            # mark the file as fixed in the database, TorqFile.fixed_flag = 1 and TorqFile.error_flag = 0, read again
             if session:
                 try:
                     torqfile = (session.query(TorqFile).filter(TorqFile.csvfile == logfile).one())
                 except NoResultFound as e:
                     torqfile = TorqFile(csvfile=logfile, csvhash=md5(open(logfile, "rb").read()).hexdigest(), )
                     logger.warning(f"{e} creating new torqfile: {torqfile}")
-                torqfile.fixed_flag = 1
-                torqfile.error_flag = 0
                 session.add(torqfile)
                 session.commit()
                 logger.debug(f"database updated for {logfile} torqfileid: {torqfile.fileid} tf={torqfile}")
@@ -411,25 +406,17 @@ def split_file(logfile: str, session=None):
             spname = f"{logfile}.baksplit"
             shutil.move(logfile, spname)
             logger.debug(f"wrote fixed {basename} old: {spname} new: {newlogfile}")
-            # mark the file as fixed in the database, TorqFile.fixed_flag = 1 and TorqFile.error_flag = 0, read again
             if session:
                 torqfile = TorqFile(
                     csvfile=newlogfile,
                     csvhash=md5(open(newlogfile, "rb").read()).hexdigest(),
                 )
-                torqfile.fixed_flag = 1
-                torqfile.error_flag = 0
                 session.add(torqfile)
                 session.commit()
                 logger.debug(
                     f"database updated for {basename} torqfileid: {torqfile.fileid}"
                 )
             return newlogfile
-            # write lines from split marker to end of file to new file
-            # mark the file as fixed in the database, TorqFile.fixed_flag = 1 and TorqFile.error_flag = 0, read again
-
-            # split file into multiple parts, keep first part of file, write rest to new files
-            # mark the file as fixed in the database, TorqFile.fixed_flag = 1 and TorqFile.error_flag = 1, read again
 
     except TypeError as e:
         logger.error(f"splitter failed {type(e)} {e} {logfile=}")

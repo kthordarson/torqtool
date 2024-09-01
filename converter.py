@@ -255,7 +255,6 @@ def cli_main(args):
 		# fixer mode
 		# read all log files, fix bad chars, remove them
 		# update database, mark the log file as fixed
-		# TorqFile.fixed_flag = True
 		# check_and_fix_logs(logfiles)
 		run_fixer(args)
 		sys.exit(0)

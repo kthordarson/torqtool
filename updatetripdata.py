@@ -27,7 +27,7 @@ def collect_db_filestats(args, todatabase=True, droptable=True):
 		session.execute(text("pragma temp_store = memory;"))
 		session.execute(text("pragma mmap_size = 30000000000;"))
 		# session.execute(text('pragma journal_mode = memory;'))
-	q = "select fileid from torqfiles where error_flag=0"
+	q = "select fileid from torqfiles;"
 	if args.db_limit:
 		q += f" limit {args.db_limit}"
 	file_ids = pd.DataFrame(session.execute(text(q)))
