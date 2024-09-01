@@ -1,38 +1,24 @@
 #!/usr/bin/python3
 import argparse
-import os
-import re
-import shutil
 import sys
 from datetime import datetime
 from hashlib import md5
 from pathlib import Path
-import random
 import pandas as pd
 import polars as pl
-import pytz
 from loguru import logger
 import sqlalchemy
 from sqlalchemy import text
-from sqlalchemy.exc import ArgumentError, DataError, IntegrityError, InternalError, OperationalError, ProgrammingError
-from sqlalchemy.exc import DataError, OperationalError, NoResultFound
-from sqlalchemy.orm.exc import DetachedInstanceError
+from sqlalchemy.exc import  DataError, IntegrityError, OperationalError
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.exc import MultipleResultsFound
-from psycopg2.errors import UndefinedColumn
 import sqlite3
-from commonformats import fmt_19, fmt_20, fmt_24, fmt_26, fmt_28, fmt_30, fmt_34, fmt_36
 from datamodels import TorqFile, database_init
-from schemas import schema_datatypes,s_columns, dataschema
-from utils import get_parser, get_engine_session, MIN_FILESIZE, transfer_older_logs,get_sanatized_column_names, convert_string_to_datetime
-from fixers import split_file, run_fixer, get_cols, check_and_fix_logs, replace_headers, fix_column_names
+from schemas import dataschema
+from utils import get_parser, get_engine_session, MIN_FILESIZE, transfer_older_logs, convert_string_to_datetime
+from fixers import run_fixer, get_cols, check_and_fix_logs
 from updatetripdata import update_torqfile
 
 pd.set_option("future.no_silent_downcasting", True)
-# x = latitude y = longitude !
-
-class Polarsreaderror(Exception):
-	pass
 
 # tool to rename and import tripLogs from older versions of the app
 # get tripdate from profile.properties file and rename the log file to the new format
@@ -46,6 +32,10 @@ class Polarsreaderror(Exception):
 # move small logs
 # for f in $(find /home/kth/development/torq/torqueLogs/ -type f ); do linecount=$(cat $f | wc -l); if [ $linecount -lt 10 ]; then echo "file $f lc=$linecount";fi;done;
 
+# x = latitude y = longitude !
+
+class Polarsreaderror(Exception):
+	pass
 
 def read_csv_file(logfile:str, args:argparse.Namespace):
 	"""
@@ -60,7 +50,7 @@ def read_csv_file(logfile:str, args:argparse.Namespace):
 	t0 = datetime.now()
 	nullvals = ['-','∞']
 	try:
-		data0 = pl.read_csv(logfile, ignore_errors=True, try_parse_dates=True, truncate_ragged_lines=False, n_threads=4, use_pyarrow=True, null_values=nullvals, schema=dataschema)  # , infer_schema=True
+		data0 = pl.read_csv(logfile, ignore_errors=True, try_parse_dates=True, truncate_ragged_lines=True, n_threads=4, use_pyarrow=True, null_values=nullvals, schema=dataschema)  # , infer_schema=True
 	except pl.exceptions.ShapeError as e:
 		logger.error(f"{type(e)} {e} {logfile}")
 		raise e
@@ -99,7 +89,21 @@ def read_csv_file(logfile:str, args:argparse.Namespace):
 	if tripdur > 86400:  # todo maybe split file here ?
 		logger.warning(f'skipping {logfile} {tripdur=}')
 		return pd.DataFrame()
+
+	trip_start = convert_string_to_datetime(data_filter['gpstime'][0])
+	engine, session = get_engine_session(args)
+	ts_temp = session.query(TorqFile).filter(TorqFile.trip_start==trip_start).all()
+	if len(ts_temp) > 0:
+		logger.warning(f"skipping {logfile} already in db trip_start: {trip_start}")
+		[logger.warning(f"\t{k.fileid=} trip_start: {k.trip_start}") for k in ts_temp]
+		return pd.DataFrame()
+	if tripdur > 86400:  # todo maybe split file here ?
+		logger.warning(f'skipping {logfile} {tripdur=}')
+		return pd.DataFrame()
 	df = data_filter.to_pandas()
+
+	# check if trip with same start time already in db
+	# if so, skip this file
 	return df
 
 def send_data_to_db(args: argparse.Namespace,
@@ -113,7 +117,14 @@ def send_data_to_db(args: argparse.Namespace,
 	"""
 	engine, session = get_engine_session(args)
 	csvhash = md5(open(csvfilename, "rb").read()).hexdigest()
-
+	fileinfo = {
+		'dtripstart': data['gpstime'][0],
+		'dtripend': data['gpstime'][len(data)-1],
+		'dlatstart': float(data['latitude'][0]),
+		'dlonstart': float(data['longitude'][0]),
+		'dlatend': float(data['latitude'][len(data)-1]),
+		'dlonend': float(data['longitude'][len(data)-1]),
+		}
 	# user only stem part of filename in db
 	try:
 		t = TorqFile(csvfile=Path(csvfilename).parts[-1], csvhash=csvhash)
@@ -142,6 +153,9 @@ def send_data_to_db(args: argparse.Namespace,
 		session.close()
 		return send_results
 
+def gethash(filename: str):
+	return md5(open(filename, "rb").read()).hexdigest()
+
 def get_files_to_send(session: sessionmaker, args):
 	"""
 	scan logpath for csv files, check if they have already been sent to data base
@@ -150,146 +164,11 @@ def get_files_to_send(session: sessionmaker, args):
 	# todo check if file has been imported, if not, import it
 	# e.g. check filename and/or hash
 	"""
-	files_to_send = []
-	unread_dbfiles = []
-	csvfiles = [str(k) for k in Path(args.logpath).glob("**/trackLog-*.csv") if k.stat().st_size > MIN_FILESIZE]
-	csvfiles.extend([str(k) for k in Path(args.logpath).glob("**/trackLog*.csv") if k.stat().st_size > MIN_FILESIZE])
-	csvlist = [Path(k).parts[-1] for k in csvfiles]
-	smallcsvfiles = [str(k) for k in Path(args.logpath).glob("trackLog-*.csv") if k.stat().st_size < MIN_FILESIZE]
-	try:
-		dbfilecount = session.query(TorqFile).count()
-		alldbfiles = session.query(TorqFile).all()
-		dbfnlist = []  # [k.csvfile for k in alldbfiles]
-		# files_to_send = [k for k in csvlist if not k in dbfnlist]
-		# files_to_send = [f'{args.logpath}/{k}' for k in csvlist if k not in dbfnlist]
-		files_to_send = [k for k in csvfiles if Path(k).parts[-1] not in dbfnlist]
-		skipped_count = len([k for k in csvlist if k in dbfnlist])
-		unread_dbfiles = (session.query(TorqFile).filter(TorqFile.read_flag == 0).filter(TorqFile.error_flag == 0).all())
-		read_dbfiles = session.query(TorqFile).filter(TorqFile.read_flag == 1).all()
-		error_dbfiles = session.query(TorqFile).filter(TorqFile.error_flag != 0).all()
-		# files_to_send = set(csvfiles) - set([k.csvfile for k in read_dbfiles])
-	except UndefinedColumn as e:
-		logger.warning(f"UndefinedColumn {type(e)} {e} from {args.logpath} args {args}")
-	except Exception as e:
-		logger.error(f"unhandled {type(e)} {e} from {args.logpath} args {args}")
-	finally:
-		session.close()
-		if len(files_to_send) > 0:
-			logger.info(f"found {len(files_to_send)} files_to_send, dupeskips: {skipped_count} skipping {len(smallcsvfiles)} files under MIN_FILESIZE - unread_dbfiles:{len(unread_dbfiles)} error_dbfiles: {len(error_dbfiles)} all_db_files:{dbfilecount}")
-		else:
-			logger.warning(f"no valid files found in {args.logpath} ! dupeskips: {skipped_count} dbfiles: all= {dbfilecount} / unread= {len(unread_dbfiles)} csvfiles:{len(csvfiles)} ... Exit!")
-			sys.exit(-1)
-
-		files_to_send = sorted(files_to_send)  # sort by filename (date)
-		if args.samplemode:
-			# select small number of random logs
-			files_to_send = [random.choice(files_to_send) for k in range(random.randint(10, 30))]
-		return files_to_send
-
-def date_column_fixer(data: pd.DataFrame = None, datecol: str = None, f: str = None):
-	"""
-	fixes timedatestamp format in dataframe
-	param: data Dataframe, datecol name of date column, f filename (for ref)
-	"""
-	testdate = data[datecol][len(data) // 2]
-	if testdate == 0:
-		errmsg = f"invalid testdate {testdate} {datecol=} datalen: {len(data)} f: {f}"
-		logger.error(errmsg)
-		raise TypeError(errmsg)
-	try:
-		fmt_selector = len(testdate)  # use value in middle to check.....
-	except TypeError as e:
-		logger.error(f"datefix {type(e)} {e}  {type(datecol)} datecol: {datecol} {testdate=}")
-		raise e
-	fixed_datecol = data[datecol]  # copy pd.DataFrame()
-	# chk = [k for k in fixed_datecol if isinstance(k,str) and '-' in k]
-	# chk_g = [k for k in fixed_datecol if isinstance(k,str) and 'G' in k]
-	# if len(chk)>0:
-	# logger.warning(f'CHECK {datecol=} {len(chk)}/{len(fixed_datecol)} chk_g:{len(chk_g)} things in {f} ')
-	# fixed_datecol = fixed_datecol.replace('-',0) # copy pd.DataFrame()
-	try:
-		match fmt_selector:
-			case 19:
-				fixed_datecol = pd.DataFrame({datecol: [datetime.strptime(k, fmt_19).astimezone(pytz.timezone("UTC")) for k in fixed_datecol if isinstance(k, str)]})
-			case 20:
-				fixed_datecol = pd.DataFrame({datecol: [datetime.strptime(k, fmt_20).astimezone(pytz.timezone("UTC")) for k in fixed_datecol if isinstance(k, str)]})
-			case 24:
-				fixed_datecol = pd.DataFrame({datecol: [datetime.strptime(k, fmt_24).astimezone(pytz.timezone("UTC")) for k in fixed_datecol if isinstance(k, str) and 'time' not in k.lower()]})
-			case 26:
-				fixed_datecol = pd.DataFrame({datecol: [datetime.strptime(k, fmt_26).astimezone(pytz.timezone("UTC")) for k in fixed_datecol if isinstance(k, str)]})
-			case 28:
-				fixed_datecol = pd.DataFrame({datecol: [datetime.strptime(k, fmt_28).astimezone(pytz.timezone("UTC")) for k in fixed_datecol if isinstance(k, str) and 'time' not in k.lower()]})
-			case 30:
-				fixed_datecol = pd.DataFrame({datecol: [datetime.strptime(k, fmt_30).astimezone(pytz.timezone("UTC")) for k in fixed_datecol if isinstance(k, str)]})
-			case 34:
-				fixed_datecol = pd.DataFrame({datecol: [datetime.strptime(k, fmt_34).astimezone(pytz.timezone("UTC")) for k in fixed_datecol if isinstance(k, str)]})
-			case 36:
-				fixed_datecol = pd.DataFrame({datecol: [datetime.strptime(k, fmt_36).astimezone(pytz.timezone("UTC")) for k in fixed_datecol if isinstance(k, str)]})
-			case _:
-				pass  # logger.warning(f'could not match format for fmt_selector {fmt_selector} for {datecol} {f=}.\n sample:first= {df0[datecol][0]} middle= {df0[datecol][len(data)//2]} last= {df0[datecol][len(df0)-1]}\n')
-	except (ValueError, TypeError, KeyError) as e:
-		logger.error(f"datefix {type(e)} {e} data: {type(data)} {data} dc: {type(datecol)} datecol: {datecol} fmt: {fmt_selector} \n sample:first= {data[datecol][0]} middle= {data[datecol][len(data)//2]} \n")  # last= {df0[datecol][len(df0)-1]}
-		return data[datecol]
-	# chk = [k for k in fixed_datecol[datecol] if '-' in k]
-	# fixed_datecol[datecol] = fixed_datecol[datecol].replace('-',0)
-	# chk = [k for k in fixed_datecol[datecol] if isinstance(k,str)]
-	# chk3 = [k for k in fixed_datecol[datecol] if isinstance(k,str)]
-	# if len(chk)>0:
-	# logger.warning(f'CHECK2 {len(chk)} things in {f} {datecol=}')
-	return fixed_datecol
-
-
-def split_check(csvfile: str):
-	"""
-	check if file is damaged and needs splitting...
-	todo write splitter and refresh file list .....
-	"""
-	try:
-		with open(csvfile, "r") as f:
-			data = f.readlines()
-	except FileNotFoundError as e:
-		logger.error(f"{e} {csvfile} ...")
-		raise e
-	gpscount = 0
-	for line in data[1:]:
-		if "gps" in line.lower():
-			gpscount += 1
-	if gpscount > 0:
-		# logger.warning(f'splits: {gpscount=} in {csvfile} ')
-		return True
-	return False
-
-
-def data_fixer(data: pd.DataFrame, f):
-	# check if file needs splitting
-	# fix dates
-	newdatecol = pd.DataFrame()
-	# fixed_data = pd.DataFrame()
-	date_columns = ["gpstime", "devicetime"]
-	droprows = [idx for idx, k in enumerate(data.gpstime) if k == "-"]
-	if len(droprows) > 0:
-		data = data.drop(droprows)
-		logger.warning(f"dropping invalid gpstimerows {droprows} from {f}")
-	for col in date_columns:
-		try:
-			newdatecol = date_column_fixer(data=data, datecol=col, f=f)
-		except TypeError as e:
-			logger.error(f"datafixer {type(e)} {e} {f} {col=}")
-			raise e
-		except AttributeError as e:
-			logger.error(f"datafixer {type(e)} {e} {f} {col=}")
-			raise e
-		# fix bad values
-		if not newdatecol.empty:
-			try:
-				data[col] = newdatecol
-			except AttributeError as e:
-				logger.error(f"datafixer {type(e)} {e} {f} {col=}")
-				raise e
-		else:
-			logger.warning(f"empty column {col}")
-			# logger.info(f'fixed {col} in {f}')
-	return data  # fixed_data  if not fixed_data.empty else data
+	alldbfiles = session.query(TorqFile).all()
+	hashlist = [k.csvhash for k in alldbfiles]
+	# csvfiles = [{'csvhash': gethash(k), 'csvfile':str(k)} for k in Path(args.logpath).glob("**/trackLog*.csv") if k.stat().st_size > MIN_FILESIZE]
+	csvfiles = [{'csvhash': gethash(k), 'csvfile':str(k)} for k in Path(args.logpath).glob("**/trackLog*.csv") if k.stat().st_size > MIN_FILESIZE and gethash(k) not in hashlist]
+	return [k['csvfile'] for k in csvfiles]
 
 def cli_main(args):
 	if args.dbinfo:
@@ -327,8 +206,13 @@ def cli_main(args):
 			except Polarsreaderror as e:
 				logger.error(f"polarsreaderror {type(e)} {e} for {csvfilename}")
 				continue
+			except IndexError as e:
+				logger.error(f"{type(e)} {e} for {csvfilename}")
+				session.close()
+				continue
 			except Exception as e:
 				logger.error(f"unhandled {type(e)} {e} for {csvfilename}")
+				session.close()
 				continue
 			if len(data) == 0:
 				logger.warning(f'no data in {csvfilename}')
