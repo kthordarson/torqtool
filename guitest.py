@@ -49,7 +49,7 @@ class TripplotModel(QtSql.QSqlQueryModel):
 class Torqfilemodel(QtSql.QSqlQueryModel):
 	def __init__(self):
 		super().__init__()
-		self.setQuery('select fileid,trip_start,sent_rows from torqfiles where error_flag=0')
+		self.setQuery('select fileid,trip_start,sent_rows from torqfiles ')
 		self.setHeaderData(0, QtCore.Qt.Horizontal, "fileid")
 		self.setHeaderData(1, QtCore.Qt.Horizontal, "trip_start")
 		self.setHeaderData(2, QtCore.Qt.Horizontal, "entries")
@@ -93,7 +93,7 @@ class MainApp(QMainWindow):
 
 	def populate_torqfiles(self):
 		self.filemodel = QSqlQueryModel()
-		self.filemodel.setQuery('select fileid,trip_start, sent_rows from torqfiles where error_flag=0')
+		self.filemodel.setQuery('select fileid,trip_start, sent_rows from torqfiles ')
 		self.filemodel.setHeaderData(0, QtCore.Qt.Horizontal, "fileid")
 		self.filemodel.setHeaderData(1, QtCore.Qt.Horizontal, "trip_start")
 		self.filemodel.setHeaderData(2, QtCore.Qt.Horizontal, "entries")

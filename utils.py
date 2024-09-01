@@ -266,24 +266,10 @@ def sqlsender(buffer, dburl, debug=False):
 		raise ValueError(f"[tosql] tmpbuf {type(e)} {e}")
 	# logger.info(f'[tosql] tmpbuf.is_empty() {buffer["torqbuffer"].is_empty()} ')
 	torqfile = (session.query(TorqFile).filter(TorqFile.fileid == results["fileid"]).first())
-	torqfile.read_flag = 1
-	if debug:
-		logger.debug(f"set read_flag on {torqfile=}")
-
-	try:
-		session.commit()  # set send_flag=1
-	except Exception as e:
-		logger.error(f"{type(e)} {e}")
-		return results
 	try:
 		tmpbuf.to_sql("torqlogs", con=engine, if_exists="append", index=False)
 		results["status"] = "success"
-		torqfile = (session.query(TorqFile).filter(TorqFile.fileid == results["fileid"]).first())
-		torqfile.send_flag = 1
-		if debug:
-			logger.debug(f"set send_flag on {torqfile=}")
-
-		session.commit()  # set send_flag=1
+		# torqfile = (session.query(TorqFile).filter(TorqFile.fileid == results["fileid"]).first())
 	except (OperationalError, ProgrammingError) as e:
 		# todo handle db locks
 		# todo handle unknown / new columns from csv files
@@ -354,23 +340,10 @@ def sqlsender_ppe(buffer, session, debug=False):
 		raise ValueError(f"[tosql] tmpbuf {type(e)} {e}")
 	# logger.info(f'[tosql] tmpbuf.is_empty() {buffer["torqbuffer"].is_empty()} ')
 	torqfile = (session.query(TorqFile).filter(TorqFile.fileid == results["fileid"]).first())
-	torqfile.read_flag = 1
-	if debug:
-		pass  # logger.debug(f'set read_flag on {torqfile=}')
-	try:
-		session.commit()  # set send_flag=1
-	except Exception as e:
-		logger.error(f"{type(e)} {e}")
-		return results
 	try:
 		tmpbuf.to_sql("torqlogs", con=session.get_bind(), if_exists="append", index=False)
 		results["status"] = "success"
-		torqfile = (session.query(TorqFile).filter(TorqFile.fileid == results["fileid"]).first())
-		torqfile.send_flag = 1
-		if debug:
-			pass  # logger.debug(f'set send_flag on {torqfile=}')
-
-		session.commit()  # set send_flag=1
+		# torqfile = (session.query(TorqFile).filter(TorqFile.fileid == results["fileid"]).first())
 	except (OperationalError, ProgrammingError, ArgumentError) as e:
 		# todo handle db locks
 		# todo handle unknown / new columns from csv files
@@ -636,7 +609,7 @@ def check_database_columns(session, args=None, limit=1000):
 	collect some info about database columns
 	"""
 	skip_cols = [
-		"id", "fileid", "devicetime", "gpstime", "time", "csvfile", "csvhash", "read_flag", "error_flag", "send_flag", "send_flag", "data_flag", "distance", ]
+		"id", "fileid", "devicetime", "gpstime", "time", "csvfile", "csvhash", "distance", ]
 	df = pd.DataFrame(session.execute(text('select column_name from information_schema.columns where table_name = "torqlogs" order by table_name,ordinal_position')).all())
 	# df = pd.DataFrame(session.execute(text('select column_name from information_schema.columns where table_schema = "torq" order by table_name,ordinal_position')).all())
 	# df2 = pd.DataFrame(session.execute(text('SELECT id,fileid,o2sensor1widerangecurrentma FROM torqlogs WHERE o2sensor1widerangecurrentma IS NULL  OR o2sensor1widerangecurrentma=";" ')).all())
@@ -681,7 +654,7 @@ def get_tripfile_stats(fileid, session, args=None, limit=1000):
 	collect some info about database columns
 	"""
 	skip_cols = [
-		"id", "fileid", "devicetime", "gpstime", "time", "csvfile", "csvhash", "read_flag", "error_flag", "send_flag", "send_flag", "data_flag", "distance", ]
+		"id", "fileid", "devicetime", "gpstime", "time", "csvfile", "csvhash", "distance", ]
 	df = pd.DataFrame(session.execute(text('select column_name from information_schema.columns where table_name = "torqlogs" order by table_name,ordinal_position')).all())
 	# df = pd.DataFrame(session.execute(text('select column_name from information_schema.columns where table_schema = "torq" order by table_name,ordinal_position')).all())
 	# df2 = pd.DataFrame(session.execute(text('SELECT id,fileid,o2sensor1widerangecurrentma FROM torqlogs WHERE o2sensor1widerangecurrentma IS NULL  OR o2sensor1widerangecurrentma=";" ')).all())
