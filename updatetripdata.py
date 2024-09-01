@@ -167,15 +167,14 @@ def get_bounding_box(args, fileinfo, gpsoffset=0.00002):
 	return 0
 
 def calculate_bounding_box(coordinates):
-# Example usage:
-# coordinates = [(34.05, -118.25), (36.16, -115.15), (40.71, -74.01), (37.77, -122.42)]
-# bounding_box = calculate_bounding_box(coordinates)
-# print(bounding_box)  # Output: (34.05, -122.42, 40.71, -74.01)
+	# Example usage:
+	# coordinates = [(34.05, -118.25), (36.16, -115.15), (40.71, -74.01), (37.77, -122.42)]
+	# bounding_box = calculate_bounding_box(coordinates)
+	# print(bounding_box)  # Output: (34.05, -122.42, 40.71, -74.01)
 	min_lat = float('inf')
 	min_lon = float('inf')
 	max_lat = float('-inf')
 	max_lon = float('-inf')
-
 	for lat, lon in coordinates:
 		if lat < min_lat:
 			min_lat = lat
@@ -185,7 +184,6 @@ def calculate_bounding_box(coordinates):
 			max_lat = lat
 		if lon > max_lon:
 			max_lon = lon
-
 	return (min_lat, min_lon, max_lat, max_lon)
 
 
@@ -222,7 +220,11 @@ def update_torqfile(args: argparse.Namespace, fileinfo: dict):
 			logger.info(f'found startpos id: {sp.startid} label: {sp.label} count: {sp.count} ')
 	elif len(sp_updates) > 1:
 		# multiple startpos
-		logger.warning(f'multiple startpos sp: {len(sp_updates)} {torqfile.csvfile}')
+		logger.warning(f'multiple startpos sp: {len(sp_updates)} {torqfile.csvfile} ')
+		_ = [logger.warning(f'{k.startid} {k.label} {k.latstart} {k.lonstart}') for k in sp_updates]
+		if len(set([k.label for k in sp_updates])) == 1:
+			# todo create new merged startpos set by bounding box
+			pass
 	elif len(sp_updates) == 0:
 		# new startpos
 		logger.debug(f'new startpos {fileinfo["dlatstart"]} {fileinfo["dlonstart"]} ')
@@ -243,7 +245,11 @@ def update_torqfile(args: argparse.Namespace, fileinfo: dict):
 			logger.info(f'found endpos id: {ep.endid} label: {ep.label} count: {ep.count} ')
 	elif len(ep_updates) > 1:
 		# multiple endpos
-		logger.warning(f'# multiple endpos ep: {len(ep_updates)} ')
+		logger.warning(f'# multiple endpos ep: {len(ep_updates)}')
+		_ = [logger.warning(f'{k.endid} {k.label} {k.latend} {k.lonend}') for k in ep_updates]
+		if len(set([k.label for k in ep_updates])) == 1:
+			# todo create new merged endpos set by bounding box
+			pass
 	elif len(ep_updates) == 0:
 		# new endpos
 		logger.debug(f'new endpos {fileinfo["dlatend"]} {fileinfo["dlonend"]} ')
