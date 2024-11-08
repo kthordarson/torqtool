@@ -9,7 +9,7 @@ import polars as pl
 from loguru import logger
 import sqlalchemy
 from sqlalchemy import text
-from sqlalchemy.exc import  DataError, IntegrityError, OperationalError
+from sqlalchemy.exc import DataError, IntegrityError, OperationalError
 from sqlalchemy.orm import sessionmaker
 import sqlite3
 from datamodels import TorqFile, database_init
@@ -47,7 +47,6 @@ def read_csv_file(logfile:str, args:argparse.Namespace):
 	raises Polarsreaderror if something goes wrong
 	"""
 	# todo handle missing gpstime, if not present, copy from devicetime
-	t0 = datetime.now()
 	nullvals = ['-','∞']
 	try:
 		data0 = pl.read_csv(logfile, ignore_errors=True, try_parse_dates=True, truncate_ragged_lines=True, n_threads=4, use_pyarrow=True, null_values=nullvals, schema=dataschema)  # , infer_schema=True
@@ -92,7 +91,7 @@ def read_csv_file(logfile:str, args:argparse.Namespace):
 
 	trip_start = convert_string_to_datetime(data_filter['gpstime'][0])
 	engine, session = get_engine_session(args)
-	ts_temp = session.query(TorqFile).filter(TorqFile.trip_start==trip_start).all()
+	ts_temp = session.query(TorqFile).filter(TorqFile.trip_start == trip_start).all()
 	if len(ts_temp) > 0:
 		logger.warning(f"skipping {logfile} already in db trip_start: {trip_start}")
 		[logger.warning(f"\t{k.fileid=} trip_start: {k.trip_start}") for k in ts_temp]
@@ -117,14 +116,13 @@ def send_data_to_db(args: argparse.Namespace,
 	"""
 	engine, session = get_engine_session(args)
 	csvhash = md5(open(csvfilename, "rb").read()).hexdigest()
-	fileinfo = {
-		'dtripstart': data['gpstime'][0],
-		'dtripend': data['gpstime'][len(data)-1],
-		'dlatstart': float(data['latitude'][0]),
-		'dlonstart': float(data['longitude'][0]),
-		'dlatend': float(data['latitude'][len(data)-1]),
-		'dlonend': float(data['longitude'][len(data)-1]),
-		}
+	# fileinfo = {
+	# 	'dtripstart': data['gpstime'][0],
+	# 	'dtripend': data['gpstime'][len(data)-1],
+	# 	'dlatstart': float(data['latitude'][0]),
+	# 	'dlonstart': float(data['longitude'][0]),
+	# 	'dlatend': float(data['latitude'][len(data)-1]),
+	# 	'dlonend': float(data['longitude'][len(data)-1]),}
 	# user only stem part of filename in db
 	try:
 		t = TorqFile(csvfile=Path(csvfilename).parts[-1], csvhash=csvhash)
@@ -134,13 +132,13 @@ def send_data_to_db(args: argparse.Namespace,
 		# session.close()
 		logger.error(f"{type(e)} {e} from {csvfilename}")
 		return None
-	todropcols = []
+	# todropcols = []
 	send_results = {'fileid': t.fileid, 'sent_rows': 0}
 	fileidcol = pd.DataFrame([t.fileid for k in range(len(data))], columns=["fileid",],)
 	data = pd.concat((data, fileidcol), axis=1)
 
 	try:
-		sr = data.to_sql("torqlogs", con=engine, if_exists="append", index=False)
+		_ = data.to_sql("torqlogs", con=engine, if_exists="append", index=False)
 		send_results["sent_rows"] = session.execute(text(f"select count(*) from torqlogs where fileid={t.fileid} ; ")).one()[0]
 		logger.debug(f'{csvfilename=} {t.fileid=} sent {len(data)} rows to db  sentrows: {send_results["sent_rows"]}')
 	except DataError as e:
@@ -175,7 +173,7 @@ def cli_main(args):
 		logcount = 0
 		try:
 			engine, session = get_engine_session(args)
-			logcount = session.execute(text(f"select count(*) from torqlogs"))
+			logcount = session.execute(text("select count(*) from torqlogs"))
 		except Exception as e:
 			logger.error(f'error {type(e)} {e}')
 			sys.exit(-1)

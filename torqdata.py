@@ -48,4 +48,3 @@ if __name__ == '__main__':
 	for t in topdata:
 		for c in t:
 			logger.info(f'[topdata] {c} ')  # {c.tripid} {c.name} {c.values}')
-
