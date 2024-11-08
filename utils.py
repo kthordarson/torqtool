@@ -23,7 +23,7 @@ from sqlalchemy.exc import ArgumentError, DataError, IntegrityError, InternalErr
 from sqlalchemy.orm import sessionmaker
 
 from commonformats import fmt_20, fmt_24, fmt_26, fmt_28, fmt_30, fmt_34, fmt_36
-from datamodels import TorqFile, database_init
+from datamodels import database_init
 
 MIN_FILESIZE = 3000
 
@@ -255,8 +255,8 @@ def mapping_replace(column: str, mapping: dict):
 
 def sqlsender(buffer, dburl, debug=False):
 	engine = create_engine(url=dburl, echo=False)
-	Session = sessionmaker(bind=engine)
-	session = Session()
+	# Session = sessionmaker(bind=engine)
+	# session = Session()
 	results = {
 		"fileid": buffer["fileid"], "csvfile": buffer["csvfile"], "status": "unknown", }
 	try:
@@ -265,7 +265,7 @@ def sqlsender(buffer, dburl, debug=False):
 		logger.error(f"[tosql] tmpbuf {type(e)} {e}")
 		raise ValueError(f"[tosql] tmpbuf {type(e)} {e}")
 	# logger.info(f'[tosql] tmpbuf.is_empty() {buffer["torqbuffer"].is_empty()} ')
-	torqfile = (session.query(TorqFile).filter(TorqFile.fileid == results["fileid"]).first())
+	# torqfile = (session.query(TorqFile).filter(TorqFile.fileid == results["fileid"]).first())
 	try:
 		tmpbuf.to_sql("torqlogs", con=engine, if_exists="append", index=False)
 		results["status"] = "success"
@@ -339,7 +339,7 @@ def sqlsender_ppe(buffer, session, debug=False):
 		logger.error(f"[tosql] tmpbuf {type(e)} {e}")
 		raise ValueError(f"[tosql] tmpbuf {type(e)} {e}")
 	# logger.info(f'[tosql] tmpbuf.is_empty() {buffer["torqbuffer"].is_empty()} ')
-	torqfile = (session.query(TorqFile).filter(TorqFile.fileid == results["fileid"]).first())
+	# torqfile = (session.query(TorqFile).filter(TorqFile.fileid == results["fileid"]).first())
 	try:
 		tmpbuf.to_sql("torqlogs", con=session.get_bind(), if_exists="append", index=False)
 		results["status"] = "success"

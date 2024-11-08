@@ -35,7 +35,7 @@ class Speeds(Base):
 class Startpos(Base):
 	__tablename__ = 'startpos'
 	startid: Mapped[int] = mapped_column(primary_key=True)
-	#fileid: Mapped[int] = mapped_column(ForeignKey('torqfiles.fileid'))
+	# fileid: Mapped[int] = mapped_column(ForeignKey('torqfiles.fileid'))
 	latstart = Column('latstart', Float, default=0, unique=False)
 	lonstart = Column('lonstart', Float, default=0, unique=False)
 	count = Column('count', Integer, default=0, unique=False)
@@ -54,7 +54,7 @@ class Endpos(Base):
 class TorqFile(Base):
 	__tablename__ = 'torqfiles'
 	fileid: Mapped[int] = mapped_column(primary_key=True)
-	#startid: Mapped[int] = mapped_column(ForeignKey('startpos.startid'))
+	# startid: Mapped[int] = mapped_column(ForeignKey('startpos.startid'))
 	startid = Column('startid', Integer, default=0, unique=False)
 	endid = Column('endid', Integer, default=0, unique=False)
 	csvfile = Column('csvfile', Text)
