@@ -603,91 +603,77 @@ def get_temp_stats(temp_cols):
 			"name": c.name, f"{c.name}.min": c.min(), f"{c.name}.mean": c.mean(), f"{c.name}.max": c.max(), }
 	return stats
 
-
 def check_database_columns(session, args=None, limit=1000):
 	"""
 	collect some info about database columns
 	"""
-	skip_cols = [
-		"id", "fileid", "devicetime", "gpstime", "time", "csvfile", "csvhash", "distance", ]
+	skip_cols = ['id', 'fileid', 'devicetime', 'gpstime','time', 'csvfile', 'csvhash', 'read_flag', 'error_flag', 'send_flag', 'send_flag', 'data_flag', 'distance']
 	df = pd.DataFrame(session.execute(text('select column_name from information_schema.columns where table_name = "torqlogs" order by table_name,ordinal_position')).all())
 	# df = pd.DataFrame(session.execute(text('select column_name from information_schema.columns where table_schema = "torq" order by table_name,ordinal_position')).all())
 	# df2 = pd.DataFrame(session.execute(text('SELECT id,fileid,o2sensor1widerangecurrentma FROM torqlogs WHERE o2sensor1widerangecurrentma IS NULL  OR o2sensor1widerangecurrentma=";" ')).all())
 	column_names = sorted([k for k in set([k[0] for k in df.values]) if k not in skip_cols])
-	logger.info(f"found {len(column_names)} columns in database, limit:{limit}")
+	logger.info(f'found {len(column_names)} columns in database, limit:{limit}')
 	maxnlen = max([len(k) for k in column_names])  # longest name, for formatting
 	for col in column_names:
 		if args.debug:
-			logger.debug(f"checking {col} limit:{limit} ")
+			logger.debug(f'checking {col} limit:{limit} ')
 		if not limit:
-			df = pd.DataFrame(session.execute(text(f"select {col} from torqlogs")).all())
+			df = pd.DataFrame(session.execute(text(f'select {col} from torqlogs')).all())
 		else:
-			df = pd.DataFrame(session.execute(text(f"select {col} from torqlogs limit {limit}")).all())
+			df = pd.DataFrame(session.execute(text(f'select {col} from torqlogs limit {limit}')).all())
 		try:
 			nulls = df.isnull().sum().values[0]
-		except (IndexError, AttributeError) as e:
-			logger.error(f"{type(e)} {e} {col=} ")
+		except (IndexError,AttributeError) as e:
+			logger.error(f'{type(e)} {e} {col=} ')
 			nulls = 0.0
 		# nullratio = len(df)/df.isnull().sum().values[0]
 		nr = 0.0
 		if nulls > 0:
 			try:
-				nr = len(df) / nulls
+				nr = len(df)/nulls
 			except (Exception, RuntimeError, ZeroDivisionError) as e:
-				logger.error(f"{type(e)} {e} {col=} {df.describe()}")
+				logger.error(f'{type(e)} {e} {col=} {df.describe()}')
 
-			# if nr == 1.0:
 		minval = df.min().values[0] or 0.0
 		mednval = df.median().values[0] or 0.0
 		meannval = df.mean().values[0] or 0.0
 		maxnval = df.max().values[0] or 0.0
-		print(f"  {col:<{maxnlen}} nulls: {nulls:>3} nr: {nr:>3.3} {minval:>3.3} {mednval:>3.3} {meannval:>3.3} {maxnval:>3.3}")
-		# nullratio: {nullratio}
-
-
-# ;
-# df = pd.DataFrame(session.execute(text(f'select id,distance,fuelcost,fuelused,tripdate,time from torqtrips')).all())
-
+		print(f'  {col:<{maxnlen}} nulls: {nulls:>3} nr: {nr:>3.3} {minval:>3.3} {mednval:>3.3} {meannval:>3.3} {maxnval:>3.3}')
 
 def get_tripfile_stats(fileid, session, args=None, limit=1000):
 	"""
 	collect some info about database columns
 	"""
-	skip_cols = [
-		"id", "fileid", "devicetime", "gpstime", "time", "csvfile", "csvhash", "distance", ]
+	skip_cols = ['id', 'fileid', 'devicetime', 'gpstime','time', 'csvfile', 'csvhash', 'read_flag', 'error_flag', 'send_flag', 'send_flag', 'data_flag', 'distance']
 	df = pd.DataFrame(session.execute(text('select column_name from information_schema.columns where table_name = "torqlogs" order by table_name,ordinal_position')).all())
-	# df = pd.DataFrame(session.execute(text('select column_name from information_schema.columns where table_schema = "torq" order by table_name,ordinal_position')).all())
-	# df2 = pd.DataFrame(session.execute(text('SELECT id,fileid,o2sensor1widerangecurrentma FROM torqlogs WHERE o2sensor1widerangecurrentma IS NULL  OR o2sensor1widerangecurrentma=";" ')).all())
 	column_names = sorted([k for k in set([k[0] for k in df.values]) if k not in skip_cols])
-	logger.info(f"checking {fileid=} found {len(column_names)} columns in database, limit:{limit}")
-	maxnlen = max([len(k) for k in column_names])  # longest name, for formatting
+	logger.info(f'checking {fileid=} found {len(column_names)} columns in database, limit:{limit}')
+	maxnlen = max([len(k) for k in column_names])
 	for col in column_names:
 		if args.debug:
-			logger.debug(f"checking {col} limit:{limit} ")
+			logger.debug(f'checking {col} limit:{limit} ')
 		if not limit:
-			df = pd.DataFrame(session.execute(text(f"select {col} from torqlogs where fileid={fileid}")).all())
+			df = pd.DataFrame(session.execute(text(f'select {col} from torqlogs where fileid={fileid}')).all())
 		else:
-			df = pd.DataFrame(session.execute(text(f"select {col} from torqlogs where fileid={fileid} limit {limit}")).all())
+			df = pd.DataFrame(session.execute(text(f'select {col} from torqlogs where fileid={fileid} limit {limit}')).all())
 		try:
 			nulls = df.isnull().sum().values[0]
-		except (IndexError, AttributeError) as e:
-			logger.error(f"{type(e)} {e} {col=} ")
+		except (IndexError,AttributeError) as e:
+			logger.error(f'{type(e)} {e} {col=} ')
 			nulls = 0.0
 		# nullratio = len(df)/df.isnull().sum().values[0]
 		nr = 0.0
 		if nulls > 0:
 			try:
-				nr = len(df) / nulls
+				nr = len(df)/nulls
 			except (Exception, RuntimeError, ZeroDivisionError) as e:
-				logger.error(f"{type(e)} {e} {col=} {df.describe()}")
+				logger.error(f'{type(e)} {e} {col=} {df.describe()}')
 
-			# if nr == 1.0:
 		minval = df.min().values[0] or 0.0
 		mednval = df.median().values[0] or 0.0
 		meannval = df.mean().values[0] or 0.0
 		maxnval = df.max().values[0] or 0.0
-		print(f"  {col:<{maxnlen}} nulls: {nulls:>3} nr: {nr:>3.3} {minval:>3.3} {mednval:>3.3} {meannval:>3.3} {maxnval:>3.3}")
-
+		print(f'  {col:<{maxnlen}} nulls: {nulls:>3} nr: {nr:>3.3} {minval:>3.3} {mednval:>3.3} {meannval:>3.3} {maxnval:>3.3}')
 
 def generate_torqdata(df: pd.DataFrame, session: sessionmaker = None, args: argparse.Namespace = None):
 	# generate torqdata from torqlogs

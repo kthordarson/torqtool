@@ -152,6 +152,8 @@ def send_data_to_db(args: argparse.Namespace,
 		return send_results
 
 def gethash(filename: str):
+	# #if args.debug:
+	# 	logger.debug(f'Sent {len(data)} rows from {fn} id:{fileid} to database {args.dbmode}')
 	return md5(open(filename, "rb").read()).hexdigest()
 
 def get_files_to_send(session: sessionmaker, args):
