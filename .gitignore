@@ -1,4 +1,7 @@
 *.db
+*.sql
+old*
+temp*
 test*
 torqfiskurdb*
 __pycache__/
