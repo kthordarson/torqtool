@@ -1,4 +1,6 @@
 *.db
+*.sql
+old*
 test*
 temp*
 torqfiskurdb*
