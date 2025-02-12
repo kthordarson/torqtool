@@ -10,7 +10,7 @@ def get_bad_vals(csvfile: str):
 		l0 = line.split(',')
 		for lx in l0:
 			try:
-				l1 = lx.encode('ascii')
+				_ = lx.encode('ascii')
 			except (UnicodeEncodeError, UnicodeDecodeError) as e:
 				# logger.warning(f'unicodeerr: {e} in {csvfile} obj={e.object} start={e.start} end={e.end} reason={e.reason}')# lt={type(line)} l={line}')
 				badvals.append(e.object[e.start:e.end])

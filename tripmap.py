@@ -7,7 +7,7 @@ from loguru import logger
 from datamodels import Torqlogs, TorqFile
 import matplotlib.pyplot as plt
 
-from plotutils import MAP_CACHE, PLOT_DIR
+from plotutils import PLOT_DIR  # MAP_CACHE,
 from plotutils import plot_trip, combine_map_plot, download_maps
 # x = latitude y = longitude !
 

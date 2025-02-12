@@ -166,7 +166,7 @@ class Torqlogs(Base):
 	gravityxg = Column('gravityxg', Double)
 	gravityyg = Column('gravityyg', Double)
 	gravityzg = Column('gravityzg', Double)
-	longitude = Column('longitude', Double) # 'longitude':np.float64,
+	longitude = Column('longitude', Double)  # 'longitude':np.float64,
 	latitude = Column('latitude', Double)
 	horizontaldilutionofprecision = Column('horizontaldilutionofprecision', Double)
 	bearing = Column('bearing', Double)

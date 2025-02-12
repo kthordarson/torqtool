@@ -6,9 +6,9 @@ from datetime import datetime
 from loguru import logger
 import sys
 from sqlalchemy import (text)
-from sqlalchemy.exc import (OperationalError, DuplicateColumnError)
+from sqlalchemy.exc import OperationalError  # , DuplicateColumnError)
 from utils import get_parser, get_engine_session, convert_string_to_datetime
-from schemas import schema_datatypes, dataschema
+from schemas import dataschema  # schema_datatypes,
 from datamodels import TorqFile, Startpos, Endpos
 
 def send_torqdata(tfid, dburl, debug=False):
@@ -64,6 +64,7 @@ def collect_db_filestats(args, todatabase=True, droptable=True):
 		logger.info(f"[{fileidx}/{len(file_ids)}] {file.fileid} ")
 
 def send_db_filestats(args, todatabase=True, droptable=True, results=None):
+	file = None
 	engine, session = get_engine_session(args)
 	df = pd.DataFrame([k for k in results])
 	try:
@@ -82,16 +83,16 @@ def oldspupdates(args: argparse.Namespace, fileinfo: dict):
 	engine, session = get_engine_session(args)
 	fileid = fileinfo.get("fileid", None)
 	torqfile = session.query(TorqFile).filter(TorqFile.fileid == fileid).first()
-	total_rows_db = int(pd.DataFrame(session.execute(text(f"select count(*) from torqlogs where fileid={torqfile.fileid}"))).values[0][0])  # where id>0 and
+	# total_rows_db = int(pd.DataFrame(session.execute(text(f"select count(*) from torqlogs where fileid={torqfile.fileid}"))).values[0][0])  # where id>0 and
 	datemin = pd.DataFrame(session.execute(text(f"select gpstime,latitude as latstart,longitude as lonstart from torqlogs where fileid={torqfile.fileid} order by gpstime asc limit 1 ")))
-	datemax = pd.DataFrame(session.execute(text(f"select gpstime,latitude as latend, longitude as lonend from torqlogs where fileid={torqfile.fileid} order by gpstime desc limit 1 ")))
-	#start_pos = session.execute(text(f'select fileid,latitude as latstart,longitude as lonstart from torqlogs where fileid={torqfile.fileid} order by gpstime asc limit 1')).one()
-	#start_pos = datemin.values[0]
+	# datemax = pd.DataFrame(session.execute(text(f"select gpstime,latitude as latend, longitude as lonend from torqlogs where fileid={torqfile.fileid} order by gpstime desc limit 1 ")))
+	# start_pos = session.execute(text(f'select fileid,latitude as latstart,longitude as lonstart from torqlogs where fileid={torqfile.fileid} order by gpstime asc limit 1')).one()
+	# start_pos = datemin.values[0]
 	# todo check if startpos exists before creating new
 	start_pos = {'latstart': float(datemin.loc[0].latstart), 'lonstart': float(datemin.loc[0].lonstart)}
-	end_pos = {'latend': float(datemax.loc[0].latend), 'lonend': float(datemax.loc[0].lonend)}
+	# end_pos = {'latend': float(datemax.loc[0].latend), 'lonend': float(datemax.loc[0].lonend)}
 	sp_updates = session.query(Startpos).filter(Startpos.latstart == start_pos['latstart']).filter(Startpos.lonstart == start_pos['lonstart']).all()
-	ep_updates = session.query(Endpos).filter(Endpos.latend == end_pos['latend']).filter(Endpos.lonend == end_pos['lonend']).all()
+	# ep_updates = session.query(Endpos).filter(Endpos.latend == end_pos['latend']).filter(Endpos.lonend == end_pos['lonend']).all()
 	if len(sp_updates) > 0:
 		for s in sp_updates:
 			s.count += 1
@@ -279,7 +280,7 @@ def collect_db_columnstats(args):
 	results = pd.DataFrame()
 	tempres = {}
 	for idx, column in column_list:
-		t1 = datetime.now()
+		# t1 = datetime.now()
 		try:
 			nulls = pd.DataFrame(session.execute(text(f"select count(*) as count from torqlogs where {column} is null")).all()).values[0][0]
 			notnulls = total_rows - nulls

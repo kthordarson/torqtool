@@ -1,3 +1,4 @@
+plotutils.py
 *.db
 *.sql
 old*
