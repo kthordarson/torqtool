@@ -64,69 +64,14 @@ def fix_column_names(csvfile: str, args):
                     f.writelines(rawdata)
             else:
                 if args.extradebug:
-                    pass  # logger.warning(f"backup file exists {bakfile} skipping write {csvfile}")
+                    logger.warning(f"backup file exists {bakfile} skipping write {csvfile}")
         else:
-            pass  # logger.info(f'skipping write {csvfile}')
+            logger.info(f'skipping write {csvfile}')
     except Exception as e:
         logger.error(f"{type(e)} {e} in {csvfile}")
         return False
     finally:
         return True
-
-
-def check_and_fix_logs(logfiles, args):
-    # iterate all log files (that have not been fixed) , check for bad chars, remove them
-    # skip files that have been fixed already, by checking in the database
-    # new_log_files = []
-    # dburl = 'sqlite:///torqfiskur.db'
-    # engine = create_engine(dburl, echo=False, connect_args={'check_same_thread': False})
-    # Session = sessionmaker(bind=engine)
-    # session = Session()
-    engine, session = get_engine_session(args)
-    for log in logfiles:
-        # check if log file has been fixed already, if not fix it
-        pass
-
-
-def drop_bad_columns(logfile: str, savebackup=True):
-    # drop  columns with funny names from log file
-    # saves to new csv file
-    df = pd.read_csv(logfile, nrows=1)
-    needbackup = False
-    for c in df.columns:
-        if len(c) == 0 or c[0].isnumeric():
-            logger.warning(f"invalid/empty column {c} in {logfile} dropping...")
-            df = df.drop(columns=c)
-            needbackup = True
-    if needbackup and savebackup:
-        bakname = Path(f"{logfile}.bak")
-        shutil.copy(logfile, bakname)
-        logger.info(f"backed up {logfile} to {bakname}")
-        df.to_csv(logfile, index=False)
-
-
-def drop_empty_columns(logfile: str, savebackup=True):
-    # drop empty columns from log file
-    # saves to new csv file
-    df = pl.read_csv(
-        logfile, ignore_errors=True, try_parse_dates=True, truncate_ragged_lines=True
-    ).to_pandas()
-    needbackup = False
-    for c in df.columns:
-        lchk = len([k for k in df[c] if k == "-"])
-        logger.debug(f"checking {c} in {logfile} l:{lchk} len:{len(df[c])}")
-        if lchk == len(df[c]):
-            logger.warning(f"column {c} full of - values in {logfile} dropping...")
-            df = df.drop(columns=c)
-            needbackup = True
-    if needbackup and savebackup:
-        bakname = Path(f"{logfile}.bak")
-        shutil.copy(logfile, bakname)
-        logger.info(f"backed up {logfile} to {bakname}")
-        df.to_csv(logfile, index=False)
-    else:
-        logger.info(f"no empty columns in {logfile}")
-
 
 def get_cols(logpath: str, extglob: str = "**/*.csv", debug=False):
     """
@@ -192,7 +137,7 @@ def run_fixer(args):
     for f in csvfiles:
         bakname = Path(os.path.join(args.bakpath, Path(f).name))
         if bakname.exists():
-            pass  # logger.warning(f"backup file {bakname} exists, skipping")
+            logger.warning(f"backup file {bakname} exists, skipping")
             continue
         else:
             csvlines = open(f, "r").readlines()
@@ -205,100 +150,6 @@ def run_fixer(args):
             logger.debug(f"{f} {len(csvlines)} got {len(fixedlines)}  ")
             with open(f, "w") as f:
                 f.writelines(fixedlines)
-
-
-def new_columns_collector(logdir: str):
-    """
-    collect column names from all log files, sanitize names
-    returns dict with old names mapped to new names
-    """
-    errors = 0
-    readfiles = 0
-    files_with_errors = []
-    all_columns = []
-    filecount = len([k for k in Path(logdir).glob("*.csv")])
-    x = filecount // 10
-    for idx, k in enumerate(Path(logdir).glob("*.csv")):
-        if idx % x == 0:  # progress indicator
-            logger.info(f"[{idx}/{filecount}] rf={readfiles} e:{errors} ac: {len(all_columns)}")
-        try:
-            # only read first line of csv file and select columns
-            columns = pl.read_csv(
-                k,
-                ignore_errors=True,
-                try_parse_dates=True,
-                truncate_ragged_lines=True,
-                n_rows=1,
-            ).columns
-            # newcolnames = ','.join([re.sub(r'\W', '', col) for col in columns]).encode('ascii', 'ignore').decode().lower().split(',')
-            newcolnames = get_sanatized_column_names(columns)
-            all_columns.extend(
-                [
-                    k
-                    for k in newcolnames.split(",")
-                    if k not in all_columns and k[0].isalpha()
-                ]
-            )
-            readfiles += 1
-        except Exception as e:
-            logger.error(f"[{idx}/{filecount}] {type(e)} {e} {errors} in {k}")
-            errors += 1
-            files_with_errors.append(k)
-    if errors > 0:
-        logger.warning(f"plErrors: {files_with_errors}")
-    # r = dict([k for k in zip(columns, newcolnames)])
-    nclist = [k.strip() for k in newcolnames.split(",")]
-    r = dict([k for k in zip(columns, nclist)])
-    # foo = dict( zip(columns, newcolnames))
-    return r, files_with_errors
-
-
-def get_raw_columns(logfile: str):
-    """
-    get the raw header from a csv logfile
-    returns dict with logfilename and info
-    """
-    # coldata = sorted(coldata, key=lambda x: x['colcount'])
-    with open(logfile, "r") as f:
-        rawh = f.readline()
-    return {"logfile": logfile, "header": rawh, "colcount": len(rawh.split(","))}
-
-
-def get_files_with_errors(logdir: str):
-    """
-    scan logdir for csv files that have problems
-    returns dict with old names mapped to new names
-    """
-
-    # count length of each column in raw csv
-    # _=[print(f'k:{k} len:{len(k)} at : {idx}') for idx,k in enumerate(rawdata[1].split(','))]
-
-    errors = 0
-    readfiles = 0
-    files_with_errors = []
-    all_columns = []
-    filecount = len([k for k in Path(logdir).glob("*.csv")])
-    x = filecount // 10
-    test_read = None
-    for idx, k in enumerate(Path(logdir).glob("*.csv")):
-        if idx % x == 0:
-            logger.info(
-                f"[{idx}/{filecount}] rf={readfiles} e:{errors} ac: {len(all_columns)}"
-            )
-        try:
-            test_read = pl.read_csv(k, try_parse_dates=True, ignore_errors=True)
-            if test_read:
-                readfiles += 1
-        except Exception as e:
-            logger.error(f"[{idx}/{filecount}] {type(e)} {e} {errors} in {k}")
-            errors += 1
-            files_with_errors.append(k)
-    if errors > 0:
-        logger.warning(f"found {files_with_errors} problem files")
-    else:
-        logger.info("no problem files found")
-    # foo = dict( zip(columns, newcolnames))
-    return files_with_errors
 
 
 def split_file(logfile: str, session=None):

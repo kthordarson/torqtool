@@ -31,7 +31,6 @@ def get_parser(appname):
 	parser = argparse.ArgumentParser(description=appname)
 	parser.add_argument("--fixer", default=False, help="run fixer, set --bakpath", action="store_true", dest="fixer")
 	parser.add_argument("--fixcsv", default=False, help="repair csv", action="store_true", dest="fixcsv")
-	parser.add_argument("--foobar", default=False, help="foobar", action="store_true")
 	parser.add_argument("--getcols", default=False, help="prep cols", action="store_true", dest="getcols")
 	parser.add_argument("--repairsplit", default=False, help="enable splitting of strange log files", action="store_true", dest="repairsplit", )
 	parser.add_argument("--samplemode", default=False, help="use samplemode, select small random number of logs-for debugging", action="store_true", dest="samplemode", )
@@ -237,94 +236,6 @@ def get_engine_session(args):
 		sys.exit(-1)
 	return engine, session
 
-
-def mapping_replace(column: str, mapping: dict):
-	if not mapping:
-		raise Exception("Mapping can't be empty")
-	elif not isinstance(mapping, dict):
-		TypeError(f"mapping must be of type dict, but is type: {type(mapping)}")
-	if not isinstance(column, str):
-		raise TypeError(f"column must be of type str, but is type: {type(column)}")
-	branch = pl.when(pl.col(column) == list(mapping.keys())[0]).then(list(mapping.values())[0])
-	for from_value, to_value in mapping.items():
-		try:
-			branch = branch.when(pl.col(column) == from_value).then(to_value)
-		except ComputeError as e:
-			logger.error(e)
-	return branch.otherwise(pl.col(column)).alias(column)
-
-
-def sqlsender(buffer, dburl, debug=False):
-	engine = create_engine(url=dburl, echo=False)
-	# Session = sessionmaker(bind=engine)
-	# session = Session()
-	results = {
-		"fileid": buffer["fileid"], "csvfile": buffer["csvfile"], "status": "unknown", }
-	try:
-		tmpbuf = buffer["torqbuffer"].to_pandas()
-	except ValueError as e:
-		logger.error(f"[tosql] tmpbuf {type(e)} {e}")
-		raise ValueError(f"[tosql] tmpbuf {type(e)} {e}")
-	# logger.info(f'[tosql] tmpbuf.is_empty() {buffer["torqbuffer"].is_empty()} ')
-	# torqfile = (session.query(TorqFile).filter(TorqFile.fileid == results["fileid"]).first())
-	try:
-		tmpbuf.to_sql("torqlogs", con=engine, if_exists="append", index=False)
-		results["status"] = "success"
-		# torqfile = (session.query(TorqFile).filter(TorqFile.fileid == results["fileid"]).first())
-	except (OperationalError, ProgrammingError) as e:
-		# todo handle db locks
-		# todo handle unknown / new columns from csv files
-		newcol = "unknown"
-		if e.code == "e3q8" and "Unknown column" in e.args[0]:
-			try:
-				newcol = e.args[0].split()[4].replace("'", "")
-			except IndexError as iexpt:
-				logger.error(f"[tosql] {iexpt} while handling {e}")
-			logger.warning(f'[tosql] {newcol=} code={e} args={e.args} r={results} csvfile={buffer["csvfile"]}')  # error:{e}
-		elif e.code == "e3q8" and "database is locked" in e.args[0]:
-			logger.warning(f'[tosql] {newcol=} code={e} args={e.args} r={results} csvfile={buffer["csvfile"]}')  # error:{e}
-		else:
-			logger.error(f'[tosql] code={e} r={results} csvfile={buffer["csvfile"]}')  # error:{e}
-			results["status"] = "error"
-	except InternalError as e:
-		logger.error(f'[tosql] InternalError {e} r={results} csvfile={buffer["csvfile"]}')
-		results["status"] = "error"
-	except IntegrityError as e:
-		logger.warning(f'[tosql] {type(e)} code={e} args={e.args[0]} r={results} csvfile={buffer["csvfile"]}')
-		results["status"] = "error"
-		# logger.warning(f'[tosql] {e.statement} {e.params}')
-		# logger.warning(f'[tosql] {e}')
-	except (pymysql.err.DataError, DataError) as e:
-		# logger.error(f'[!]{type(e)}\n{e}\n')
-		csvfile = buffer[
-			"csvfile"
-		]  # session.query(TorqFile).filter(TorqFile.fileid == results['fileid']).first()
-		errmsg = e.args[0]
-		err_row = errmsg.split("row")[-1].strip()
-		err_row = errmsg.split(",")[1].split("at row")[1].strip().strip('")')
-		if "Incorrect double value" in errmsg:
-			err_col = errmsg.split()[8].split(".")[2].strip("`")
-		else:
-			err_col = errmsg.split(",")[1].split("at row")[0].split("'")[1]
-		# logger.warning(f'\n[tosql] code={e}\nargs={e.args[0]}\nr={results}\nerr_row: {err_row}\nerr_col:{err_col}\ntorqfile={tf_err} csvfile={buffer["csvfile"]}\n')  # error:{e}
-		logger.warning(f'\n[tosql] {type(e)} code={e} err_row: {err_row} err_col:{err_col} torqfile={csvfile} fileid:{buffer["fileid"]}')  # error:{e}
-		# tmpbuf = tmpbuf.drop(columns=err_col)
-		err_row = int(err_row)
-		try:
-			tmpbuf = tmpbuf.drop(index=err_row)
-		except Exception as exc:
-			logger.error(f'[torql] {type(exc)} {exc} err_row: {err_row} err_col:{err_col} torqfile={csvfile} fileid:{buffer["fileid"]}')
-		try:
-			tmpbuf.to_sql("torqlogs", con=engine, if_exists="append", index=False)
-			results["status"] = "warning"
-		except (IndexError, KeyError, DataError) as ex:
-			errmsg = ex.args[0]
-			logger.error(f"[!] {type(ex)}\nerrmsg: {errmsg}\n")
-	except (TypeError, ValueError) as e:
-		logger.error(f"[!]{type(e)}\n{e}\n")
-	return results
-
-
 def sqlsender_ppe(buffer, session, debug=False):
 	# engine = create_engine(url=dburl, echo=False)
 	# Session = sessionmaker(bind=engine)
@@ -413,19 +324,6 @@ def read_buff(csvfile, tf_fileid, debug=False):
 	except ComputeError as e:
 		logger.error(f"[rb] {type(e)} {e} csvfile={csvfile}")
 		return rb, error_files
-	# for column in torqbuffer.columns: # replace - with 0
-	# 	mapping = {'-': 0}
-	# 	try:
-	# 		if '-' in str(torqbuffer[column]):
-	# 			torqbuffer = torqbuffer.with_columns(mapping_replace(column,mapping))
-	# 	except ComputeError as e:
-	# 		logger.error(f'[rb] {type(e)} {e} csvfile={csvfile}')
-	# 		logger.warning(f'{column=} rbcol: {torqbuffer[column]} {torqbuffer.columns=}')
-
-	# devtime = torqbuffer.devicetime
-	# if not devtime:
-	# 	logger.error(f'[rb] missing devicetime {csvfile}')
-	# 	return None
 	if torqbuffer.is_empty():
 		logger.error(f"[rb] torqbuffer is empty {csvfile}")
 		return rb, error_files
@@ -439,8 +337,6 @@ def read_buff(csvfile, tf_fileid, debug=False):
 		logger.error(f"[rb] {type(e)} {e} in fix_timestamps {csvfile}\nrbx: {rbx}\n")
 	if rbx:
 		rb["torqbuffer"] = rbx["torqbuffer"]
-		if debug:
-			pass  # logger.info(f'[rb] {csvfile} rbx={rbx} \nrb={rb}\n{error_files}\n')
 	if errf:
 		error_files.extend(errf)
 	return rb, error_files
@@ -714,83 +610,11 @@ def convert_string_to_datetime(s: str):
 			case 36:
 				datetimeobject = datetime.strptime(s, fmt_36).astimezone(pytz.timezone("UTC"))
 			case _:
-				pass  # logger.warning(f'could not match format for fmt_selector {fmt_selector} for {datecol} {f=}.\n sample:first= {df0[datecol][0]} middle= {df0[datecol][len(data)//2]} last= {df0[datecol][len(df0)-1]}\n')
+				pass
 	except (ValueError, TypeError, KeyError) as e:
 		logger.error(f"dateconverter {type(e)} {e} {s=}")
 	finally:
 		return datetimeobject
-
-
-def colreplacer(df):
-	# todo for checking try :
-	# test = [float(k) for k in data['enginecoolanttemperaturef'].values ] # raises exception if not float
-	# test = [float(k) for k in data[columntocheck].values ] # raises exception if not float
-
-	for col in df.columns:
-		# df[col] = df[col].replace('.',',')
-		df[col] = df[col].replace("-", 0)
-		df[col] = df[col].replace("Â", "")
-		df[col] = df[col].replace("â", "")
-		df[col] = df[col].replace("°", "")
-		df[col] = df[col].replace("₂", "")
-		df[col] = df[col].replace("∞", "")
-		df[col] = df[col].replace("£", "")
-		df[col] = df[col].replace("\n", "")
-		df[col] = df[col].replace("612508207723425200000000000000000000000", 0)
-		df[col] = df[col].replace("340282346638528860000000000000000000000", 0)
-		df[col] = df[col].replace("-3402823618710077500000000000000000000", 0)
-		df[col] = df[col].replace("6.125082077234252e+38", 0)
-		df[col] = df[col].replace("3.4028234663852886e+38", 0)
-		df[col] = df[col].replace("-5.481e-05", 0)
-		df[col] = df[col].replace("â\x88\x9e", 0)
-		# â\x88\x9e
-		# -5.481e-05
-		# 6.125082077234252e+38
-		# 3.4028234663852886e+38
-		# 6.125082077234252e+38
-		# 612508207723425200000000000000000000000
-		# df[col] = rcol
-	# data = df.fill_null(0).fill_nan(0)
-	# df = data.to_pandas()
-	# df1 = df.rename(columns=ncc)
-
-
-def fix_bad_values(data: pd.DataFrame, f: str):
-	"""
-	search and replace bad values from databuffer
-	param: data dataframe, f filename (for ref)
-	returns fixed data if possible, else orginal
-	"""
-	# fixed_data = pd.DataFrame()
-	# 'â\x88\x9e' found in tracklog-2021-jul-05_17-53-16.csv
-	# badhex
-	# C3 A2 C2 88 C2 9E
-	# C3 82 C2 B0
-	# C3 A2 C2 82 C2 82
-	# C3 82 C2 B0
-	# Â°
-	try:
-		# needs_fix = [k for k in data.columns if '-' in data[k].values]
-		for c in data:
-			data[c] = data[c].replace("-", 0)
-			data[c] = data[c].replace("∞", 0)
-			data[c] = data[c].replace("NaN", 0)
-			data[c] = data[c].replace("6.125082077234252e+38", 0)
-			# 6.125082077234252e+38
-		# fixcount = 0
-		# for fix in needs_fix:
-
-		# 	data[fix] = data[fix].replace('340282346638528860000000000000000000000',0)
-		# 	data[fix] = data[fix].replace('-3402823618710077500000000000000000000',0)
-		# 	data[fix] = data[fix].replace('612508207723425200000000000000000000000',0)
-		# 	data[fix] = data[fix].replace('â\x88\x9e',0)
-		# 	fixcount += 1
-		# if fixcount>0:
-		# 	logger.debug(f'fixed {fixcount} things in {f}')
-		return data
-	except Exception as e:
-		logger.error(f"error in fixer: {type(e)} {e} for {f}")
-		raise e
 
 def read_profile(profile_fn: str):
 	# read profile.properties file, to extract some data

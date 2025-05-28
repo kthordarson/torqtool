@@ -24,12 +24,6 @@ from utils import fix_logfile, generate_torqdata, get_csv_files, get_engine_sess
 # if a log files contains entries from more than 24h, check and split ???
 # more ....
 
-
-async def create_torqdata(session, args):
-    # dataworkders
-    return
-
-
 async def scanpath(session, args):
     """
     scan a path for log files
@@ -60,35 +54,11 @@ async def scanpath(session, args):
     finally:
         return newfilelist
 
-
-async def check_unfixedfiles(session, args):
-    # get list of unfixed files from db
-    t0 = datetime.now()
-    unfixedfiles = session.query(TorqFile).all()
-    results = {"results": {"unfixed": []}}
-
-    if len(unfixedfiles) > 0:
-        if args.debug:
-            logger.warning(f"t: {(datetime.now()-t0).seconds} found {len(unfixedfiles)} unfixed files")
-        for unfixed in unfixedfiles:
-            punfix = Path(unfixed.csvfile)
-            if args.debug:
-                logger.debug(f"sending {punfix} to fixer {unfixed=} {type(unfixed)}")
-            if fix_logfile(punfix):
-                session.commit()
-                if args.debug:
-                    logger.debug(f"t: {(datetime.now()-t0).seconds} fixed {unfixed}")
-            else:
-                results["results"]["unfixed"].append(unfixed)
-                if args.debug:
-                    logger.warning(f't: {(datetime.now()-t0).seconds} fixer failed on {unfixed} unfixed: {len(results["results"]["unfixed"])}')
-
-
 async def send_torq_logs(filelist, session, args):
     # get files from db that are fixed but not read or sent to db
     # tripstart = timer()
     # tripend = timer()
-    # t0 = datetime.now()
+    t0 = datetime.now()
     if args.debug:
         logger.debug(f"sendtorqlogs  starting torq_worker_ppe for {len(filelist)} files mode={args.threadmode}")
     async with asyncio.TaskGroup() as tg:
@@ -96,7 +66,7 @@ async def send_torq_logs(filelist, session, args):
             # asyncio.set_event_loop(loop)
             t = session.query(TorqFile).filter(TorqFile.fileid == tf.fileid).first()
             if args.debug:
-                pass  # logger.debug(f'[tw] t0={datetime.now()-t0} {tf=} {t}')
+                logger.debug(f'[tw] t0={datetime.now()-t0} {tf=} {t}')
             if t:
                 tg.create_task(torq_worker_ppe(t, session, args.debug))
             else:
@@ -128,7 +98,6 @@ async def main(args):
     t0 = datetime.now()
     engine, session = get_engine_session(args)
     if args.torqdata:
-        await create_torqdata(session, args)
         sys.exit(0)
     if args.database_dropall:
         try:
@@ -181,11 +150,7 @@ async def main(args):
         results = None
         res = None
         results = await scanpath(session, args)
-        if args.debug:
-            pass  # logger.debug(f"t: {(datetime.now()-t0).seconds} scanpath returned {len(results)} files")
         for csvfile in results:
-            if args.debug:
-                pass  # logger.debug(f"t: {(datetime.now()-t0).seconds} fixing {csvfile.csvfile} ")
             if fix_logfile(csvfile.csvfile):  # attempt to fix file, returns True if fixed
                 dbf = (session.query(TorqFile).filter(TorqFile.fileid == csvfile.fileid).first())
                 if args.debug:
@@ -194,42 +159,6 @@ async def main(args):
                 logger.warning(f"fixer failed of {csvfile.csvfile}")
 
         await send_torq_logs(results, session, args)
-
-    if args.foobar:
-        unfixcount = 0
-        fixcount = 0
-        for idx, f in enumerate(res["unfixed"]):
-            pcsv = Path(f.csvfile)
-            if args.debug:
-                logger.debug(f"[{idx}/{unfixcount}/{fixcount}] t: {(datetime.now()-t0).seconds} fixing {pcsv}")
-            try:
-                if fix_logfile(pcsv):  # attempt to fix file, returns True if fixed
-                    dbf = (session.query(TorqFile).filter(TorqFile.fileid == f.fileid).first())
-                    if args.debug:
-                        logger.debug(f"[{idx}/{unfixcount}/{fixcount}] t: {(datetime.now()-t0).seconds} fixed {dbf}")
-                    fixcount += 1
-                else:
-                    logger.warning(f"fixer failed of {f.csvfile}")
-            except Exception as e:
-                # todo fix this
-                # brokenfile = str(f.csvfile).replace('trackLog-', 'broken-')
-                logger.error(f"[!] unhandled {type(e)} {e} {f} renaming")
-                # shutil.move(f.csvfile, brokenfile)
-            finally:
-                # logger.info(f'fixed: {fixcount} ')
-                session.commit()
-        if fixcount > 1:
-            # send fixed files to db
-            # read and process files
-            tasks = []
-            # loop = asyncio.new_event_loop()
-            dbtorqfiles = (session.query(TorqFile).all())  # type: ignore
-            async with asyncio.TaskGroup() as tg:
-                for idx, tf in enumerate(dbtorqfiles):
-                    # asyncio.set_event_loop(loop)
-                    t = (session.query(TorqFile).filter(TorqFile.fileid == tf.fileid).first())
-                    tg.create_task(torq_worker_ppe(t, session, args.debug))
-                    # await asyncio.gather(*tasks)
 
 if __name__ == "__main__":
     parser = get_parser("torqtool")

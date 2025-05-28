@@ -15,7 +15,7 @@ import sqlite3
 from datamodels import TorqFile, database_init
 from schemas import dataschema
 from utils import get_parser, get_engine_session, MIN_FILESIZE, transfer_older_logs, convert_string_to_datetime
-from fixers import run_fixer, get_cols, check_and_fix_logs
+from fixers import run_fixer, get_cols
 from updatetripdata import update_torqfile
 
 pd.set_option("future.no_silent_downcasting", True)
@@ -134,45 +134,6 @@ def send_data_to_db(args: argparse.Namespace,
 		session.close()
 		return send_results
 
-
-def send_data_to_db_v2(args: argparse.Namespace, data: pd.DataFrame, csvfilename: str, insertid: bool = True):
-	"""
-	Improved database interaction
-	"""
-	engine, session = get_engine_session(args)
-	try:
-		csvhash = md5(open(csvfilename, "rb").read()).hexdigest()
-
-		# Use a single transaction
-		t = TorqFile(csvfile=Path(csvfilename).parts[-1], csvhash=csvhash)
-		session.add(t)
-		session.flush()  # Get the ID without committing
-
-		# Add fileid column more efficiently
-		data['fileid'] = t.fileid
-
-		# Send to database
-		data.to_sql("torqlogs", con=engine, if_exists="append", index=False, method='multi', chunksize=10000)  # Use chunksize for large files
-
-		# Verify in the same transaction
-		sent_rows = session.execute(text(f"select count(*) from torqlogs where fileid={t.fileid}")).scalar()
-
-		# Commit everything at once
-		session.commit()
-
-		return {'fileid': t.fileid, 'sent_rows': sent_rows}
-	except Exception as e:
-		session.rollback()
-		logger.error(f"Database error: {type(e)} {e} for {csvfilename}")
-		return {'fileid': None, 'sent_rows': 0}
-	finally:
-		session.close()
-
-def gethash(filename: str):
-	# #if args.debug:
-	# 	logger.debug(f'Sent {len(data)} rows from {fn} id:{fileid} to database {args.dbmode}')
-	return md5(open(filename, "rb").read()).hexdigest()
-
 def get_files_to_send(session: sessionmaker, args):
 	"""
 	More efficient file processing that caches hashes
@@ -260,7 +221,6 @@ def cli_main(args):
 					if send_result['sent_rows'] == 0:
 						logger.warning(f'[{idx}/{len(batch)}] sent_rows = 0 {Path(csvfilename).name} {Path(csvfilename).stat().st_size} t: {datetime.now()-sendstart} send_result: {send_result}')
 					else:
-						logger.info(f'[{idx}/{len(batch)}] send {Path(csvfilename).name} {Path(csvfilename).stat().st_size} t: {datetime.now()-sendstart} sent_rows: {send_result["sent_rows"]}')
 						# update torqfiles db with stats
 						sendt = (datetime.now()-sendstart).total_seconds()
 						fileinfo = {
@@ -278,6 +238,7 @@ def cli_main(args):
 						session.close()
 						try:
 							upchk = update_torqfile(args, fileinfo)
+							logger.info(f'[{idx}/{len(batch)}] send {Path(csvfilename).name} {Path(csvfilename).stat().st_size} t: {datetime.now()-sendstart} sent_rows: {send_result["sent_rows"]} upchk:{upchk}')
 							# logger.info(f'[{idx}/{len(batch)}] updone: {upchk} tr: {datetime.now()-readstart} ts: {datetime.now()-sendstart} rtst:{readt}/{sendt}')
 						except ValueError as e:
 							logger.error(f"update_torqfile {type(e)} {e} for {csvfilename}")
@@ -293,7 +254,6 @@ def cli_main(args):
 		# fixer mode
 		# read all log files, fix bad chars, remove them
 		# update database, mark the log file as fixed
-		# check_and_fix_logs(logfiles)
 		run_fixer(args)
 		sys.exit(0)
 	if args.getcols:
@@ -314,9 +274,6 @@ def cli_main(args):
 		# step one, transfer older logs to new location with new filenames
 		new_old_logs = transfer_older_logs(args)
 		logger.debug(f"transfered {len(new_old_logs)} old logs")
-		# step two, read each log file, remove bad chars
-		fixed = check_and_fix_logs(new_old_logs, args)
-		logger.debug(f"{fixed=}")
 		sys.exit(0)
 
 

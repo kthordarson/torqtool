@@ -11,11 +11,6 @@ from utils import get_parser, get_engine_session, convert_string_to_datetime
 from schemas import dataschema  # schema_datatypes,
 from datamodels import TorqFile, Startpos, Endpos
 
-def send_torqdata(tfid, dburl, debug=False):
-	logger.warning("not implemented")
-	return None
-
-
 def collect_db_filestats(args, todatabase=True, droptable=True):
 	# todo fix this is very slow
 	engine, session = get_engine_session(args)
@@ -78,53 +73,6 @@ def send_db_filestats(args, todatabase=True, droptable=True, results=None):
 		logger.error(f"{type(e)} {e} for\n{df=}\n {results=}\n")
 		return None
 
-
-def oldspupdates(args: argparse.Namespace, fileinfo: dict):
-	engine, session = get_engine_session(args)
-	fileid = fileinfo.get("fileid", None)
-	torqfile = session.query(TorqFile).filter(TorqFile.fileid == fileid).first()
-	# total_rows_db = int(pd.DataFrame(session.execute(text(f"select count(*) from torqlogs where fileid={torqfile.fileid}"))).values[0][0])  # where id>0 and
-	datemin = pd.DataFrame(session.execute(text(f"select gpstime,latitude as latstart,longitude as lonstart from torqlogs where fileid={torqfile.fileid} order by gpstime asc limit 1 ")))
-	# datemax = pd.DataFrame(session.execute(text(f"select gpstime,latitude as latend, longitude as lonend from torqlogs where fileid={torqfile.fileid} order by gpstime desc limit 1 ")))
-	# start_pos = session.execute(text(f'select fileid,latitude as latstart,longitude as lonstart from torqlogs where fileid={torqfile.fileid} order by gpstime asc limit 1')).one()
-	# start_pos = datemin.values[0]
-	# todo check if startpos exists before creating new
-	start_pos = {'latstart': float(datemin.loc[0].latstart), 'lonstart': float(datemin.loc[0].lonstart)}
-	# end_pos = {'latend': float(datemax.loc[0].latend), 'lonend': float(datemax.loc[0].lonend)}
-	sp_updates = session.query(Startpos).filter(Startpos.latstart == start_pos['latstart']).filter(Startpos.lonstart == start_pos['lonstart']).all()
-	# ep_updates = session.query(Endpos).filter(Endpos.latend == end_pos['latend']).filter(Endpos.lonend == end_pos['lonend']).all()
-	if len(sp_updates) > 0:
-		for s in sp_updates:
-			s.count += 1
-			torqfile.startid = s.startid
-			logger.warning(f"startpos already exists for {torqfile.fileid} {torqfile.startid} {s.count=} {start_pos=}")
-			session.add(s)
-			session.commit()
-		else:
-			sp = Startpos(latstart=start_pos['latstart'], lonstart=start_pos['lonstart'],label=torqfile.csvfile)
-			sp.count = 1
-			session.add(sp)
-			session.commit()
-			torqfile.startid = sp.startid
-	session.add(torqfile)
-	session.commit()
-
-
-def get_start_pos_info(args, fileinfo, gpsoffset=0.00004):
-	# guess the start and end positions
-	# returns startid and endid
-	# gpsoffset = 0.00004
-	latoffset = 0.0001010 + gpsoffset
-	lonoffset = 0.0001421 + gpsoffset
-	engine, session = get_engine_session(args)
-	sp_updates = session.query(Startpos).filter(
-		Startpos.latstart >= fileinfo['dlatstart']-latoffset).filter(
-		Startpos.latstart <= fileinfo['dlatstart']+latoffset).filter(
-		Startpos.lonstart >= fileinfo['dlonstart']-lonoffset).filter(
-		Startpos.lonstart <= fileinfo['dlonstart']+lonoffset).all()
-	session.close()
-	return sp_updates
-
 def get_sp_updates(args, latstart, lonstart, gpsoffset=0.00004):
 	latoffset = 0.0000510 + gpsoffset
 	lonoffset = 0.0001221 + gpsoffset
@@ -161,32 +109,6 @@ def get_start_end_info(args, fileinfo, gpsoffset=0.00002):
 	# ep_updates = session.query(Endpos).filter(Endpos.latend > fileinfo['dlatend']-latoffset).filter(Endpos.latend < fileinfo['dlatend']+latoffset).filter(Endpos.lonend >= fileinfo['dlonend']-lonoffset).filter(Endpos.lonend <= fileinfo['dlonend']+lonoffset).all()
 	# session.close()
 	return sp_updates, ep_updates
-
-def get_bounding_box(args, fileinfo, gpsoffset=0.00002):
-	"""
-	"""
-	return 0
-
-def calculate_bounding_box(coordinates):
-	# Example usage:
-	# coordinates = [(34.05, -118.25), (36.16, -115.15), (40.71, -74.01), (37.77, -122.42)]
-	# bounding_box = calculate_bounding_box(coordinates)
-	# print(bounding_box)  # Output: (34.05, -122.42, 40.71, -74.01)
-	min_lat = float('inf')
-	min_lon = float('inf')
-	max_lat = float('-inf')
-	max_lon = float('-inf')
-	for lat, lon in coordinates:
-		if lat < min_lat:
-			min_lat = lat
-		if lon < min_lon:
-			min_lon = lon
-		if lat > max_lat:
-			max_lat = lat
-		if lon > max_lon:
-			max_lon = lon
-	return (min_lat, min_lon, max_lat, max_lon)
-
 
 def update_torqfile(args: argparse.Namespace, fileinfo: dict):
 	# todo fix this is very slow
@@ -314,7 +236,7 @@ def collect_db_columnstats(args):
 def collect_db_speeds(args):
 	engine, session = get_engine_session(args)
 	try:
-		session.execute(text('delete from speeds;'))  # pass  # session.execute(text('drop table if exists speeds;'))
+		session.execute(text('delete from speeds;'))
 		session.commit()
 	except Exception as e:
 		logger.error(f"{type(e)} {e}")
