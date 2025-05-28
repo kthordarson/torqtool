@@ -38,6 +38,69 @@ pd.set_option("future.no_silent_downcasting", True)
 class Polarsreaderror(Exception):
 	pass
 
+async def find_optimal_batch_size(args):
+	"""
+	Run processing with different batch sizes to determine which is optimal
+	Returns the optimal batch size based on files processed per second
+	"""
+	engine, session = get_engine_session(args)
+	try:
+		database_init(engine)
+
+		# Get files to process
+		with session.no_autoflush:
+			newfiles = await get_files_to_send(session, args=args)
+
+		if len(newfiles) == 0:
+			logger.warning("No files to process. Cannot determine optimal batch size.")
+			return args.batch_size
+
+		# Limit test set if we have many files
+		test_files = newfiles[:min(len(newfiles), 50)]  # Use at most 50 files for testing
+		logger.info(f"Testing batch sizes using {len(test_files)} files")
+
+		# Test various batch sizes
+		batch_sizes_to_test = [1,2,5,10,20,30]
+		# Filter out batch sizes too large for our test set
+		# batch_sizes_to_test = [bs for bs in batch_sizes_to_test if bs <= len(test_files)]
+
+		results = {}
+
+		for batch_size in batch_sizes_to_test:
+			logger.info(f"Testing batch_size={batch_size}")
+			start_time = datetime.now()
+
+			# Process files with this batch size
+			for i in range(0, len(test_files), batch_size):
+				batch = test_files[i:i+batch_size]
+				batch_results = await process_batch(batch, args)
+				# Don't do additional processing to keep timing focused on batch processing
+
+			elapsed_time = (datetime.now() - start_time).total_seconds()
+			files_per_second = len(test_files) / elapsed_time if elapsed_time > 0 else 0
+
+			results[batch_size] = {
+				'elapsed_time': elapsed_time,
+				'files_per_second': files_per_second
+			}
+			logger.info(f"  Batch size {batch_size}: {elapsed_time:.2f}s, {files_per_second:.2f} files/sec")
+
+			# Allow system to cool down between tests
+			await asyncio.sleep(0.1)
+
+		# Find the batch size with the highest throughput
+		optimal_batch_size = max(results, key=lambda x: results[x]['files_per_second'])
+
+		logger.info("\nResults summary:")
+		for bs in batch_sizes_to_test:
+			logger.info(f"  Batch size {bs}: {results[bs]['files_per_second']:.2f} files/sec")
+		logger.info(f"\nOptimal batch size: {optimal_batch_size} ({results[optimal_batch_size]['files_per_second']:.2f} files/sec)")
+
+		return optimal_batch_size
+
+	finally:
+		session.close()
+
 def read_csv_file(logfile:str, args:argparse.Namespace):
 	"""
 	Optimized version that combines filtering operations and reduces conversions
@@ -194,12 +257,32 @@ async def get_files_to_send_v1(session: sessionmaker, args):
 
 	return result
 
+async def process_batch(batch_files, args):
+	tasks = []
+	for csvfilename in batch_files:
+		tasks.append(process_single_file(csvfilename, args))
+	return await asyncio.gather(*tasks, return_exceptions=True)
+
+async def process_single_file(csvfilename, args):
+	try:
+		data = read_csv_file(logfile=csvfilename, args=args)  # Keep synchronous
+		if len(data) == 0:
+			logger.warning(f'no data in {csvfilename}')
+			return None
+
+		send_result = await send_data_to_db(args, data, csvfilename)
+		# Rest of processing...
+		return {'file': csvfilename, 'result': send_result}
+	except Exception as e:
+		logger.error(f"Error processing {csvfilename}: {type(e)} {e}")
+		return None
+
 async def cli_main(args):
 	if args.dbinfo:
 		logcount = 0
 		try:
 			engine, session = get_engine_session(args)
-			logcount = session.execute(text("select count(*) from torqlogs"))
+			logcount = session.execute(text("select count(*) from torqlogs")).all()
 		except Exception as e:
 			logger.error(f'error {type(e)} {e}')
 			sys.exit(-1)
@@ -224,45 +307,23 @@ async def cli_main(args):
 			remaining = len(newfiles)
 			for i in range(0, len(newfiles), args.batch_size):
 				batch = newfiles[i:i+args.batch_size]
-				logger.debug(f'[{i}/{len(newfiles)}] batch_size={len(batch)} remaining={remaining} files')
-				for idx, csvfilename in enumerate(batch):
-					# ... process each file similar to before ...
-					readstart = datetime.now()
-					# logger.debug(f'[{idx}/{len(batch)}] reading {Path(csvfilename).name} {Path(csvfilename).stat().st_size} bytes')
-					try:
-						data = read_csv_file(logfile=csvfilename, args=args)
-					except Polarsreaderror as e:
-						logger.error(f"polarsreaderror {type(e)} {e} for {csvfilename}")
+				results = await process_batch(batch, args)
+				for result in results:
+					if result is None:
 						continue
-					except IndexError as e:
-						logger.error(f"{type(e)} {e} for {csvfilename}")
-						session.close()
-						continue
-					except Exception as e:
-						logger.error(f"unhandled {type(e)} {e} for {csvfilename}")
-						session.close()
-						continue
-					if len(data) == 0:
-						logger.warning(f'no data in {csvfilename}')
-						continue
-					# if read ok, send data
-					readt = (datetime.now()-readstart).total_seconds()
-					sendstart = datetime.now()
-					try:
-						send_result = await send_data_to_db(args, data, csvfilename)
-					except Exception as e:
-						logger.error(f"unhandled {type(e)} {e} for {csvfilename}")
-						continue
+					csvfilename = result['file']
+					send_result = result['result']
 					if send_result['sent_rows'] == 0:
-						logger.warning(f'[{idx}/{len(batch)}] sent_rows = 0 {Path(csvfilename).name} {Path(csvfilename).stat().st_size} t: {datetime.now()-sendstart} send_result: {send_result}')
+						logger.warning(f'sent_rows = 0 {Path(csvfilename).name} {Path(csvfilename).stat().st_size} send_result: {send_result}')
 					else:
-						# update torqfiles db with stats
-						sendt = (datetime.now()-sendstart).total_seconds()
+						# Read the CSV file again to extract required stats
+						data = read_csv_file(logfile=csvfilename, args=args)
+						if len(data) == 0:
+							logger.warning(f'no data in {csvfilename} when extracting stats')
+							continue
 						fileinfo = {
 							'fileid': send_result['fileid'],
 							'sent_rows': send_result['sent_rows'],
-							'sendtime': sendt,
-							'readtime': readt,
 							'dtripstart': data['gpstime'][0],
 							'dtripend': data['gpstime'][len(data)-1],
 							'dlatstart': float(data['latitude'][0]),
@@ -273,8 +334,7 @@ async def cli_main(args):
 						session.close()
 						try:
 							upchk = await update_torqfile(args, fileinfo)
-							logger.info(f'[{idx}/{len(batch)}] send {Path(csvfilename).name} {Path(csvfilename).stat().st_size} t: {datetime.now()-sendstart} sent_rows: {send_result["sent_rows"]} upchk:{upchk}')
-							# logger.info(f'[{idx}/{len(batch)}] updone: {upchk} tr: {datetime.now()-readstart} ts: {datetime.now()-sendstart} rtst:{readt}/{sendt}')
+							logger.info(f'send {Path(csvfilename).name} {Path(csvfilename).stat().st_size} sent_rows: {send_result["sent_rows"]} upchk:{upchk}')
 						except ValueError as e:
 							logger.error(f"update_torqfile {type(e)} {e} for {csvfilename}")
 						except Exception as e:
@@ -310,7 +370,9 @@ async def cli_main(args):
 		new_old_logs = transfer_older_logs(args)
 		logger.debug(f"transfered {len(new_old_logs)} old logs")
 		sys.exit(0)
-
+	if args.find_optimal_batch_size:
+		optimal_batch_size = await find_optimal_batch_size(args)
+		logger.info(f"Recommended batch size for your system: {optimal_batch_size}")
 
 def get_args(appname):
 	parser = get_parser(appname)

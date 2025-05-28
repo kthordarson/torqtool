@@ -29,6 +29,7 @@ MIN_FILESIZE = 3000
 
 def get_parser(appname):
 	parser = argparse.ArgumentParser(description=appname)
+	parser.add_argument("--find-optimal-batch-size", default=False,  help="Run tests to find optimal batch size",  action="store_true", dest="find_optimal_batch_size")
 	parser.add_argument("--fixer", default=False, help="run fixer, set --bakpath", action="store_true", dest="fixer")
 	parser.add_argument("--fixcsv", default=False, help="repair csv", action="store_true", dest="fixcsv")
 	parser.add_argument("--getcols", default=False, help="prep cols", action="store_true", dest="getcols")
