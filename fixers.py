@@ -130,7 +130,7 @@ def get_cols(logpath: str, extglob: str = "**/*.csv", debug=False):
     return stats, columns
 
 
-def run_fixer(args):
+async def run_fixer(args):
     logger.debug(f"searching {args.logpath} for csv files")
     csvfiles = [k for k in Path(args.logpath).glob("**/trackLog-*.csv")]
     logger.debug(f"found {len(csvfiles)} csv files")

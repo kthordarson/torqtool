@@ -110,7 +110,7 @@ def get_start_end_info(args, fileinfo, gpsoffset=0.00002):
 	# session.close()
 	return sp_updates, ep_updates
 
-def update_torqfile(args: argparse.Namespace, fileinfo: dict):
+async def update_torqfile(args: argparse.Namespace, fileinfo: dict):
 	# todo fix this is very slow
 	engine, session = get_engine_session(args)
 	fileid = fileinfo.get("fileid", None)

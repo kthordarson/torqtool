@@ -47,7 +47,7 @@ async def scanpath(session, args):
         logger.error(f"no csv files found in {args.logpath}")
         sys.exit(1)
     try:
-        newfilelist = send_torqfiles(filelist, session, debug=args.debug)
+        newfilelist = await send_torqfiles(filelist, session, debug=args.debug)
     except Exception as e:
         logger.error(f"[!] unhandled {type(e)} {e}")
         sys.exit(1)

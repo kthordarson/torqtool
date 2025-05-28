@@ -1,3 +1,4 @@
+import asyncio
 import sys
 import uuid
 from datetime import datetime
@@ -234,7 +235,7 @@ def database_init(engine):  # create tables
 		logger.error(f'[dbinit] {type(e)} {e}')
 		sys.exit(-1)
 
-def send_torqfiles(filelist=[], session=None, debug=False):  # returns list of new files
+async def send_torqfiles(filelist=[], session=None, debug=False):  # returns list of new files
 	"""
 	send list of files to db
 	returns list of TorqFile objects to be processed and sent to db

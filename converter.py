@@ -1,4 +1,5 @@
 #!/usr/bin/python3
+import asyncio
 import argparse
 import sys
 from datetime import datetime
@@ -88,7 +89,7 @@ def read_csv_file(logfile:str, args:argparse.Namespace):
 		logger.error(msg)
 		raise Polarsreaderror(msg)
 
-def send_data_to_db(args: argparse.Namespace,
+async def send_data_to_db(args: argparse.Namespace,
 	data: pd.DataFrame,
 	csvfilename: str,
 	insertid: bool = True,
@@ -134,7 +135,41 @@ def send_data_to_db(args: argparse.Namespace,
 		session.close()
 		return send_results
 
-def get_files_to_send(session: sessionmaker, args):
+async def calculate_hash(path):
+	"""Calculate MD5 hash of a file asynchronously"""
+	loop = asyncio.get_running_loop()
+	return await loop.run_in_executor(
+		None,
+		lambda: md5(open(path, "rb").read()).hexdigest()
+	)
+
+async def get_files_to_send(session: sessionmaker, args):
+	"""More efficient file processing that caches hashes using async"""
+	# Get all hashes from database in one query
+	alldbfiles = session.query(TorqFile).all()
+	hashlist = set([k.csvhash for k in alldbfiles])  # Use set for O(1) lookups
+
+	# Get all CSV files first
+	csv_paths = list(Path(args.logpath).glob("**/trackLog*.csv"))
+	logger.info(f"Found {len(csv_paths)} CSV files to process")
+
+	# Filter by size first to avoid unnecessary hash calculations
+	csv_paths = [p for p in csv_paths if p.stat().st_size > MIN_FILESIZE]
+	logger.info(f"{len(csv_paths)} files exceed minimum size")
+
+	# Calculate hashes concurrently
+	tasks = [calculate_hash(path) for path in csv_paths]
+	file_hashes = await asyncio.gather(*tasks)
+
+	# Filter files that aren't in database
+	result = []
+	for path, file_hash in zip(csv_paths, file_hashes):
+		if file_hash not in hashlist:
+			result.append(str(path))
+
+	return result
+
+async def get_files_to_send_v1(session: sessionmaker, args):
 	"""
 	More efficient file processing that caches hashes
 	"""
@@ -159,7 +194,7 @@ def get_files_to_send(session: sessionmaker, args):
 
 	return result
 
-def cli_main(args):
+async def cli_main(args):
 	if args.dbinfo:
 		logcount = 0
 		try:
@@ -177,7 +212,7 @@ def cli_main(args):
 
 			# Get files in one operation
 			with session.no_autoflush:
-				newfiles = get_files_to_send(session, args=args)
+				newfiles = await get_files_to_send(session, args=args)
 
 			if args.db_limit:
 				newfiles = newfiles[:int(args.db_limit)]
@@ -214,7 +249,7 @@ def cli_main(args):
 					readt = (datetime.now()-readstart).total_seconds()
 					sendstart = datetime.now()
 					try:
-						send_result = send_data_to_db(args, data, csvfilename)
+						send_result = await send_data_to_db(args, data, csvfilename)
 					except Exception as e:
 						logger.error(f"unhandled {type(e)} {e} for {csvfilename}")
 						continue
@@ -237,7 +272,7 @@ def cli_main(args):
 						}
 						session.close()
 						try:
-							upchk = update_torqfile(args, fileinfo)
+							upchk = await update_torqfile(args, fileinfo)
 							logger.info(f'[{idx}/{len(batch)}] send {Path(csvfilename).name} {Path(csvfilename).stat().st_size} t: {datetime.now()-sendstart} sent_rows: {send_result["sent_rows"]} upchk:{upchk}')
 							# logger.info(f'[{idx}/{len(batch)}] updone: {upchk} tr: {datetime.now()-readstart} ts: {datetime.now()-sendstart} rtst:{readt}/{sendt}')
 						except ValueError as e:
@@ -254,7 +289,7 @@ def cli_main(args):
 		# fixer mode
 		# read all log files, fix bad chars, remove them
 		# update database, mark the log file as fixed
-		run_fixer(args)
+		await run_fixer(args)
 		sys.exit(0)
 	if args.getcols:
 		# get columns from all log files in the path
@@ -286,7 +321,8 @@ def get_args(appname):
 
 def main():
 	args = get_args(appname="converter")
-	cli_main(args)
+	asyncio.run(cli_main(args))
+	# cli_main(args)
 
 
 if __name__ == "__main__":
