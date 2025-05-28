@@ -215,20 +215,20 @@ def update_torqfile(args: argparse.Namespace, fileinfo: dict):
 		torqfile.startid = sp.startid
 		sp.count += 1
 		session.add(sp)
-		if sp.label is None:
-			logger.warning(f'found startpos id: {sp.startid} label: {sp.label} count: {sp.count} missing label')
-		else:
-			logger.info(f'found startpos id: {sp.startid} label: {sp.label} count: {sp.count} ')
+		# if sp.label is None:
+		# 	logger.warning(f'found startpos id: {sp.startid} label: {sp.label} count: {sp.count} missing label')
+		# else:
+		# 	logger.info(f'found startpos id: {sp.startid} label: {sp.label} count: {sp.count} ')
 	elif len(sp_updates) > 1:
 		# multiple startpos
-		logger.warning(f'multiple startpos sp: {len(sp_updates)} {torqfile.csvfile} ')
-		_ = [logger.warning(f'{k.startid} {k.label} {k.latstart} {k.lonstart}') for k in sp_updates]
+		# logger.warning(f'multiple startpos sp: {len(sp_updates)} {torqfile.csvfile} ')
+		# _ = [logger.warning(f'{k.startid} {k.label} {k.latstart} {k.lonstart}') for k in sp_updates]
 		if len(set([k.label for k in sp_updates])) == 1:
 			# todo create new merged startpos set by bounding box
 			pass
 	elif len(sp_updates) == 0:
 		# new startpos
-		logger.debug(f'new startpos {fileinfo["dlatstart"]} {fileinfo["dlonstart"]} ')
+		# logger.debug(f'new startpos {fileinfo["dlatstart"]} {fileinfo["dlonstart"]} ')
 		sp = Startpos(latstart=fileinfo["dlatstart"], lonstart=fileinfo["dlonstart"])
 		sp.count = 1
 		session.add(sp)
@@ -240,20 +240,20 @@ def update_torqfile(args: argparse.Namespace, fileinfo: dict):
 		torqfile.endid = ep.endid
 		ep.count += 1
 		session.add(ep)
-		if ep.label is None:
-			logger.warning(f'found endpos id: {ep.endid} label: {ep.label} count: {ep.count} missing label')
-		else:
-			logger.info(f'found endpos id: {ep.endid} label: {ep.label} count: {ep.count} ')
+		# if ep.label is None:
+		# 	logger.warning(f'found endpos id: {ep.endid} label: {ep.label} count: {ep.count} missing label')
+		# else:
+		# 	logger.info(f'found endpos id: {ep.endid} label: {ep.label} count: {ep.count} ')
 	elif len(ep_updates) > 1:
 		# multiple endpos
-		logger.warning(f'# multiple endpos ep: {len(ep_updates)}')
-		_ = [logger.warning(f'{k.endid} {k.label} {k.latend} {k.lonend}') for k in ep_updates]
+		# logger.warning(f'# multiple endpos ep: {len(ep_updates)}')
+		# _ = [logger.warning(f'{k.endid} {k.label} {k.latend} {k.lonend}') for k in ep_updates]
 		if len(set([k.label for k in ep_updates])) == 1:
 			# todo create new merged endpos set by bounding box
 			pass
 	elif len(ep_updates) == 0:
 		# new endpos
-		logger.debug(f'new endpos {fileinfo["dlatend"]} {fileinfo["dlonend"]} ')
+		# logger.debug(f'new endpos {fileinfo["dlatend"]} {fileinfo["dlonend"]} ')
 		ep = Endpos(latend=fileinfo["dlatend"], lonend=fileinfo["dlonend"])
 		ep.count = 1
 		session.add(ep)
@@ -261,7 +261,7 @@ def update_torqfile(args: argparse.Namespace, fileinfo: dict):
 
 	session.add(torqfile)
 	session.commit()
-	logger.info(f"updatedone for fileid: {fileid} ")  # \n{fileinfo=}\n")
+	# logger.info(f"updatedone for fileid: {fileid} ")  # \n{fileinfo=}\n")
 	return 0
 
 def collect_db_columnstats(args):
@@ -463,7 +463,7 @@ if __name__ == "__main__":
 	args = parser.parse_args()
 	try:
 		r = main(args)
-		print(f"[main] got {type(r)}")
+		logger.info(f"[main] got {type(r)}")
 	except Exception as e:
 		logger.error(f"unhandled {type(e)} {e}")
 		sys.exit(-1)

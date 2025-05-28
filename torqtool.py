@@ -148,7 +148,7 @@ async def main(args):
             # asyncio.create_task(collect(iterable()))
         ]
         results = await asyncio.gather(*tasks)
-        print(f"[dbinfo]  trips: {results[0][0]} files: {results[0][1]} logs: {results[0][2]} data: {results[0][3]}")
+        logger.info(f"[dbinfo]  trips: {results[0][0]} files: {results[0][1]} logs: {results[0][2]} data: {results[0][3]}")
         # files = session.query(Torqtrips).count()
         # trips = session.query(Torqtrips).count()
         # logs = session.query(Torqlogs).count()
@@ -230,10 +230,6 @@ async def main(args):
                     t = (session.query(TorqFile).filter(TorqFile.fileid == tf.fileid).first())
                     tg.create_task(torq_worker_ppe(t, session, args.debug))
                     # await asyncio.gather(*tasks)
-
-def maincli():
-    print("hello world")
-
 
 if __name__ == "__main__":
     parser = get_parser("torqtool")

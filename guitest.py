@@ -15,7 +15,7 @@ from sqlalchemy import text
 import numpy as np
 
 from datamodels import Torqlogs, TorqFile
-from ui_untitled import Ui_MainWindow
+from ui_untitled import UiMainWindow
 from utils import get_engine_session
 from converter import get_args
 # x = latitude y = longitude !
@@ -26,13 +26,13 @@ class Mymodel(QAbstractTableModel):
 mymodel = Mymodel()
 
 class KeyPressFilter(QObject):
-	def eventFilter(self, widget, event):
+	def event_filter(self, widget, event):
 		if event.type() == QEvent.KeyPress:
 			text = event.text()
-			print(f'Key {text} {event=}')
+			logger.debug(f'Key {text} {event=}')
 			if event.modifiers():
 				text = event.keyCombination().key().name   # .decode(encoding="utf-8")
-				print(f'event.modifierskeyboard {event.keyCombination().key().name} {event.keyCombination().key()} {event.keyCombination()}')
+				logger.debug(f'event.modifierskeyboard {event.keyCombination().key().name} {event.keyCombination().key()} {event.keyCombination()}')
 			# widget.label1.setText(text)
 		return False
 
@@ -70,8 +70,8 @@ class CustomSqlModel(QtSql.QSqlQueryModel):
 class MainApp(QMainWindow):
 	def __init__(self, args=None, dbconn=None, parent=None):
 		super(MainApp, self).__init__(parent=parent)
-		self.ui = Ui_MainWindow()
-		self.ui.setupUi(self)
+		self.ui = UiMainWindow()
+		self.ui.setup_ui(self)
 		self.con = dbconn
 		self.args = args
 		engine, session = get_engine_session(self.args)
@@ -79,16 +79,16 @@ class MainApp(QMainWindow):
 		self.populate_torqfiles()
 		self.create_entries_plot()
 		self.create_speed_plot()
-		self.create_start_stops_plot()
-		self.ui.tableView.doubleClicked.connect(self.doubleClicked_table)
+		# self.create_start_stops_plot()
+		self.ui.tableView.doubleClicked.connect(self.doubleclicked_table)
 		self.trip_plot_view = QChartView()
 		self.speed_plot_view = QChartView()
 		self.ui.actionExit.triggered.connect(self.appexit)
-		self.eventFilter = KeyPressFilter(parent=self)
-		self.installEventFilter(self.eventFilter)
+		self.event_filter = KeyPressFilter(parent=self)
+		self.installEventFilter(self.event_filter)
 
 	def appexit(self):
-		print(f'{self} exit')
+		logger.debug(f'{self} exit')
 		self.close()
 
 	def populate_torqfiles(self):
@@ -100,7 +100,7 @@ class MainApp(QMainWindow):
 		self.ui.tableView.setModel(self.filemodel)
 		self.ui.tableView.resizeColumnsToContents()
 
-	def doubleClicked_table(self):
+	def doubleclicked_table(self):
 		font = QFont('Ariel', 8)
 		font.setPixelSize(8)
 		index = self.ui.tableView.selectedIndexes()[0]
@@ -141,12 +141,29 @@ class MainApp(QMainWindow):
 		speedobdkmh.setPen(pen)
 		# [latlonscatter.append(lat_lon_data[k].values[0],lat_lon_data[k].values[1]) for k in lat_lon_data]
 		[latlonscatter.append(k.latitude,k.longitude) for k in lat_lon_data.itertuples()]
-
 		try:
 			for k in speed_data.itertuples():
-				[speedgpskmh.append(k.id,k.speedgpskmh) for k in k[speed_data].itertuples()]
-				[gpsspeedkmh.append(k.id,k.gpsspeedkmh) for k in k[speed_data].itertuples()]
-				[speedobdkmh.append(k.id,k.speedobdkmh) for k in k[speed_data].itertuples()]
+				error_set = False
+				try:
+					[speedgpskmh.append(k.id,k.speedgpskmh) for k in k[speed_data].itertuples()]
+				except Exception as e:
+					logger.error(f'{e} {type(e)} {k=}')
+					error_set = True
+					break
+				try:
+					[gpsspeedkmh.append(k.id,k.gpsspeedkmh) for k in k[speed_data].itertuples()]
+				except Exception as e:
+					logger.error(f'{e} {type(e)} {k=}')
+					error_set = True
+					break
+				try:
+					[speedobdkmh.append(k.id,k.speedobdkmh) for k in k[speed_data].itertuples()]
+				except Exception as e:
+					logger.error(f'{e} {type(e)} {k=}')
+					error_set = True
+					break
+				if not error_set:
+					logger.debug(f'no error_set {k.id=} {k.speedgpskmh=} {k.gpsspeedkmh=} {k.speedobdkmh=}')
 		except TypeError as e:
 			logger.error(f'{e}')
 			# [speedgpskmh.append(speed_data[k].values[0],speed_data[k].values[1]) for k in speed_data]
@@ -203,7 +220,7 @@ class MainApp(QMainWindow):
 		# self.startstopmodel = QSqlQueryModel()
 		# x = latitude y = longitude !
 
-		data = np.array(session.execute(text('select latmin,lonmin,latmax,lonmax from startends')).all())
+		data = np.array(session.execute(text('select latstart, lonstart from startpos')).all())
 		scatter = QScatterSeries()
 		[scatter.append(k[0],k[1]) for k in data]
 		[scatter.append(k[2],k[3]) for k in data]
@@ -312,7 +329,7 @@ class MainApp(QMainWindow):
 		self.ui.entrieslayout.addWidget(self.entries_view)
 		self.setLayout(self.ui.main_layout)
 
-def createConnection(args):
+def create_connection(args):
 	if args.dbmode == 'sqlite':
 		con = QtSql.QSqlDatabase.addDatabase('QSQLITE')
 		con.setDatabaseName(args.dbfile)
@@ -338,7 +355,7 @@ if __name__ == '__main__':
 	args = get_args(appname='testgui')
 	engine, session = get_engine_session(args)
 	app = QApplication(sys.argv)
-	c = createConnection(args)
+	c = create_connection(args)
 	w = MainApp(args=args, dbconn=c)
 	w.show()
 	sys.exit(app.exec())

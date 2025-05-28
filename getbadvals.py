@@ -31,4 +31,4 @@ if __name__ == '__main__':
 		allbads.extend(bads)
 	allbads = set(allbads)
 	logger.info(f'allbads = {len(allbads)}')
-	print(allbads)
+	logger.warning(f'allbads: {allbads}')

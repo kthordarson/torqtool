@@ -1,7 +1,4 @@
 #!/usr/bin/python3
-
-# fixers in here
-
 import os
 import shutil
 from hashlib import md5
@@ -11,7 +8,6 @@ import pandas as pd
 import polars as pl
 from loguru import logger
 from sqlalchemy.exc import NoResultFound
-
 from datamodels import TorqFile
 from utils import (
     get_engine_session,
@@ -20,7 +16,6 @@ from utils import (
     convert_string_to_datetime,
 )
 
-
 def replace_headers(newfiles: list, args):
     """
     newfiles a list of new files we need to process / send
@@ -28,10 +23,7 @@ def replace_headers(newfiles: list, args):
     returns dict with two list of files, successfully processed files, and error files
     """
 
-    res = {
-        "files_to_read": [],
-        "errorfiles": [],
-    }
+    res = {"files_to_read": [], "errorfiles": [], }
     for f in newfiles:
         if fix_column_names(f, args):
             res["files_to_read"].append(f)
@@ -249,11 +241,11 @@ def new_columns_collector(logdir: str):
             )
             readfiles += 1
         except Exception as e:
-            print(f"[{idx}/{filecount}] {type(e)} {e} {errors} in {k}")
+            logger.error(f"[{idx}/{filecount}] {type(e)} {e} {errors} in {k}")
             errors += 1
             files_with_errors.append(k)
     if errors > 0:
-        print(f"plErrors: {files_with_errors}")
+        logger.warning(f"plErrors: {files_with_errors}")
     # r = dict([k for k in zip(columns, newcolnames)])
     nclist = [k.strip() for k in newcolnames.split(",")]
     r = dict([k for k in zip(columns, nclist)])
@@ -298,7 +290,7 @@ def get_files_with_errors(logdir: str):
             if test_read:
                 readfiles += 1
         except Exception as e:
-            print(f"[{idx}/{filecount}] {type(e)} {e} {errors} in {k}")
+            logger.error(f"[{idx}/{filecount}] {type(e)} {e} {errors} in {k}")
             errors += 1
             files_with_errors.append(k)
     if errors > 0:

@@ -8,7 +8,6 @@ from torqcols import allcols
 def get_trip_data(trip, session):
 	resdata = []
 	for c in allcols:
-		# print(f'[c] c:{c} t:{trip}')
 		res = None
 		try:
 			# res = pd.read_sql(f'SELECT tripid, MIN({c}) as min{c}, MAX({c}) as max{c}, AVG({c}) as avg{c} FROM torqlogs WHERE tripid = "{trip}"', engine)

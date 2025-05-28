@@ -15,15 +15,14 @@ from plotutils import plot_trip, combine_map_plot, download_maps
 def cli_main(args):
 	dburl = args.dburl  # 'sqlite:///torqfiskur.db'
 	engine = create_engine(dburl, echo=False, connect_args={'check_same_thread': False})
-	Session = sessionmaker(bind=engine)
-	session = Session()
-	print(args)
+	s = sessionmaker(bind=engine)
+	session = s()
 	if args.plotid:  # plot a single trip
-		print(f'plotting {args.plotid}')
+		logger.debug(f'plotting {args.plotid}')
 		plot_trip(args.plotid, session)
 		sys.exit(0)
 	elif args.combine:
-		print(f'combiner {args.combine}')
+		logger.debug(f'combiner {args.combine}')
 		combine_map_plot(args.combine[0], args.combine[1], args.combine[2])
 		# combine_map_plot(f'{MAP_CACHE}/tripmap-0001.png', f'{PLOT_DIR}/testplot1.png')
 	elif args.dlmaps:  # download all maps from mapbox
