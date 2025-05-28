@@ -235,7 +235,7 @@ def database_init(engine):  # create tables
 		logger.error(f'[dbinit] {type(e)} {e}')
 		sys.exit(-1)
 
-async def send_torqfiles(filelist=[], session=None, debug=False):  # returns list of new files
+async def send_torqfiles(filelist, session, debug=False):  # returns list of new files
 	"""
 	send list of files to db
 	returns list of TorqFile objects to be processed and sent to db
@@ -257,7 +257,6 @@ async def send_torqfiles(filelist=[], session=None, debug=False):  # returns lis
 		else:
 			torqfile = TorqFile(csvfile=csvfile, csvhash=csvhash)
 			session.add(torqfile)
-
 			if debug:
 				pass   # logger.info(f'[st {idx}/{len(filelist)}] {csvfile} not in db tf: {tf} torqfile: {torqfile}')
 			newfiles.append(torqfile)

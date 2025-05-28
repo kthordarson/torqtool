@@ -64,7 +64,7 @@ def send_db_filestats(args, todatabase=True, droptable=True, results=None):
 	df = pd.DataFrame([k for k in results])
 	try:
 		if todatabase:
-			df.to_sql(con=engine, name="replace", if_exists="append")
+			df.to_sql(con=engine, name="replace", if_exists="append", method='multi', chunksize=args.sqlchunksize)
 			logger.debug(f"Sent filestats for {file.fileid} to db...")
 		else:
 			# logger.debug(f'returning {len(df)} filestats ...')
@@ -224,7 +224,8 @@ def collect_db_columnstats(args):
 	results = pd.DataFrame([tempres[k] for k in tempres])
 	try:
 		logger.info(f"sending {len(results)}")
-		results.to_sql(con=engine, name="columnstats", if_exists="replace", index=True)
+		# results.to_sql(con=engine, name="columnstats", if_exists="replace", index=True)
+		results.to_sql(con=engine, name="columnstats", if_exists="replace", index=True, method='multi', chunksize=args.sqlchunksize)
 		logger.info(f"done sending {len(results)}")
 	except Exception as e:
 		logger.error(f"{type(e)} {e} for {results=} {results=}")

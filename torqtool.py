@@ -68,7 +68,7 @@ async def send_torq_logs(filelist, session, args):
             if args.debug:
                 logger.debug(f'[tw] t0={datetime.now()-t0} {tf=} {t}')
             if t:
-                tg.create_task(torq_worker_ppe(t, session, args.debug))
+                tg.create_task(torq_worker_ppe(t, session, args))
             else:
                 logger.warning(f"no t from {tf}")
             # await asyncio.gather(*tasks)

@@ -101,7 +101,7 @@ async def find_optimal_batch_size(args):
 	finally:
 		session.close()
 
-def read_csv_file(logfile:str, args:argparse.Namespace):
+async def read_csv_file(logfile:str, args:argparse.Namespace):
 	"""
 	Optimized version that combines filtering operations and reduces conversions
 	"""
@@ -152,11 +152,7 @@ def read_csv_file(logfile:str, args:argparse.Namespace):
 		logger.error(msg)
 		raise Polarsreaderror(msg)
 
-async def send_data_to_db(args: argparse.Namespace,
-	data: pd.DataFrame,
-	csvfilename: str,
-	insertid: bool = True,
-):
+async def send_data_to_db(args: argparse.Namespace, data: pd.DataFrame, csvfilename: str, insertid: bool = True):
 	"""
 	send this csvdata to database, catch all exceptions in here
 	return dict {'fileid': fileid, 'rows': len(data)}
@@ -185,7 +181,8 @@ async def send_data_to_db(args: argparse.Namespace,
 	data = pd.concat((data, fileidcol), axis=1)
 
 	try:
-		_ = data.to_sql("torqlogs", con=engine, if_exists="append", index=False)
+		# _ = data.to_sql("torqlogs", con=engine, if_exists="append", index=False)
+		_ = data.to_sql("torqlogs", con=engine, if_exists="append", index=False, method='multi', chunksize=args.sqlchunksize)
 		send_results["sent_rows"] = session.execute(text(f"select count(*) from torqlogs where fileid={t.fileid} ; ")).one()[0]
 		# logger.debug(f'fileid {t.fileid} sent {len(data)} rows to db  sent_rows: {send_results["sent_rows"]}')
 	except DataError as e:
@@ -265,14 +262,26 @@ async def process_batch(batch_files, args):
 
 async def process_single_file(csvfilename, args):
 	try:
-		data = read_csv_file(logfile=csvfilename, args=args)  # Keep synchronous
+		data = await read_csv_file(logfile=csvfilename, args=args)
 		if len(data) == 0:
 			logger.warning(f'no data in {csvfilename}')
 			return None
 
+		# Extract metadata here once
+		metadata = None
+		if not data.empty:
+			metadata = {
+				'dtripstart': data['gpstime'][0],
+				'dtripend': data['gpstime'][len(data)-1],
+				'dlatstart': float(data['latitude'][0]),
+				'dlonstart': float(data['longitude'][0]),
+				'dlatend': float(data['latitude'][len(data)-1]),
+				'dlonend': float(data['longitude'][len(data)-1]),
+			}
+
 		send_result = await send_data_to_db(args, data, csvfilename)
-		# Rest of processing...
-		return {'file': csvfilename, 'result': send_result}
+		# Return metadata with the result
+		return {'file': csvfilename, 'result': send_result, 'metadata': metadata}
 	except Exception as e:
 		logger.error(f"Error processing {csvfilename}: {type(e)} {e}")
 		return None
@@ -316,20 +325,11 @@ async def cli_main(args):
 					if send_result['sent_rows'] == 0:
 						logger.warning(f'sent_rows = 0 {Path(csvfilename).name} {Path(csvfilename).stat().st_size} send_result: {send_result}')
 					else:
-						# Read the CSV file again to extract required stats
-						data = read_csv_file(logfile=csvfilename, args=args)
-						if len(data) == 0:
-							logger.warning(f'no data in {csvfilename} when extracting stats')
-							continue
+						# Use the metadata we already extracted
 						fileinfo = {
 							'fileid': send_result['fileid'],
 							'sent_rows': send_result['sent_rows'],
-							'dtripstart': data['gpstime'][0],
-							'dtripend': data['gpstime'][len(data)-1],
-							'dlatstart': float(data['latitude'][0]),
-							'dlonstart': float(data['longitude'][0]),
-							'dlatend': float(data['latitude'][len(data)-1]),
-							'dlonend': float(data['longitude'][len(data)-1]),
+							**result['metadata']  # Unpack the metadata we already have
 						}
 						session.close()
 						try:

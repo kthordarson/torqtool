@@ -29,7 +29,7 @@ MIN_FILESIZE = 3000
 
 def get_parser(appname):
 	parser = argparse.ArgumentParser(description=appname)
-	parser.add_argument("--find-optimal-batch-size", default=False,  help="Run tests to find optimal batch size",  action="store_true", dest="find_optimal_batch_size")
+	parser.add_argument("--find-optimal-batch-size", default=False, help="Run tests to find optimal batch size", action="store_true", dest="find_optimal_batch_size")
 	parser.add_argument("--fixer", default=False, help="run fixer, set --bakpath", action="store_true", dest="fixer")
 	parser.add_argument("--fixcsv", default=False, help="repair csv", action="store_true", dest="fixcsv")
 	parser.add_argument("--getcols", default=False, help="prep cols", action="store_true", dest="getcols")
@@ -65,7 +65,7 @@ def get_parser(appname):
 	parser.add_argument("--logpath", nargs="?", default=".", help="path to csv files", action="store")
 	parser.add_argument("--max_workers", nargs="?", default="4", help="max_workers", action="store")
 	parser.add_argument("--oldlogpath", nargs="?", default=".", help="oldlogpath", action="store")
-	parser.add_argument("--sqlchunksize", nargs="?", default="1000", help="sql chunk", action="store")
+	parser.add_argument("--sqlchunksize", nargs="?", default=1000, type=int, help="sql chunk", action="store")
 	parser.add_argument("--webstart", default=False, help="start web listener", action="store_true", dest="web", )
 	parser.add_argument("-i", "--info", default=False, help="show dbinfo", action="store_true", dest="dbinfo", )
 	parser.add_argument("-d", "--debug", default=False, help="debugmode", action="store_true", dest="debug", )
@@ -237,7 +237,7 @@ def get_engine_session(args):
 		sys.exit(-1)
 	return engine, session
 
-def sqlsender_ppe(buffer, session, debug=False):
+def sqlsender_ppe(buffer, session, args):
 	# engine = create_engine(url=dburl, echo=False)
 	# Session = sessionmaker(bind=engine)
 	# session = Session()
@@ -254,7 +254,8 @@ def sqlsender_ppe(buffer, session, debug=False):
 	# logger.info(f'[tosql] tmpbuf.is_empty() {buffer["torqbuffer"].is_empty()} ')
 	# torqfile = (session.query(TorqFile).filter(TorqFile.fileid == results["fileid"]).first())
 	try:
-		tmpbuf.to_sql("torqlogs", con=session.get_bind(), if_exists="append", index=False)
+		# tmpbuf.to_sql("torqlogs", con=session.get_bind(), if_exists="append", index=False)
+		tmpbuf.to_sql("torqlogs", con=session.get_bind(), if_exists="append", index=False, method='multi', chunksize=10000)
 		results["status"] = "success"
 		# torqfile = (session.query(TorqFile).filter(TorqFile.fileid == results["fileid"]).first())
 	except (OperationalError, ProgrammingError, ArgumentError) as e:
@@ -415,16 +416,16 @@ def fix_timestamps(torqbuffer, csvfile, tf_fileid):
 	return resultbuffer, error_files
 
 
-async def torq_worker_ppe(tf, session, debug=False):
+async def torq_worker_ppe(tf, session, args):
 	buffer = None
 	results = None
 	t0 = datetime.now()
 	timetotal = 0
 	try:
-		buffer, error_files = read_buff(tf.csvfile, tf.fileid, debug=debug)
+		buffer, error_files = read_buff(tf.csvfile, tf.fileid, args)
 		if not buffer:
 			logger.warning(f"[!] buffer is None tf={tf}")
-		if debug:
+		if args.debug:
 			if len(error_files) > 0:
 				logger.warning(f"error_files: {len(error_files)} ")  # pass # logger.debug(f'file {tf.csvfile} buffer: {len(buffer["torqbuffer"])}')
 				_ = [logger.error(f"error in file: {k}") for k in error_files]
@@ -435,9 +436,9 @@ async def torq_worker_ppe(tf, session, debug=False):
 		logger.error(f"[!] {type(e)} {e} in read_buff {tf.csvfile}")
 		return None
 	try:
-		results = sqlsender_ppe(buffer, session, debug=debug)  # send triplog data
+		results = sqlsender_ppe(buffer, session, args)  # send triplog data
 		timetotal += (datetime.now() - t0).seconds
-		if debug:
+		if args.debug:
 			logger.debug(f't: {(datetime.now()-t0).seconds}/{timetotal} fileid {results.get("fileid")} {results.get("status")} buffer: {len(buffer["torqbuffer"])}')
 	except (ValueError, TypeError, PicklingError) as e:
 		logger.error(f'[!] {type(e)} {e} in sqlsender buffer.is_empty() {buffer["torqbuffer"].is_empty()}')
