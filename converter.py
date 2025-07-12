@@ -105,10 +105,10 @@ async def read_csv_file(logfile:str, args:argparse.Namespace):
 	"""
 	Optimized version that combines filtering operations and reduces conversions
 	"""
-	nullvals = ['-','∞']
+	nullvals = ['-','∞','340282346638528860000000000000000000000']
 	try:
 		# Use lazy evaluation to improve performance
-		data = pl.scan_csv(logfile, ignore_errors=True, try_parse_dates=True, truncate_ragged_lines=True, null_values=nullvals, schema=dataschema)
+		data = pl.scan_csv(logfile, ignore_errors=True, try_parse_dates=True, truncate_ragged_lines=True, null_values=nullvals)  # , schema=dataschema
 
 		# Apply all filters in one operation
 		data = data.filter((pl.col('gpstime') != '-') & (pl.col('gpstime') != 'GPS Time'))
@@ -127,8 +127,8 @@ async def read_csv_file(logfile:str, args:argparse.Namespace):
 		tripdur = (last_time - first_time).total_seconds()
 
 		if tripdur > 86400:
-			logger.warning(f'Skipping {logfile} - trip duration too long: {tripdur}s')
-			return pd.DataFrame()
+			logger.warning(f'Not Skipping {logfile} - trip duration too long: {tripdur}s')
+			# return pd.DataFrame()
 
 		# Check for duplicate trips in one database call
 		engine, session = get_engine_session(args)

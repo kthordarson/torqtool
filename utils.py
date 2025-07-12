@@ -79,6 +79,23 @@ def get_parser(appname):
 class TimeZoneAwareConstructorWarning:
 	pass
 
+def get_pandas_csv_column_dict(args):
+	"""
+	Get a dictionary of column names and their types from a CSV file in the given logpath.
+	Assumes the first line of the CSV file contains the column names.
+	"""
+	# pd_columns = [{'filename':str(k),'columns':pd.read_csv(k, low_memory=False, nrows=1).columns} for k in csv_files]
+	pd_columns = {'stats':{},'files': {}}
+	csv_files = list(Path(args.logpath).glob("**/trackLog*.csv"))
+	for csvfile in csv_files:
+		csv_col_list = [k.strip() for k in pd.read_csv(csvfile, low_memory=False, nrows=1).columns.to_list()]
+		f = str(csvfile)
+		pd_columns['files'][f] = {'filename': f, 'columns': csv_col_list}
+		for c in csv_col_list:
+			if c not in pd_columns['stats']:
+				pd_columns['stats'][c] = 0
+			pd_columns['stats'][c] += 1
+	return pd_columns
 
 def replace_all(text, dic):
 	for i, j in dic.items():
@@ -86,7 +103,6 @@ def replace_all(text, dic):
 	if text != textout:
 		logger.warning(f"{text} -> {textout}")
 	return textout
-
 
 def get_sanatized_column_names(orgcol):
 	"""
@@ -316,8 +332,15 @@ def read_buff(csvfile, tf_fileid, debug=False):
 	error_files = []
 	rb = {
 		"torqbuffer": pd.DataFrame(), "fileid": tf_fileid, "csvfile": csvfile, }
+	column_mapping = {
+			"GPS Time": "gpstime",
+			" Device Time": "devicetime",
+			" Longitude": "longitude",
+			" Latitude": "latitude"
+		}
 	try:
 		torqbuffer = read_csv_polars(csvfile, ignore_errors=True, try_parse_dates=True, truncate_ragged_lines=True, )  # , use_pyarrow=True ,  ) #, null_values=['NaN','-','0\x88\x9e'])
+		torqbuffer = torqbuffer.rename(column_mapping)
 		torqbuffer = torqbuffer.fill_null(0).fill_nan(0)
 
 	except (InvalidOperationError, ValueError) as e:
