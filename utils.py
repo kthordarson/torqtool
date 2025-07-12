@@ -18,8 +18,8 @@ from loguru import logger
 from polars import ComputeError
 from polars import read_csv as read_csv_polars
 from polars.exceptions import ColumnNotFoundError, InvalidOperationError
-from sqlalchemy import create_engine, text
-from sqlalchemy.exc import ArgumentError, DataError, IntegrityError, InternalError, OperationalError, ProgrammingError
+from sqlalchemy import create_engine, text, MetaData, Table, Column, Float, String, Integer
+from sqlalchemy.exc import ArgumentError, DataError,IntegrityError, InternalError, OperationalError, ProgrammingError
 from sqlalchemy.orm import sessionmaker
 
 from commonformats import fmt_20, fmt_24, fmt_26, fmt_28, fmt_30, fmt_34, fmt_36
@@ -79,6 +79,123 @@ def get_parser(appname):
 
 class TimeZoneAwareConstructorWarning:
 	pass
+
+def create_or_update_table(engine, table_name, columns):
+	"""
+	Create or update the torqlogs table to match the provided columns.
+	Columns are assumed to be normalized (no extra spaces).
+	"""
+	metadata = MetaData()
+
+	# Define column types (customize based on your data)
+	column_types = {col: Float for col in columns}  # Default to Float for numeric data
+	column_types.update({
+		'GPS Time': String,
+		'Device Time': String,
+		'Longitude': Float,
+		'Latitude': Float,
+		'GPS Accuracy(m)': Float,
+		'GPS Altitude(m)': Float,
+		'GPS Bearing(°)': Float,
+		'GPS Latitude(°)': Float,
+		'GPS Longitude(°)': Float,
+		'GPS Satellites': Integer,
+	})  # Override specific columns with appropriate types
+
+	# Create table definition
+	table_columns = [Column(col, column_types.get(col, String)) for col in columns]
+	table = Table(table_name, metadata, *table_columns, extend_existing=True)
+
+	# Create table if it doesn't exist
+	metadata.create_all(engine)
+
+	return table
+
+def read_csvs_to_dataframe_and_insert(args, engine, table_name='torqlogs'):
+	"""
+	Read all CSV files into a DataFrame, normalize column names, and insert into SQLite table.
+	Handles varying columns, missing data, and extra spaces in column names.
+	Returns the concatenated DataFrame and a dictionary of column stats.
+	"""
+	# Initialize SQLAlchemy engine
+	# engine = create_engine(args.dbfile)
+
+	# Initialize dictionary to store column stats and file info
+	pd_columns = {'stats': {}, 'files': {}}
+	csv_files = list(Path(args.logpath).glob("**/trackLog*.csv"))
+
+	# List to store individual DataFrames
+	dfs = []
+
+	# Collect all unique column names across files for table creation
+	all_columns = set()
+
+	for file_idx, csvfile in enumerate(csv_files):
+		f = str(csvfile)
+		print(f'reading {file_idx+1}/{len(csv_files)} {f}')
+		try:
+			# Read CSV file
+			df = pd.read_csv(csvfile, low_memory=False, on_bad_lines='warn', encoding='utf-8', encoding_errors='replace')
+
+			# Normalize column names
+			original_columns = df.columns.to_list()
+			# normalized_columns = [str(k).strip().replace(r'\s+', ' ', regex=True) for k in original_columns]
+			try:
+				normalized_columns = [str(k).strip().replace(r'\s+', ' ') for k in original_columns]
+			except (AttributeError, TypeError) as e:
+				logger.error(f"[get_pandas_csv_column_dict] {type(e)} {e} in {csvfile}")
+				normalized_columns = [str(k).strip() for k in original_columns]
+
+			df.columns = normalized_columns
+			# Update set of all columns
+			all_columns.update(normalized_columns)
+
+			# Store file and column info
+			pd_columns['files'][f] = {'filename': f, 'columns': normalized_columns}
+
+			# Update column stats
+			for idx, c in enumerate(normalized_columns):
+				if c not in pd_columns['stats']:
+					pd_columns['stats'][c] = {'count': 0, 'colidx': [idx]}
+				pd_columns['stats'][c]['count'] += 1
+				if idx not in pd_columns['stats'][c]['colidx']:
+					pd_columns['stats'][c]['colidx'].append(idx)
+				pd_columns['files'][f][c] = {'colidx': idx, 'name': c}
+
+			# Append DataFrame to list
+			dfs.append(df)
+
+		except pd.errors.EmptyDataError:
+			print(f"Warning: {f} is empty and will be skipped.")
+		except pd.errors.ParserError:
+			print(f"Warning: {f} has parsing errors and will be skipped.")
+		except Exception as e:
+			print(f"Error reading {f}: {str(e)}")
+			continue
+
+	if not dfs:
+		print("No valid CSV files were loaded.")
+		return None, pd_columns
+
+	# Create or update the torqlogs table with all unique columns
+	create_or_update_table(engine, table_name, all_columns)
+
+	# Concatenate all DataFrames
+	try:
+		combined_df = pd.concat(dfs, ignore_index=True, sort=False)
+
+		# Insert DataFrame into SQLite table
+		try:
+			combined_df.to_sql(table_name, engine, if_exists='append', index=False)
+			print(f"Successfully inserted {len(combined_df)} rows into {table_name} table.")
+		except OperationalError as e:
+			print(f"Error inserting data into {table_name}: {str(e)}")
+			return combined_df, pd_columns
+
+		return combined_df, pd_columns
+	except ValueError as e:
+		print(f"Error concatenating DataFrames: {str(e)}")
+		return None, pd_columns
 
 def get_pandas_csv_column_dict(args):
 	"""
