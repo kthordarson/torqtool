@@ -36,6 +36,7 @@ def get_parser(appname):
 	parser.add_argument("--repairsplit", default=False, help="enable splitting of strange log files", action="store_true", dest="repairsplit", )
 	parser.add_argument("--samplemode", default=False, help="use samplemode, select small random number of logs-for debugging", action="store_true", dest="samplemode", )
 	parser.add_argument("--scanpath", default=False, help="run scanpath", action="store_true", dest="scanpath", )
+	parser.add_argument("--old_scanpath", default=False, help="run old_scanpath", action="store_true", dest="old_scanpath", )
 	parser.add_argument("--showdrops", default=False, help="show dropped columns", action="store_true", dest="showdrops", )
 	parser.add_argument("--skipwrites", default=False, help="skipwrites", action="store_true", dest="skipwrites", )
 	parser.add_argument("--filestats", default=True, help="create filestats", action="store_true", dest="filestats", )
@@ -67,7 +68,7 @@ def get_parser(appname):
 	parser.add_argument("--oldlogpath", nargs="?", default=".", help="oldlogpath", action="store")
 	parser.add_argument("--sqlchunksize", nargs="?", default=1000, type=int, help="sql chunk", action="store")
 	parser.add_argument("--webstart", default=False, help="start web listener", action="store_true", dest="web", )
-	parser.add_argument("-i", "--info", default=False, help="show dbinfo", action="store_true", dest="dbinfo", )
+	parser.add_argument("-i", "--info", "--dbinfo", default=False, help="show dbinfo", action="store_true", dest="dbinfo", )
 	parser.add_argument("-d", "--debug", default=False, help="debugmode", action="store_true", dest="debug", )
 	parser.add_argument("--extradebug", default=False, help="extradebug", action="store_true", dest="extradebug", )
 	# parser.add_argument("--gui", default=False, help="Run gui", action="store_true", dest='gui')
@@ -81,21 +82,37 @@ class TimeZoneAwareConstructorWarning:
 
 def get_pandas_csv_column_dict(args):
 	"""
-	Get a dictionary of column names and their types from a CSV file in the given logpath.
+	Get a dictionary of column names and column stats, index.
 	Assumes the first line of the CSV file contains the column names.
 	"""
 	# pd_columns = [{'filename':str(k),'columns':pd.read_csv(k, low_memory=False, nrows=1).columns} for k in csv_files]
 	pd_columns = {'stats':{},'files': {}}
 	csv_files = list(Path(args.logpath).glob("**/trackLog*.csv"))
-	for csvfile in csv_files:
-		csv_col_list = [k.strip() for k in pd.read_csv(csvfile, low_memory=False, nrows=1).columns.to_list()]
+	dfs = []
+	for file_idx, csvfile in enumerate(csv_files):
 		f = str(csvfile)
-		pd_columns['files'][f] = {'filename': f, 'columns': csv_col_list}
-		for c in csv_col_list:
+		print(f'reading {file_idx+1}/{len(csv_files)} {f}')
+		df = pd.read_csv(csvfile, low_memory=False, on_bad_lines='warn', encoding='utf-8', encoding_errors='replace')
+		original_columns = df.columns.to_list()
+		try:
+			normalized_columns = [str(k).strip().replace(r'\s+', ' ') for k in original_columns]
+		except (AttributeError, TypeError) as e:
+			logger.error(f"[get_pandas_csv_column_dict] {type(e)} {e} in {csvfile}")
+			normalized_columns = [str(k).strip() for k in original_columns]
+		df.columns = normalized_columns
+		pd_columns['files'][f] = {'filename': f, 'columns': normalized_columns}
+
+		# csv_col_list = [k.strip() for k in pd.read_csv(csvfile, low_memory=False, nrows=1).columns.to_list()]
+		# pd_columns['files'][f] = {'filename': f, 'columns': csv_col_list}
+		for idx,c in enumerate(normalized_columns):
 			if c not in pd_columns['stats']:
-				pd_columns['stats'][c] = 0
-			pd_columns['stats'][c] += 1
-	return pd_columns
+				pd_columns['stats'][c] = {'count': 0, 'colidx': [idx]}
+			pd_columns['stats'][c]['count'] += 1
+			pd_columns['stats'][c]['colidx'].append(idx)
+			pd_columns['files'][f][c] = {'colidx': idx, 'name': c}
+		dfs.append(df)
+	combined_df = pd.concat(dfs, ignore_index=True, sort=False)
+	return combined_df, pd_columns
 
 def replace_all(text, dic):
 	for i, j in dic.items():

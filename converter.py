@@ -15,7 +15,7 @@ from sqlalchemy.orm import sessionmaker
 import sqlite3
 from datamodels import TorqFile, database_init
 from schemas import dataschema
-from utils import get_parser, get_engine_session, MIN_FILESIZE, transfer_older_logs, convert_string_to_datetime
+from utils import get_parser, get_engine_session, MIN_FILESIZE, transfer_older_logs, convert_string_to_datetime, get_pandas_csv_column_dict
 from fixers import run_fixer, get_cols
 from updatetripdata import update_torqfile
 
@@ -292,12 +292,29 @@ async def cli_main(args):
 		try:
 			engine, session = get_engine_session(args)
 			logcount = session.execute(text("select count(*) from torqlogs")).all()
+			combined_df, pd_columns = get_pandas_csv_column_dict(args)
+			print(f'combined_df: {type(combined_df)} {len(combined_df)} rows, pd_columns: {type(pd_columns)} {len(pd_columns["stats"])} stats, {len(pd_columns["files"])} files')
 		except Exception as e:
 			logger.error(f'error {type(e)} {e}')
 			sys.exit(-1)
 		finally:
 			logger.info(f'{logcount=}')
 	elif args.scanpath:
+		try:
+			engine, session = get_engine_session(args)
+			database_init(engine)
+			logcount = session.execute(text("select count(*) from torqlogs")).all()
+			combined_df, pd_columns = get_pandas_csv_column_dict(args)
+			_ = combined_df.to_sql("torqlogs", con=engine, if_exists="append", index=False, method='multi', chunksize=args.sqlchunksize)
+			# send_result = await send_data_to_db(args, data, csvfilename)
+		except Exception as e:
+			logger.error(f'error {type(e)} {e}')
+			sys.exit(-1)
+		finally:
+			print(f'combined_df: {type(combined_df)} {len(combined_df)} rows, pd_columns: {type(pd_columns)} {len(pd_columns["stats"])} stats, {len(pd_columns["files"])} files')
+			logger.info(f'{logcount=}')
+
+	elif args.old_scanpath:
 		engine, session = get_engine_session(args)
 		try:
 			database_init(engine)
