@@ -20,10 +20,10 @@ from polars import read_csv as read_csv_polars
 from polars.exceptions import ColumnNotFoundError, InvalidOperationError
 from sqlalchemy import create_engine, text, MetaData, Table, Column, Float, String, Integer
 from sqlalchemy.exc import ArgumentError, DataError,IntegrityError, InternalError, OperationalError, ProgrammingError
-from sqlalchemy.orm import sessionmaker
-
+from sqlalchemy.orm import sessionmaker, Session
+import sqlite3
 from commonformats import fmt_20, fmt_24, fmt_26, fmt_28, fmt_30, fmt_34, fmt_36
-from datamodels import database_init
+from datamodels import database_init, TorqFile, COLUMN_TYPES
 
 MIN_FILESIZE = 3000
 
@@ -80,122 +80,259 @@ def get_parser(appname):
 class TimeZoneAwareConstructorWarning:
 	pass
 
-def create_or_update_table(engine, table_name, columns):
+def gather_csv_headers(args):
+	csv_files = list(Path(args.logpath).glob("**/trackLog*.csv"))
+	for file_idx, csvfile in enumerate(csv_files):
+		f = str(csvfile)
+		print(f'reading {file_idx+1}/{len(csv_files)} {f}')
+		with open(csvfile, "r") as f:
+			data0 = f.read().splitlines()
+		print(f'columns: {data0[0]}')
+		print(f'first lines[1:5]: {data0[1:3]}')
+		print(f'last lines[-5:]: {data0[-5:]}')
+
+def normalize_column_name(col):
 	"""
-	Create or update the torqlogs table to match the provided columns.
-	Columns are assumed to be normalized (no extra spaces).
+	Normalize column names by stripping spaces, replacing multiple spaces, and removing problematic characters.
+	"""
+	col = str(col).strip()  # Convert to string and remove leading/trailing spaces
+	col = re.sub(r'\s+', ' ', col)  # Replace multiple spaces with single space
+	col = re.sub(r'[^\w\s]', '', col)  # Remove special characters (keep alphanumeric and spaces)
+	return col.replace(' ', '_')
+
+def get_table_columns(engine, table_name):
+	"""
+	Get the current columns of the table from the SQLite database.
+	"""
+	with engine.connect() as conn:
+		try:
+			result = conn.execute(text(f"PRAGMA table_info({table_name})")).fetchall()
+		except Exception as e:
+			logger.error(f"Error fetching table columns: {e} {type(e)} table_name={table_name}")
+			return []
+		return [row[1].lower() for row in result]  # Extract column names
+
+def create_or_update_table(engine, table_name, columns, column_types):
+	"""
+	Create or update the table to include all provided columns.
+	Handles duplicate columns and maintains existing schema.
 	"""
 	metadata = MetaData()
 
-	# Define column types (customize based on your data)
-	column_types = {col: Float for col in columns}  # Default to Float for numeric data
-	column_types.update({
-		'GPS Time': String,
-		'Device Time': String,
-		'Longitude': Float,
-		'Latitude': Float,
-		'GPS Accuracy(m)': Float,
-		'GPS Altitude(m)': Float,
-		'GPS Bearing(°)': Float,
-		'GPS Latitude(°)': Float,
-		'GPS Longitude(°)': Float,
-		'GPS Satellites': Integer,
-	})  # Override specific columns with appropriate types
+	# Check existing table columns and normalize to lowercase
+	try:
+		existing_columns = [col.lower() for col in get_table_columns(engine, table_name)]
+		logger.debug(f"Existing columns: {len(existing_columns)}")
+	except Exception as e:
+		logger.error(f"Error checking existing columns: {e} {type(e)} table_name={table_name}")
+		existing_columns = []
 
-	# Create table definition
+	# Create table definition with all columns
 	table_columns = [Column(col, column_types.get(col, String)) for col in columns]
-	table = Table(table_name, metadata, *table_columns, extend_existing=True)
 
-	# Create table if it doesn't exist
-	metadata.create_all(engine)
+	if not existing_columns:
+		# Create new table if it doesn't exist
+		logger.info(f"Creating new table {table_name} with {len(columns)} columns")
+		Table(table_name, metadata, *table_columns, extend_existing=True)
+		metadata.create_all(engine)
+	else:
+		# Add only new columns to existing table
+		with engine.connect() as conn:
+			# Convert all column names to lowercase for comparison
+			new_columns = set(col.lower() for col in columns) - set(existing_columns)
+			if new_columns:
+				logger.info(f"Adding {len(new_columns)} new columns to {table_name}")
+				for col in new_columns:
+					try:
+						# Get original case version of column name
+						orig_col = next(c for c in columns if c.lower() == col)
+						sql_type = column_types.get(orig_col, String).__name__.lower()
+						alter_sql = text(f'ALTER TABLE {table_name} ADD COLUMN "{orig_col}" {sql_type}')
+						conn.execute(alter_sql)
+						logger.debug(f"Added column: {orig_col} ({sql_type})")
+					except sqlite3.OperationalError as e:
+						if "duplicate column name" in str(e).lower():
+							logger.debug(f"Column {orig_col} already exists, skipping")
+							continue
+						else:
+							logger.warning(f"Could not add column {orig_col}: {e}")
+			conn.commit()
 
-	return table
+	# Verify final column structure
+	final_columns = [col.lower() for col in get_table_columns(engine, table_name)]
+	logger.debug(f"Final table structure: {len(final_columns)} columns")
 
-def read_csvs_to_dataframe_and_insert(args, engine, table_name='torqlogs'):
+	# Return list of columns that couldn't be added
+	missing_columns = set(col.lower() for col in columns) - set(final_columns)
+	if missing_columns:
+		logger.warning(f"Could not add columns: {missing_columns}")
+
+	return list(missing_columns)
+
+def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs'):
 	"""
 	Read all CSV files into a DataFrame, normalize column names, and insert into SQLite table.
 	Handles varying columns, missing data, and extra spaces in column names.
 	Returns the concatenated DataFrame and a dictionary of column stats.
 	"""
-	# Initialize SQLAlchemy engine
-	# engine = create_engine(args.dbfile)
+	# Define column types based on sample data
 
 	# Initialize dictionary to store column stats and file info
 	pd_columns = {'stats': {}, 'files': {}}
+
+	# Get list of CSV files
 	csv_files = list(Path(args.logpath).glob("**/trackLog*.csv"))
+	if not csv_files:
+		logger.warning("No CSV files found")
+		return None, pd_columns
 
-	# List to store individual DataFrames
-	dfs = []
-
-	# Collect all unique column names across files for table creation
+	# First pass: Collect and validate headers from all files
 	all_columns = set()
+	valid_files = []
+	# engine = get_engine_session(args)
+	engine = create_engine(
+		f'sqlite:///{args.dbfile}',
+		echo=False,
+		connect_args={
+			'timeout': 30,
+			'isolation_level': None,  # Disable SQLite's autocommit mode
+			'check_same_thread': False
+		}
+	)
+	# Initialize database schema first
+	try:
+		database_init(engine)
+	except Exception as e:
+		logger.error(f"Error initializing database: {e}")
+		return None, pd_columns
 
 	for file_idx, csvfile in enumerate(csv_files):
-		f = str(csvfile)
-		print(f'reading {file_idx+1}/{len(csv_files)} {f}')
 		try:
-			# Read CSV file
-			df = pd.read_csv(csvfile, low_memory=False, on_bad_lines='warn', encoding='utf-8', encoding_errors='replace')
+			# Read only the header row
+			df = pd.read_csv(csvfile, nrows=0)
 
 			# Normalize column names
 			original_columns = df.columns.to_list()
-			# normalized_columns = [str(k).strip().replace(r'\s+', ' ', regex=True) for k in original_columns]
-			try:
-				normalized_columns = [str(k).strip().replace(r'\s+', ' ') for k in original_columns]
-			except (AttributeError, TypeError) as e:
-				logger.error(f"[get_pandas_csv_column_dict] {type(e)} {e} in {csvfile}")
-				normalized_columns = [str(k).strip() for k in original_columns]
+			normalized_columns = [normalize_column_name(col) for col in original_columns]
 
-			df.columns = normalized_columns
-			# Update set of all columns
+			# Validate columns - check for empty or numeric column names
+			if any(not col or col[0].isdigit() for col in normalized_columns):
+				logger.warning(f"Skipping {csvfile} - invalid column names")
+				continue
+
 			all_columns.update(normalized_columns)
+			valid_files.append((csvfile, normalized_columns))
 
-			# Store file and column info
-			pd_columns['files'][f] = {'filename': f, 'columns': normalized_columns}
+			# Store file info
+			pd_columns['files'][str(csvfile)] = {
+				'filename': str(csvfile),
+				'columns': normalized_columns
+			}
 
-			# Update column stats
-			for idx, c in enumerate(normalized_columns):
-				if c not in pd_columns['stats']:
-					pd_columns['stats'][c] = {'count': 0, 'colidx': [idx]}
-				pd_columns['stats'][c]['count'] += 1
-				if idx not in pd_columns['stats'][c]['colidx']:
-					pd_columns['stats'][c]['colidx'].append(idx)
-				pd_columns['files'][f][c] = {'colidx': idx, 'name': c}
-
-			# Append DataFrame to list
-			dfs.append(df)
-
-		except pd.errors.EmptyDataError:
-			print(f"Warning: {f} is empty and will be skipped.")
-		except pd.errors.ParserError:
-			print(f"Warning: {f} has parsing errors and will be skipped.")
 		except Exception as e:
-			print(f"Error reading {f}: {str(e)}")
+			logger.error(f"Error reading headers from {csvfile}: {e}")
 			continue
 
-	if not dfs:
-		print("No valid CSV files were loaded.")
+	if not valid_files:
+		logger.warning("No valid CSV files found after header validation")
 		return None, pd_columns
-
-	# Create or update the torqlogs table with all unique columns
-	create_or_update_table(engine, table_name, all_columns)
-
-	# Concatenate all DataFrames
+	logger.info(f"Found {len(valid_files)} valid CSV files with columns: {len(all_columns)}")
+	# Update database schema if needed
 	try:
-		combined_df = pd.concat(dfs, ignore_index=True, sort=False)
-
-		# Insert DataFrame into SQLite table
-		try:
-			combined_df.to_sql(table_name, engine, if_exists='append', index=False)
-			print(f"Successfully inserted {len(combined_df)} rows into {table_name} table.")
-		except OperationalError as e:
-			print(f"Error inserting data into {table_name}: {str(e)}")
-			return combined_df, pd_columns
-
-		return combined_df, pd_columns
-	except ValueError as e:
-		print(f"Error concatenating DataFrames: {str(e)}")
+		create_or_update_table(engine, table_name, all_columns, COLUMN_TYPES)
+	except Exception as e:
+		logger.error(f"Error updating table schema: {e} {type(e)}")
 		return None, pd_columns
+
+	# Create session
+	# Session = sessionmaker(bind=engine)
+	# session = Session()
+
+	# Second pass: Read and insert data from valid files
+	with engine.connect() as conn:
+		conn.execute(text("PRAGMA journal_mode = WAL"))  # Use Write-Ahead Logging
+		conn.execute(text("PRAGMA synchronous = NORMAL"))  # Reduce synchronization
+		conn.execute(text("BEGIN TRANSACTION"))  # Start transaction
+
+		try:
+			for csv_idx, (csvfile, normalized_columns) in enumerate(valid_files):
+				try:
+					# Check if file has already been processed
+					csvhash = md5(Path(csvfile).read_bytes()).hexdigest()
+					existing_file = conn.execute(
+						text("SELECT fileid FROM torqfiles WHERE csvhash = :csvhash"),
+						{"csvhash": csvhash}
+					).first()
+
+					if existing_file:
+						logger.info(f"[{csv_idx}/{len(valid_files)}] File {csvfile} already processed, skipping")
+						continue
+
+					# Read CSV file
+					df = pd.read_csv(
+						csvfile,
+						low_memory=False,
+						on_bad_lines='skip',
+						encoding='utf-8',
+						encoding_errors='replace'
+					)
+
+					# Create TorqFile entry
+					result = conn.execute(
+						text("INSERT INTO torqfiles (csvfile, csvhash) VALUES (:csvfile, :csvhash) RETURNING fileid"),
+						{"csvfile": str(csvfile), "csvhash": csvhash}
+					)
+					fileid = result.scalar()
+
+					# Add fileid column first
+					df.insert(0, 'fileid', fileid)
+
+					# Process columns and data
+					df = df.rename(columns={col: normalize_column_name(col) for col in df.columns})
+					df = df.replace(['-', '∞', 'inf', '-inf'], pd.NA)
+
+					# Convert numeric columns
+					for col in df.columns:
+						if col in COLUMN_TYPES and COLUMN_TYPES[col] in [Float, Integer]:
+							df[col] = pd.to_numeric(df[col], errors='coerce')
+
+					# Insert data
+					logger.info(f"[{csv_idx}/{len(valid_files)}] Sending {len(df)} rows from {csvfile} with fileid {fileid}")
+
+					# Use smaller chunks for better memory management
+					chunk_size = min(1000, args.sqlchunksize)
+					for chunk_start in range(0, len(df), chunk_size):
+						chunk = df.iloc[chunk_start:chunk_start + chunk_size]
+						chunk.to_sql(
+							table_name,
+							conn,
+							if_exists='append',
+							index=False
+						)
+
+					# Update TorqFile row count
+					conn.execute(
+						text("UPDATE torqfiles SET sent_rows = :rows WHERE fileid = :fileid"),
+						{"rows": len(df), "fileid": fileid}
+					)
+
+					logger.info(f"[{csv_idx}/{len(valid_files)}] Successfully inserted {len(df)} rows from {csvfile}")
+
+				except Exception as e:
+					logger.error(f"Error processing {csvfile}: {e}")
+					if args.debug:
+						logger.debug(f"DataFrame columns: {df.columns.tolist()}")
+					continue
+
+			conn.execute("COMMIT")  # Commit all changes
+
+		except Exception as e:
+			conn.execute("ROLLBACK")  # Rollback on error
+			logger.error(f"Transaction failed: {e}")
+			raise
+
+	engine.dispose()
+	return None, pd_columns
 
 def get_pandas_csv_column_dict(args):
 	"""
@@ -208,7 +345,7 @@ def get_pandas_csv_column_dict(args):
 	dfs = []
 	for file_idx, csvfile in enumerate(csv_files):
 		f = str(csvfile)
-		print(f'reading {file_idx+1}/{len(csv_files)} {f}')
+		logger.info(f'reading {file_idx+1}/{len(csv_files)} {f}')
 		df = pd.read_csv(csvfile, low_memory=False, on_bad_lines='warn', encoding='utf-8', encoding_errors='replace')
 		original_columns = df.columns.to_list()
 		try:
@@ -219,7 +356,7 @@ def get_pandas_csv_column_dict(args):
 		df.columns = normalized_columns
 		pd_columns['files'][f] = {'filename': f, 'columns': normalized_columns}
 
-		# csv_col_list = [k.strip() for k in pd.read_csv(csvfile, low_memory=False, nrows=1).columns.to_list()]
+		# csv_col_list = [k.strip() for k in pd.read_csv(k, low_memory=False, nrows=1).columns.to_list()]
 		# pd_columns['files'][f] = {'filename': f, 'columns': csv_col_list}
 		for idx,c in enumerate(normalized_columns):
 			if c not in pd_columns['stats']:
@@ -378,14 +515,14 @@ def get_engine_session(args):
 	if not engine:
 		logger.error("no engine")
 		sys.exit(-1)
-	s = sessionmaker(bind=engine)
-	session = s()
+	# s = sessionmaker(bind=engine)
+	# session = s()
 	try:
 		database_init(engine)
 	except AssertionError as e:
 		logger.error(f"[maindbinit] {e}")
 		sys.exit(-1)
-	return engine, session
+	return engine  # , session
 
 def sqlsender_ppe(buffer, session, args):
 	# engine = create_engine(url=dburl, echo=False)

@@ -290,10 +290,8 @@ async def cli_main(args):
 	if args.dbinfo:
 		logcount = 0
 		try:
-			engine, session = get_engine_session(args)
-			logcount = session.execute(text("select count(*) from torqlogs")).all()
-			combined_df, pd_columns = get_pandas_csv_column_dict(args)
-			print(f'combined_df: {type(combined_df)} {len(combined_df)} rows, pd_columns: {type(pd_columns)} {len(pd_columns["stats"])} stats, {len(pd_columns["files"])} files')
+			engine = get_engine_session(args)  # , session
+			logcount = 0  # session.execute(text("select count(*) from torqlogs")).all()
 		except Exception as e:
 			logger.error(f'error {type(e)} {e}')
 			sys.exit(-1)
@@ -301,23 +299,20 @@ async def cli_main(args):
 			logger.info(f'{logcount=}')
 	elif args.scanpath:
 		try:
-			engine, session = get_engine_session(args)
+			engine = get_engine_session(args)  # , session
 			database_init(engine)
-			logcount = session.execute(text("select count(*) from torqlogs")).all()
+			sess = sessionmaker(bind=engine)
+			s = sess()
+			logcount = s.execute(text("select count(*) from torqlogs")).all()
+			logger.info(f'{logcount=}')
+			s.close()
 			# combined_df, pd_columns = get_pandas_csv_column_dict(args)
-			df, column_stats = read_csvs_to_dataframe_and_insert(args, engine)
+			read_csvs_to_dataframe_and_insert(args)
 			# _ = combined_df.to_sql("torqlogs", con=engine, if_exists="append", index=False, method='multi', chunksize=args.sqlchunksize)
 			# send_result = await send_data_to_db(args, data, csvfilename)
 		except Exception as e:
 			logger.error(f'error {type(e)} {e}')
 			sys.exit(-1)
-		finally:
-			if df:
-				print(f'combined_df: {type(df)} {len(df)} rows')
-			if column_stats:
-				print(f'pd_columns: {type(column_stats)} {len(column_stats["stats"])} stats, {len(column_stats["files"])} files')
-			if logcount:
-				logger.info(f'{logcount=}')
 
 	elif args.old_scanpath:
 		engine, session = get_engine_session(args)
