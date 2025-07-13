@@ -15,8 +15,7 @@ from sqlalchemy.orm import sessionmaker
 import sqlite3
 from datamodels import TorqFile, database_init
 from schemas import dataschema
-from utils import get_parser, get_engine_session, MIN_FILESIZE, transfer_older_logs, convert_string_to_datetime, get_pandas_csv_column_dict, read_csvs_to_dataframe_and_insert
-from fixers import run_fixer, get_cols
+from utils import get_parser, get_engine_session, MIN_FILESIZE, transfer_older_logs, convert_string_to_datetime, read_csvs_to_dataframe_and_insert
 from updatetripdata import update_torqfile
 
 pd.set_option("future.no_silent_downcasting", True)
@@ -229,31 +228,6 @@ async def get_files_to_send(session: sessionmaker, args):
 
 	return result
 
-async def get_files_to_send_v1(session: sessionmaker, args):
-	"""
-	More efficient file processing that caches hashes
-	"""
-	# Get all hashes from database in one query
-	alldbfiles = session.query(TorqFile).all()
-	hashlist = set([k.csvhash for k in alldbfiles])  # Use set for O(1) lookups
-
-	# Get all CSV files first
-	csv_paths = list(Path(args.logpath).glob("**/trackLog*.csv"))
-	logger.info(f"Found {len(csv_paths)} CSV files to process")
-
-	# Filter by size first to avoid unnecessary hash calculations
-	csv_paths = [p for p in csv_paths if p.stat().st_size > MIN_FILESIZE]
-	logger.info(f"{len(csv_paths)} files exceed minimum size")
-
-	# Calculate hashes only once and filter in one step
-	result = []
-	for path in csv_paths:
-		file_hash = md5(open(path, "rb").read()).hexdigest()
-		if file_hash not in hashlist:
-			result.append(str(path))
-
-	return result
-
 async def process_batch(batch_files, args):
 	tasks = []
 	for csvfilename in batch_files:
@@ -306,7 +280,6 @@ async def cli_main(args):
 			logcount = s.execute(text("select count(*) from torqlogs")).all()
 			logger.info(f'{logcount=}')
 			s.close()
-			# combined_df, pd_columns = get_pandas_csv_column_dict(args)
 			read_csvs_to_dataframe_and_insert(args)
 			# _ = combined_df.to_sql("torqlogs", con=engine, if_exists="append", index=False, method='multi', chunksize=args.sqlchunksize)
 			# send_result = await send_data_to_db(args, data, csvfilename)
@@ -362,24 +335,6 @@ async def cli_main(args):
 
 		finally:
 			session.close()
-	if args.fixer:
-		# fixer mode
-		# read all log files, fix bad chars, remove them
-		# update database, mark the log file as fixed
-		await run_fixer(args)
-		sys.exit(0)
-	if args.getcols:
-		# get columns from all log files in the path
-		stats, columns = get_cols(args.logpath, debug=args.debug)
-		# columns = sorted(columns, key=lambda x: columns[x]['count'], reverse=True)
-		columns = sorted(columns, key=lambda x: (columns[x]["count"], columns[x]), reverse=True)
-		for c in columns:
-			if "date" in c or "time" in c:
-				lineout = f"{c} = Column('{c}', DateTime)"
-			else:
-				lineout = f"{c} = Column('{c}', DOUBLE)"  # Column('longitude', DOUBLE)
-			logger.debug(f'{lineout=}')
-		sys.exit(0)
 	if args.transfer:
 		# oldlogpath root of the old tripLogs files, containing subfolder, each name as unix timestamp of the trip
 		# each sub folder contains a log file and profile.properties file

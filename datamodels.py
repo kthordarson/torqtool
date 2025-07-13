@@ -93,11 +93,6 @@ COLUMN_TYPES = {
 class Base(DeclarativeBase):
 	pass
 
-def genuuid():
-	return str(uuid.uuid4())
-
-# x = latitude y = longitude !
-
 class Filestats(Base):
 	__tablename__ = 'filestats'
 	index: Mapped[int] = mapped_column(primary_key=True)

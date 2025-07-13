@@ -329,15 +329,6 @@ class MainApp(QMainWindow):
 		else:
 			logger.warning("No valid data points for speed plot")
 
-	def xcreate_speed_plot(self):
-		# lat_lon_data = self.session.query(Torqlogs.latitude, Torqlogs.longitude).filter(Torqlogs.fileid==fileid).all()
-		self.speedmodel = QSqlQueryModel()
-		self.speedmodel.setQuery('select * from speeds')
-		self.speedmodel.setHeaderData(0, QtCore.Qt.Horizontal, "fileid")
-		self.speedmodel.setHeaderData(1, QtCore.Qt.Horizontal, "speed")
-		self.speedmodel.setHeaderData(2, QtCore.Qt.Horizontal, "gpstime")
-		self.speed_series = QLineSeries()
-
 	def create_entries_plot(self):
 		self.fileentries_series = QLineSeries()
 		data = self.session.query(TorqFile.fileid, TorqFile.sent_rows).all()

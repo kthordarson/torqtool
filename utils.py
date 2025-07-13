@@ -80,17 +80,6 @@ def get_parser(appname):
 class TimeZoneAwareConstructorWarning:
 	pass
 
-def gather_csv_headers(args):
-	csv_files = list(Path(args.logpath).glob("**/trackLog*.csv"))
-	for file_idx, csvfile in enumerate(csv_files):
-		f = str(csvfile)
-		print(f'reading {file_idx+1}/{len(csv_files)} {f}')
-		with open(csvfile, "r") as f:
-			data0 = f.read().splitlines()
-		print(f'columns: {data0[0]}')
-		print(f'first lines[1:5]: {data0[1:3]}')
-		print(f'last lines[-5:]: {data0[-5:]}')
-
 def normalize_column_name(col):
 	"""
 	Normalize column names by stripping spaces, replacing multiple spaces, and removing problematic characters.
@@ -334,92 +323,6 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs'):
 	engine.dispose()
 	return None, pd_columns
 
-def get_pandas_csv_column_dict(args):
-	"""
-	Get a dictionary of column names and column stats, index.
-	Assumes the first line of the CSV file contains the column names.
-	"""
-	# pd_columns = [{'filename':str(k),'columns':pd.read_csv(k, low_memory=False, nrows=1).columns} for k in csv_files]
-	pd_columns = {'stats':{},'files': {}}
-	csv_files = list(Path(args.logpath).glob("**/trackLog*.csv"))
-	dfs = []
-	for file_idx, csvfile in enumerate(csv_files):
-		f = str(csvfile)
-		logger.info(f'reading {file_idx+1}/{len(csv_files)} {f}')
-		df = pd.read_csv(csvfile, low_memory=False, on_bad_lines='warn', encoding='utf-8', encoding_errors='replace')
-		original_columns = df.columns.to_list()
-		try:
-			normalized_columns = [str(k).strip().replace(r'\s+', ' ') for k in original_columns]
-		except (AttributeError, TypeError) as e:
-			logger.error(f"[get_pandas_csv_column_dict] {type(e)} {e} in {csvfile}")
-			normalized_columns = [str(k).strip() for k in original_columns]
-		df.columns = normalized_columns
-		pd_columns['files'][f] = {'filename': f, 'columns': normalized_columns}
-
-		# csv_col_list = [k.strip() for k in pd.read_csv(k, low_memory=False, nrows=1).columns.to_list()]
-		# pd_columns['files'][f] = {'filename': f, 'columns': csv_col_list}
-		for idx,c in enumerate(normalized_columns):
-			if c not in pd_columns['stats']:
-				pd_columns['stats'][c] = {'count': 0, 'colidx': [idx]}
-			pd_columns['stats'][c]['count'] += 1
-			pd_columns['stats'][c]['colidx'].append(idx)
-			pd_columns['files'][f][c] = {'colidx': idx, 'name': c}
-		dfs.append(df)
-	combined_df = pd.concat(dfs, ignore_index=True, sort=False)
-	return combined_df, pd_columns
-
-def replace_all(text, dic):
-	for i, j in dic.items():
-		textout = text.replace(i, j)
-	if text != textout:
-		logger.warning(f"{text} -> {textout}")
-	return textout
-
-def get_sanatized_column_names(orgcol):
-	"""
-	clean up column names, remove special characters and make lowercase
-	orgcol DataFrame.columns (list of column names) or str of column names
-	"""
-	if isinstance(orgcol, list):
-		newcolname = (",".join([re.sub(r"\W", "", col).lower() for col in orgcol]).encode("ascii", "ignore").decode())
-		newcolname += "\n"
-		newcolname = newcolname.lower()
-		return newcolname
-	elif isinstance(orgcol, str):
-		newcolname = (",".join([re.sub(r"\W", "", col).lower() for col in orgcol.split(",")]).encode("ascii", "ignore").decode())
-		newcolname += "\n"
-		return newcolname
-	else:
-		logger.warning(f"unknown type {type(orgcol)} {orgcol}")
-		return orgcol
-
-
-def get_fixed_lines(logfile, debug=True):
-	# read csv file, replace badvals and fix column names
-	# returns a buff with the fixed csv file
-	with open(logfile, "r") as reader:
-		data0 = reader.readlines()
-	orgcol = data0[0].split(",")
-	data = data0[1:]  # skip first line, fix column names later....
-	# lines0 = [k for k in data if not k.startswith('-')]
-	# lines = [replace_all(b, badvals) for b in data]
-	lines = [re.sub(",-,", ",0,", k) for k in data]
-	lines = [re.sub("∞", "0", k) for k in lines]
-	lines = [re.sub("â", "0", k) for k in lines]
-	lines = [re.sub("Â", "0", k) for k in lines]
-	# for bv in badvals:
-	# lines = [re.sub(bv,'0,',k) for k in data]
-	# lines = [re.sub('∞','0',k) for k in data]
-	# lines = [re.sub(b,'0',k) for k in data for b in badvals]
-	# newcolname = ','.join([re.sub(r'\W', '', col) for col in orgcol]).encode('ascii', 'ignore').decode()
-	# newcolname += '\n'
-	# newcolname = newcolname.lower()
-	newcolname = get_sanatized_column_names(orgcol)
-	# column_count = newcolname.count(',')
-	lines[0] = newcolname
-	return lines
-
-
 def check_split(logfile: Path, debug=False):
 	"""
 	check if file is damanaged, if so split it and save new log files
@@ -431,49 +334,10 @@ def check_split(logfile: Path, debug=False):
 		splits = sum([k[0:4].lower().count("gps") for k in data])
 	return splits
 
-
-def fix_logfile(logfile: Path, debug=False):
-	"""
-	fix_logfile - fix bad values in csv files
-	returns True if ok, False if not ok
-	"""
-
-	# get sanatized data from csv
-	try:
-		splits = check_split(logfile, debug=debug)
-		if splits > 1:
-			logger.warning(f"[gcv] {splits=} in {logfile}")
-			# todo make splitter ....
-			return False
-		else:
-			fixedlines = get_fixed_lines(logfile, debug=debug)
-			# logger.info(f'fixer read {len(fixedlines)} lines from {logfile}')
-			# make backup of original file before overwriting
-			backupfile = f"{logfile}.bak"
-			if Path(backupfile).exists():
-				rx = "".join([str(random.randint(1, 100)) for k in range(4)])
-				newbakname = f"{logfile}.{rx}.bak"
-				logger.warning(f"backupfile {backupfile} exists, backing up to {newbakname} ")
-			shutil.copy(logfile, backupfile)
-			# write to fixed csv file
-			with open(file=logfile, mode="w", encoding="utf-8", newline="") as writer:
-				writer.writelines(fixedlines)
-			if debug:
-				logger.debug(f"[gcv] saved {len(fixedlines)} fixed lines to {logfile}")
-			return True
-	except FileNotFoundError as e:
-		logger.error(f"[gcv] {type(e)} {e} in {logfile=} ")
-		return False
-	except Exception as e:
-		logger.error(f"[gcv] unhandled {type(e)} {e} in {logfile}")
-		return False
-
-
 def get_csv_files(searchpath: str, args):
 	# scan searchpath for csv files
 	torqcsvfiles = [({"csvfile": k, "csvhash": md5(open(k, "rb").read()).hexdigest(), "size": os.stat(k).st_size, "dbmode": args.dbmode, }) for k in Path(searchpath).glob("**/*.csv") if k.stat().st_size >= MIN_FILESIZE]  # and not os.path.exists(f'{k}.fixed.csv')]
 	return torqcsvfiles
-
 
 def get_bad_vals(csvfile: str):
 	with open(csvfile, "r") as reader:
