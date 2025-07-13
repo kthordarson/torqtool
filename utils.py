@@ -313,11 +313,11 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs'):
 						logger.debug(f"DataFrame columns: {df.columns.tolist()}")
 					continue
 
-			conn.execute("COMMIT")  # Commit all changes
+			conn.execute(text("COMMIT"))  # Commit all changes
 
 		except Exception as e:
-			conn.execute("ROLLBACK")  # Rollback on error
 			logger.error(f"Transaction failed: {e}")
+			conn.execute(text("ROLLBACK"))  # Rollback on error
 			raise
 
 	engine.dispose()
