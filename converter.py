@@ -14,7 +14,6 @@ from sqlalchemy.exc import DataError, IntegrityError, OperationalError
 from sqlalchemy.orm import sessionmaker
 import sqlite3
 from datamodels import TorqFile, database_init
-from schemas import dataschema
 from utils import get_parser, get_engine_session, MIN_FILESIZE, transfer_older_logs, convert_string_to_datetime, read_csvs_to_dataframe_and_insert
 from updatetripdata import update_torqfile
 
@@ -107,7 +106,7 @@ async def read_csv_file(logfile:str, args:argparse.Namespace):
 	nullvals = ['-','∞','340282346638528860000000000000000000000']
 	try:
 		# Use lazy evaluation to improve performance
-		data = pl.scan_csv(logfile, ignore_errors=True, try_parse_dates=True, truncate_ragged_lines=True, null_values=nullvals)  # , schema=dataschema
+		data = pl.scan_csv(logfile, ignore_errors=True, try_parse_dates=True, truncate_ragged_lines=True, null_values=nullvals)
 
 		# Apply all filters in one operation
 		data = data.filter((pl.col('gpstime') != '-') & (pl.col('gpstime') != 'GPS Time'))

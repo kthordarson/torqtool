@@ -225,6 +225,7 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs'):
 	if not valid_files:
 		logger.warning("No valid CSV files found after header validation")
 		return None, pd_columns
+	# valid_files = [k for k in valid_files][0:10]
 	logger.info(f"Found {len(valid_files)} valid CSV files with columns: {len(all_columns)}")
 	# Update database schema if needed
 	try:
@@ -300,10 +301,7 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs'):
 						)
 
 					# Update TorqFile row count
-					conn.execute(
-						text("UPDATE torqfiles SET sent_rows = :rows WHERE fileid = :fileid"),
-						{"rows": len(df), "fileid": fileid}
-					)
+					conn.execute(text("UPDATE torqfiles SET sent_rows = :rows WHERE fileid = :fileid"),{"rows": len(df), "fileid": fileid})
 
 					logger.info(f"[{csv_idx}/{len(valid_files)}] Successfully inserted {len(df)} rows from {csvfile}")
 
@@ -461,147 +459,6 @@ def sqlsender_ppe(buffer, session, args):
 	except (TypeError, ValueError) as e:
 		logger.error(f"[!]{type(e)}\n{e}\n")
 	return results
-
-
-def read_buff(csvfile, tf_fileid, debug=False):
-	error_files = []
-	rb = {
-		"torqbuffer": pd.DataFrame(), "fileid": tf_fileid, "csvfile": csvfile, }
-	column_mapping = {
-			"GPS Time": "gpstime",
-			" Device Time": "devicetime",
-			" Longitude": "longitude",
-			" Latitude": "latitude"
-		}
-	try:
-		torqbuffer = read_csv_polars(csvfile, ignore_errors=True, try_parse_dates=True, truncate_ragged_lines=True, )  # , use_pyarrow=True ,  ) #, null_values=['NaN','-','0\x88\x9e'])
-		torqbuffer = torqbuffer.rename(column_mapping)
-		torqbuffer = torqbuffer.fill_null(0).fill_nan(0)
-
-	except (InvalidOperationError, ValueError) as e:
-		logger.error(f"[rb] {type(e)} {e} csvfile={csvfile}")
-		return rb, error_files
-	except ComputeError as e:
-		logger.error(f"[rb] {type(e)} {e} csvfile={csvfile}")
-		return rb, error_files
-	if torqbuffer.is_empty():
-		logger.error(f"[rb] torqbuffer is empty {csvfile}")
-		return rb, error_files
-	fileid_series = pl.Series("fileid", [tf_fileid for k in range(len(torqbuffer))])
-	torqbuffer.insert_at_idx(1, fileid_series)
-	rbx = None
-	errf = None
-	try:
-		rbx, errf = fix_timestamps(torqbuffer, csvfile, tf_fileid)
-	except Exception as e:
-		logger.error(f"[rb] {type(e)} {e} in fix_timestamps {csvfile}\nrbx: {rbx}\n")
-	if rbx:
-		rb["torqbuffer"] = rbx["torqbuffer"]
-	if errf:
-		error_files.extend(errf)
-	return rb, error_files
-
-
-def fix_timestamps(torqbuffer, csvfile, tf_fileid):
-	# todo fix gpstime and devicetime
-	# drop rows where either values are null or missing
-	error_files = []
-	resultbuffer = {
-		"torqbuffer": torqbuffer, "fileid": tf_fileid, "csvfile": csvfile, }
-	try:
-		idx = len(torqbuffer["devicetime"]) // 2  # get middle index to guess dateformat
-	except (ColumnNotFoundError, ComputeError, ValueError) as e:
-		logger.error(f"[rb] devicetime {type(e)} {e} csvfile: {csvfile}")
-		idx = 10
-	try:
-		idx = len(torqbuffer["gpstime"]) // 2  # get middle index to guess dateformat
-	except (ColumnNotFoundError, ComputeError, ValueError) as e:
-		logger.error(f"[rb] gpstime {type(e)} {e} csvfile: {csvfile}")
-		idx = 10
-	gpstime = torqbuffer["gpstime"]
-	devicetime = torqbuffer["devicetime"]
-	try:
-		if len(torqbuffer["devicetime"][idx]) == 28:
-			devicetime = pl.Series("devicetime", [datetime.strptime(k, fmt_28).astimezone(pytz.timezone("UTC")) for k in torqbuffer["devicetime"] if k], )
-		elif len(torqbuffer["devicetime"][idx]) == 24:
-			devicetime = pl.Series("devicetime", [datetime.strptime(k, fmt_24).astimezone(pytz.timezone("UTC")) for k in torqbuffer["devicetime"] if k], )
-		elif len(torqbuffer["devicetime"][idx]) == 26:
-			devicetime = pl.Series("devicetime", [datetime.strptime(k, fmt_26).astimezone(pytz.timezone("UTC")) for k in torqbuffer["devicetime"] if k], )
-		elif len(torqbuffer["devicetime"][idx]) == 20:
-			devicetime = pl.Series("devicetime", [datetime.strptime(k, fmt_20).astimezone(pytz.timezone("UTC")) for k in torqbuffer["devicetime"] if k], )
-		else:
-			logger.error(f'[rb] devicetime format error! len = {len(torqbuffer["devicetime"][idx])} {idx=} buffer: {torqbuffer["devicetime"]}')
-	except (ColumnNotFoundError, ComputeError, ValueError, TypeError) as e:
-		logger.error(f'[rb] devicetime {type(e)} {e} csvfile: {csvfile} len = {len(torqbuffer["devicetime"][idx])} {idx=} ')
-		error_files.append(csvfile)
-	try:
-		if len(torqbuffer["gpstime"][idx]) == 28:
-			gpstime = pl.Series("gpstime", [datetime.strptime(k, fmt_28).astimezone(pytz.timezone("UTC")) for k in torqbuffer["gpstime"] if k], )
-		elif len(torqbuffer["gpstime"][idx]) == 26:
-			# gpstime = pl.Series('gpstime', [datetime.strptime(k,fmt_26).astimezone(pytz.timezone('UTC')) for k in torqbuffer['gpstime'] if k])
-			gpstime = pl.Series("gpstime", [datetime.strptime(k, fmt_26).astimezone(pytz.timezone("UTC")) for k in torqbuffer["gpstime"] if k], )
-		elif len(torqbuffer["gpstime"][idx]) == 34:
-			# to fix TimeZoneAwareConstructorWarning
-			gpstime = pl.Series("gpstime", [datetime.strptime(k, fmt_34).astimezone(pytz.timezone("UTC")) for k in torqbuffer["gpstime"] if k], )
-		else:
-			logger.error(f'[rb] gpstime format error ex: {torqbuffer["gpstime"]} len: {len(torqbuffer["gpstime"])}')
-	except (ComputeError, ValueError, TypeError) as e:
-		logger.error(f'[rb] {type(e)} {e} csvfile: {csvfile} len = {len(torqbuffer["devicetime"][idx])} {idx=} buf: {torqbuffer["gpstime"]}')
-		error_files.append(csvfile)
-		# raise e
-
-	gpstime_err = [idx for idx, k in enumerate(torqbuffer["gpstime"]) if not k]
-	devicetime_err = [idx for idx, k in enumerate(torqbuffer["devicetime"]) if not k]
-	try:
-		torqbuffer = torqbuffer.drop("devicetime")
-		if len(torqbuffer) != len(devicetime):
-			torqbuffer = torqbuffer[0:len(devicetime)]
-		torqbuffer.insert_at_idx(4, devicetime)
-	except (AttributeError, UnboundLocalError, pl.exceptions.ShapeError) as e:
-		logger.error(f"[rb] {type(e)} {e} csvfile: {csvfile} tblen={len(torqbuffer)} glen={len(gpstime)} dlen={len(devicetime)} {gpstime_err=} {devicetime_err=}")
-		error_files.append(csvfile)
-	try:
-		torqbuffer = torqbuffer.drop("gpstime")
-		if len(torqbuffer) != len(gpstime):
-			torqbuffer = torqbuffer[0:len(gpstime)]
-		torqbuffer.insert_at_idx(3, gpstime)
-	except (AttributeError, UnboundLocalError, pl.exceptions.ShapeError) as e:
-		logger.error(f"[rb] {type(e)} {e} csvfile: {csvfile} tblen={len(torqbuffer)} glen={len(gpstime)} dlen={len(devicetime)} {gpstime_err=} {devicetime_err=}")
-		error_files.append(csvfile)
-	resultbuffer["torqbuffer"] = torqbuffer
-	# resultbuffer = {
-	# 	'torqbuffer' : torqbuffer, # 	'fileid' : tf_fileid, # 	'csvfile' : csvfile, # }
-	return resultbuffer, error_files
-
-
-async def torq_worker_ppe(tf, session, args):
-	buffer = None
-	results = None
-	t0 = datetime.now()
-	timetotal = 0
-	try:
-		buffer, error_files = read_buff(tf.csvfile, tf.fileid, args)
-		if not buffer:
-			logger.warning(f"[!] buffer is None tf={tf}")
-		if args.debug:
-			if len(error_files) > 0:
-				logger.warning(f"error_files: {len(error_files)} ")  # pass # logger.debug(f'file {tf.csvfile} buffer: {len(buffer["torqbuffer"])}')
-				_ = [logger.error(f"error in file: {k}") for k in error_files]
-	except (TypeError,) as e:
-		logger.error(f"[!] {type(e)} {e} in read_buff {tf.csvfile}")
-		raise e
-	except (InvalidOperationError, ValueError, PicklingError, ComputeError) as e:
-		logger.error(f"[!] {type(e)} {e} in read_buff {tf.csvfile}")
-		return None
-	try:
-		results = sqlsender_ppe(buffer, session, args)  # send triplog data
-		timetotal += (datetime.now() - t0).seconds
-		if args.debug:
-			logger.debug(f't: {(datetime.now()-t0).seconds}/{timetotal} fileid {results.get("fileid")} {results.get("status")} buffer: {len(buffer["torqbuffer"])}')
-	except (ValueError, TypeError, PicklingError) as e:
-		logger.error(f'[!] {type(e)} {e} in sqlsender buffer.is_empty() {buffer["torqbuffer"].is_empty()}')
-		return None
-
 
 def send_torqtripdata(stats_data: dict, session: sessionmaker, args: argparse.Namespace):
 	"""
