@@ -8,7 +8,6 @@ from datetime import datetime
 from hashlib import md5
 from pathlib import Path
 from pickle import PicklingError
-import random
 import argparse
 import pandas as pd
 import polars as pl
@@ -20,10 +19,10 @@ from polars import read_csv as read_csv_polars
 from polars.exceptions import ColumnNotFoundError, InvalidOperationError
 from sqlalchemy import create_engine, text, MetaData, Table, Column, Float, String, Integer
 from sqlalchemy.exc import ArgumentError, DataError,IntegrityError, InternalError, OperationalError, ProgrammingError
-from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.orm import sessionmaker
 import sqlite3
 from commonformats import fmt_20, fmt_24, fmt_26, fmt_28, fmt_30, fmt_34, fmt_36
-from datamodels import database_init, TorqFile, COLUMN_TYPES
+from datamodels import database_init, COLUMN_TYPES
 
 MIN_FILESIZE = 3000
 

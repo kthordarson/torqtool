@@ -4,8 +4,6 @@ import shutil
 from hashlib import md5
 from pathlib import Path
 import random
-import pandas as pd
-import polars as pl
 from loguru import logger
 from sqlalchemy.exc import NoResultFound
 from datamodels import TorqFile

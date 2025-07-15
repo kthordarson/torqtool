@@ -1,3 +1,5 @@
+*.db-shm
+*.db-wal
 plotutils.py
 *.db
 *.sql
