@@ -18,6 +18,7 @@ from loguru import logger
 from polars import ComputeError
 from polars import read_csv as read_csv_polars
 from polars.exceptions import ColumnNotFoundError, InvalidOperationError
+from sqlalchemy import DateTime
 from sqlalchemy import create_engine, text, MetaData, Table, Column, Float, String, Integer
 from sqlalchemy.exc import ArgumentError, DataError,IntegrityError, InternalError, OperationalError, ProgrammingError
 from sqlalchemy.orm import sessionmaker, Session
@@ -193,10 +194,20 @@ def update_trip_and_file_for_fileid(conn, fileid):
 	trip_duration = None
 	if trip_start and trip_end:
 		try:
+			trip_start_dt = convert_string_to_datetime(str(trip_start))
+			trip_end_dt = convert_string_to_datetime(str(trip_end))
+			if isinstance(trip_start_dt, datetime) and isinstance(trip_end_dt, datetime):
+				trip_duration = (trip_end_dt - trip_start_dt).total_seconds()
+			else:
+				trip_duration = None
+
+			# if not isinstance(trip_start, datetime):
+			# 	# trip_start = convert_string_to_datetime(trip_start)
+			# 	trip_start = convert_string_to_datetime(str(trip_start))
+			# if not isinstance(trip_end, datetime):
+			# 	# trip_end = convert_string_to_datetime(trip_end)
+			# 	trip_end = convert_string_to_datetime(str(trip_end))
 			# trip_duration = (trip_end - trip_start).total_seconds()
-			start_dt = convert_string_to_datetime(trip_start) if isinstance(trip_start, str) else trip_start
-			end_dt = convert_string_to_datetime(trip_end) if isinstance(trip_end, str) else trip_end
-			trip_duration = (end_dt - start_dt).total_seconds()
 		except Exception as e:
 			logger.error(f'{e} {type(e)} {trip_start=} {trip_end=}')
 			trip_duration = None
@@ -305,6 +316,12 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs'):
 		return None, pd_columns
 	# valid_files = [k for k in valid_files][0:10]
 	logger.info(f"Found {len(valid_files)} valid CSV files with columns: {len(all_columns)}")
+	column_types = COLUMN_TYPES.copy()
+	for col in all_columns:
+		col_lower = col.lower()
+		if any(key in col_lower for key in ["time", "date"]):
+			column_types[col] = DateTime
+
 	# Update database schema if needed
 	try:
 		create_or_update_table(engine, table_name, all_columns, COLUMN_TYPES)
@@ -336,6 +353,16 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs'):
 					before_count = conn.execute(text("SELECT count(*) from torqlogs")).scalar()
 					# Read CSV file
 					df = pd.read_csv(csvfile, low_memory=False, on_bad_lines='skip', encoding='utf-8', encoding_errors='replace')
+
+					for col in df.columns:
+						col_lower = col.lower()
+						if any(key in col_lower for key in ["time", "date"]):
+							try:
+								# df[col] = pd.to_datetime(df[col], errors='coerce')
+								# df[col] = df[col].apply(lambda x: convert_string_to_datetime(x) if pd.notnull(x) else pd.NaT)
+								df[col] = df[col].apply(lambda x: convert_string_to_datetime(x) if isinstance(x, str) and pd.notnull(x) else pd.NaT)
+							except Exception as e:
+								logger.warning(f"Could not convert column {col} to datetime: {e} {type(e)} in {csvfile}")
 
 					# Create TorqFile entry
 					result = conn.execute(text("INSERT INTO torqfiles (csvfile, csvhash) VALUES (:csvfile, :csvhash) RETURNING fileid"),{"csvfile": str(csvfile), "csvhash": csvhash})
@@ -681,6 +708,9 @@ def convert_string_to_datetime(s: str):
 	param s string with datetime
 	returns datetime object
 	"""
+	if not isinstance(s, str):
+		logger.warning(f'{s} is not str but {type(s)}')
+		s = str(s)
 	fmt_selector = len(s)
 	datetimeobject = s
 	try:
