@@ -158,6 +158,84 @@ def create_or_update_table(engine, table_name, columns, column_types):
 
 	return list(missing_columns)
 
+def update_trip_and_file_for_fileid(conn, fileid):
+	"""
+	Update TorqFile and Torqtrips for a single fileid after inserting its data.
+	"""
+	# Aggregate trip info for this fileid
+	sql = """
+	SELECT
+		fileid,
+		MIN(GPS_Time) AS trip_start,
+		MAX(GPS_Time) AS trip_end,
+		MIN(GPS_Latitude) AS startlat,
+		MIN(GPS_Longitude) AS startlon,
+		MAX(GPS_Latitude) AS endlat,
+		MAX(GPS_Longitude) AS endlon,
+		COUNT(*) AS row_count
+	FROM torqlogs
+	WHERE fileid = :fileid
+	GROUP BY fileid
+	"""
+	row = conn.execute(text(sql), {"fileid": fileid}).mappings().first()
+	if not row:
+		return
+
+	trip_start = row["trip_start"]
+	trip_end = row["trip_end"]
+	startlat = row["startlat"]
+	startlon = row["startlon"]
+	endlat = row["endlat"]
+	endlon = row["endlon"]
+	row_count = row["row_count"]
+
+	# Calculate trip duration
+	trip_duration = None
+	if trip_start and trip_end:
+		try:
+			# trip_duration = (trip_end - trip_start).total_seconds()
+			start_dt = convert_string_to_datetime(trip_start) if isinstance(trip_start, str) else trip_start
+			end_dt = convert_string_to_datetime(trip_end) if isinstance(trip_end, str) else trip_end
+			trip_duration = (end_dt - start_dt).total_seconds()
+		except Exception as e:
+			logger.error(f'{e} {type(e)} {trip_start=} {trip_end=}')
+			trip_duration = None
+
+	# Insert or update Torqtrips
+	conn.execute(text("""
+		INSERT OR IGNORE INTO torqtrips (fileid, tripdate, time)
+		VALUES (:fileid, :trip_start, :trip_duration)
+	"""), {
+		"fileid": fileid,
+		"trip_start": trip_start,
+		"trip_duration": trip_duration
+	})
+
+	# Update TorqFile
+	conn.execute(text("""
+		UPDATE torqfiles
+		SET trip_start = :trip_start,
+			trip_end = :trip_end,
+			trip_duration = :trip_duration,
+			startlat = :startlat,
+			startlon = :startlon,
+			endlat = :endlat,
+			endlon = :endlon,
+			sent_rows = :row_count
+		WHERE fileid = :fileid
+	"""), {
+		"fileid": fileid,
+		"trip_start": trip_start,
+		"trip_end": trip_end,
+		"trip_duration": trip_duration,
+		"startlat": startlat,
+		"startlon": startlon,
+		"endlat": endlat,
+		"endlon": endlon,
+		"row_count": row_count
+	})
+	logger.debug(f'Updated TorqFile and Torqtrips for fileid {fileid}: trip_start={trip_start}, trip_end={trip_end}, duration={trip_duration}, rows={row_count}')
+
 def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs'):
 	"""
 	Read all CSV files into a DataFrame, normalize column names, and insert into SQLite table.
@@ -249,29 +327,18 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs'):
 				try:
 					# Check if file has already been processed
 					csvhash = md5(Path(csvfile).read_bytes()).hexdigest()
-					existing_file = conn.execute(
-						text("SELECT fileid FROM torqfiles WHERE csvhash = :csvhash"),
-						{"csvhash": csvhash}
-					).first()
+					existing_file = conn.execute(text("SELECT fileid FROM torqfiles WHERE csvhash = :csvhash"),{"csvhash": csvhash}).first()
 
 					if existing_file:
 						logger.info(f"[{csv_idx}/{len(valid_files)}] File {csvfile} already processed, skipping")
 						continue
 
+					before_count = conn.execute(text("SELECT count(*) from torqlogs")).scalar()
 					# Read CSV file
-					df = pd.read_csv(
-						csvfile,
-						low_memory=False,
-						on_bad_lines='skip',
-						encoding='utf-8',
-						encoding_errors='replace'
-					)
+					df = pd.read_csv(csvfile, low_memory=False, on_bad_lines='skip', encoding='utf-8', encoding_errors='replace')
 
 					# Create TorqFile entry
-					result = conn.execute(
-						text("INSERT INTO torqfiles (csvfile, csvhash) VALUES (:csvfile, :csvhash) RETURNING fileid"),
-						{"csvfile": str(csvfile), "csvhash": csvhash}
-					)
+					result = conn.execute(text("INSERT INTO torqfiles (csvfile, csvhash) VALUES (:csvfile, :csvhash) RETURNING fileid"),{"csvfile": str(csvfile), "csvhash": csvhash})
 					fileid = result.scalar()
 
 					# Add fileid column first
@@ -286,6 +353,14 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs'):
 						if col in COLUMN_TYPES and COLUMN_TYPES[col] in [Float, Integer]:
 							df[col] = pd.to_numeric(df[col], errors='coerce')
 
+					# Remove rows that are identical to the header (possible repeated headers)
+					header_row = list(df.columns)
+					df = df[~df.apply(lambda row: list(row) == header_row, axis=1)]
+					df = df[~df.apply(lambda row: row.astype(str).str.contains(' Device Time').any(), axis=1)]
+
+					ordered_cols = ['fileid'] + [col for col in all_columns if col != 'fileid' and col in df.columns]
+					df = df[ordered_cols]
+
 					# Insert data
 					logger.info(f"[{csv_idx}/{len(valid_files)}] Sending {len(df)} rows from {csvfile} with fileid {fileid}")
 
@@ -293,17 +368,15 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs'):
 					chunk_size = min(1000, args.sqlchunksize)
 					for chunk_start in range(0, len(df), chunk_size):
 						chunk = df.iloc[chunk_start:chunk_start + chunk_size]
-						chunk.to_sql(
-							table_name,
-							conn,
-							if_exists='append',
-							index=False
-						)
+						chunk.to_sql(table_name, conn, if_exists='append', index=False)
+
+					# Update trip and file info for this fileid
+					update_trip_and_file_for_fileid(conn, fileid)
 
 					# Update TorqFile row count
 					conn.execute(text("UPDATE torqfiles SET sent_rows = :rows WHERE fileid = :fileid"),{"rows": len(df), "fileid": fileid})
-
-					logger.info(f"[{csv_idx}/{len(valid_files)}] Successfully inserted {len(df)} rows from {csvfile}")
+					after_count = conn.execute(text("SELECT count(*) from torqlogs")).scalar()
+					logger.info(f"[{csv_idx}/{len(valid_files)}] Successfully inserted {len(df)} rows from {csvfile} before_count={before_count} after_count={after_count}")
 
 				except Exception as e:
 					logger.error(f"Error processing {csvfile}: {e}")
@@ -703,6 +776,86 @@ def transfer_older_logs(args):
 			logger.warning(f"could not extract profiledata from {profile_fn}")
 	logger.info(f"transfered {len(transfered_logs)} of {len(old_dirs)} old tripLogs to {args.logpath}")
 	return transfered_logs
+
+def populate_trips_and_update_files(session):
+	"""
+	Populate Torqtrips based on torqlogs, grouped by fileid.
+	Also updates TorqFile fields based on aggregated torqlogs data.
+	Uses raw SQL for aggregation and column discovery.
+	"""
+	# Discover columns in torqlogs
+	columns_result = session.execute(text("PRAGMA table_info(torqlogs)"))
+	columns = [row[1] for row in columns_result]
+	# Required columns for trip aggregation
+	# required = {"fileid", "gpstime", "latitude", "longitude"}
+	# if not required.issubset(set(map(str.lower, columns))):
+	# 	raise RuntimeError(f"torqlogs missing required columns: {required - set(map(str.lower, columns))}")
+
+	# Group by fileid, aggregate trip start/end, start/end lat/lon, count
+	sql = """
+	SELECT
+		fileid,
+		MIN(GPS_Time) AS trip_start,
+		MAX(GPS_Time) AS trip_end,
+		MIN(GPS_Latitude) AS startlat,
+		MIN(GPS_Longitude) AS startlon,
+		MAX(GPS_Latitude) AS endlat,
+		MAX(GPS_Longitude) AS endlon,
+		COUNT(*) AS row_count
+	FROM torqlogs
+	GROUP BY fileid
+	"""
+	for row in session.execute(text(sql)):
+		fileid = row.fileid
+		trip_start = row.trip_start
+		trip_end = row.trip_end
+		startlat = row.startlat
+		startlon = row.startlon
+		endlat = row.endlat
+		endlon = row.endlon
+		row_count = row.row_count
+
+		# Insert into Torqtrips (if not exists)
+		session.execute(text("""
+			INSERT OR IGNORE INTO torqtrips (fileid, tripdate, triptime)
+			VALUES (:fileid, :trip_start, :trip_duration)
+		"""), {
+			"fileid": fileid,
+			"trip_start": trip_start,
+			"trip_duration": None if not (trip_start and trip_end) else (
+				(trip_end - trip_start).total_seconds()
+				if hasattr(trip_end, 'total_seconds') else None
+			)
+		})
+
+		# Update TorqFile
+		session.execute(text("""
+			UPDATE torqfiles
+			SET trip_start = :trip_start,
+				trip_end = :trip_end,
+				trip_duration = :trip_duration,
+				startlat = :startlat,
+				startlon = :startlon,
+				endlat = :endlat,
+				endlon = :endlon,
+				sent_rows = :row_count
+			WHERE fileid = :fileid
+		"""), {
+			"fileid": fileid,
+			"trip_start": trip_start,
+			"trip_end": trip_end,
+			"trip_duration": None if not (trip_start and trip_end) else (
+				(trip_end - trip_start).total_seconds()
+				if hasattr(trip_end, 'total_seconds') else None
+			),
+			"startlat": startlat,
+			"startlon": startlon,
+			"endlat": endlat,
+			"endlon": endlon,
+			"row_count": row_count
+		})
+
+	session.commit()
 
 if __name__ == "__main__":
 	pass

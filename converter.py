@@ -15,6 +15,7 @@ from sqlalchemy.orm import sessionmaker
 import sqlite3
 from datamodels import TorqFile, database_init
 from utils import get_parser, get_engine_session, MIN_FILESIZE, transfer_older_logs, convert_string_to_datetime, read_csvs_to_dataframe_and_insert
+from utils import populate_trips_and_update_files
 from updatetripdata import update_torqfile
 
 pd.set_option("future.no_silent_downcasting", True)
@@ -280,6 +281,10 @@ async def cli_main(args):
 			logger.info(f'{logcount=}')
 			s.close()
 			read_csvs_to_dataframe_and_insert(args)
+			# sess = sessionmaker(bind=engine)
+			# s = sess()
+			# populate_trips_and_update_files(s)
+			# s.close()
 			# _ = combined_df.to_sql("torqlogs", con=engine, if_exists="append", index=False, method='multi', chunksize=args.sqlchunksize)
 			# send_result = await send_data_to_db(args, data, csvfilename)
 		except Exception as e:
