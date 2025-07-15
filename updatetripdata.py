@@ -29,7 +29,7 @@ def collect_db_filestats(args, todatabase=True, droptable=True):
 	logger.debug(f"fileids={len(file_ids)} ")
 	results = []
 	for fileidx, file in enumerate(file_ids.itertuples()):
-		if args.extradebug:
+		if args.debug:
 			logger.debug(f"[{fileidx}/{len(file_ids)}] working on fileid {file.fileid} ")
 		# results[file.fileid] = []
 		total_rows = pd.DataFrame(session.execute(text(f"select count(*) from torqlogs where  fileid={file.fileid}"))).values[0][0]  # id>0 and
@@ -40,12 +40,12 @@ def collect_db_filestats(args, todatabase=True, droptable=True):
 			logger.info(f"total_rows={total_rows} for {file.fileid}")
 		column_list = [(idx,k) for idx,k in enumerate(dataschema) if k not in ['gpstime','devicetime']]
 		for idx, column in enumerate(column_list):
-			if args.extradebug:
+			if args.debug:
 				logger.debug(f"[{fileidx}/{len(file_ids)}] fileid {file.fileid}  col: {column} ")
 			nulls = pd.DataFrame(session.execute(text(f"select count(*) as count from torqlogs where  fileid={file.fileid} and {column} is null ")).all()).values[0][0]  # id>0 and
 			notnulls = total_rows - nulls
 			# dfval = df.values[0][0]
-			if args.extradebug and nulls > 0:
+			if args.debug and nulls > 0:
 				logger.debug(f"[{fileidx}/{len(file_ids)}/{idx}/{len(column_list)}] {file.fileid} - {column} nulls {nulls} ratio:  {nulls/total_rows} notnulls:{notnulls} ratio: {notnulls/total_rows}")
 
 			result = ({

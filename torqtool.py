@@ -60,7 +60,7 @@ async def send_torq_logs(filelist, session, args):
     # tripend = timer()
     t0 = datetime.now()
     if args.debug:
-        logger.debug(f"sendtorqlogs  starting torq_worker_ppe for {len(filelist)} files mode={args.threadmode}")
+        logger.debug(f"sendtorqlogs  starting torq_worker_ppe for {len(filelist)} files ")
     async with asyncio.TaskGroup() as tg:
         for idx, tf in enumerate(filelist):
             # asyncio.set_event_loop(loop)
@@ -85,20 +85,8 @@ async def collect(async_iterable):
 
 
 async def main(args):
-    # 1. scan args.logpath for csv files
-    # 2. check if csv files are in db
-    # 3. if not in db, foreach run fixer, create TorqFile and send to db
-    # 4.
-    # 5. read profile.properties from csvfile folder, foreach, create Torqtrips and send to db
-    # 6. foreach new TorqFile, read csv, create TorqLogs and send to db
-    # 7.
-    # 8. send csvdata to db
-    # todo: create worker thread for each file, worker reads and processes file and sends to db.
-    # todo: handle new columns from csv files, eg airfuelratiomeasured1
     t0 = datetime.now()
     engine, session = get_engine_session(args)
-    if args.torqdata:
-        sys.exit(0)
     if args.database_dropall:
         try:
             database_dropall(engine)
@@ -150,14 +138,6 @@ async def main(args):
         results = None
         res = None
         results = await scanpath(session, args)
-        for csvfile in results:
-            if fix_logfile(csvfile.csvfile):  # attempt to fix file, returns True if fixed
-                dbf = (session.query(TorqFile).filter(TorqFile.fileid == csvfile.fileid).first())
-                if args.debug:
-                    logger.debug(f"t: {(datetime.now()-t0).seconds} fixed {dbf}")
-            else:
-                logger.warning(f"fixer failed of {csvfile.csvfile}")
-
         await send_torq_logs(results, session, args)
 
 if __name__ == "__main__":

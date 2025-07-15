@@ -28,28 +28,9 @@ MIN_FILESIZE = 3000
 
 def get_parser(appname):
 	parser = argparse.ArgumentParser(description=appname)
-	parser.add_argument("--find-optimal-batch-size", default=False, help="Run tests to find optimal batch size", action="store_true", dest="find_optimal_batch_size")
-	parser.add_argument("--fixer", default=False, help="run fixer, set --bakpath", action="store_true", dest="fixer")
-	parser.add_argument("--fixcsv", default=False, help="repair csv", action="store_true", dest="fixcsv")
-	parser.add_argument("--getcols", default=False, help="prep cols", action="store_true", dest="getcols")
-	parser.add_argument("--repairsplit", default=False, help="enable splitting of strange log files", action="store_true", dest="repairsplit", )
-	parser.add_argument("--samplemode", default=False, help="use samplemode, select small random number of logs-for debugging", action="store_true", dest="samplemode", )
 	parser.add_argument("--scanpath", default=False, help="run scanpath", action="store_true", dest="scanpath", )
-	parser.add_argument("--old_scanpath", default=False, help="run old_scanpath", action="store_true", dest="old_scanpath", )
-	parser.add_argument("--showdrops", default=False, help="show dropped columns", action="store_true", dest="showdrops", )
-	parser.add_argument("--skipwrites", default=False, help="skipwrites", action="store_true", dest="skipwrites", )
 	parser.add_argument("--filestats", default=True, help="create filestats", action="store_true", dest="filestats", )
-	parser.add_argument("--testnewreader", default=False, help="run testnewreader", action="store_true", dest="testnewreader", )
-	parser.add_argument("--threadmode", default="ppe", help="threadmode ppe/oldppe/tpe", action="store")
-	parser.add_argument("--torqdata", default=False, help="create torqdata", action="store_true", dest="torqdata", )
-	parser.add_argument("--transfer", default=False, help="transfer old logs, set oldlogpath to location of old triplogs", action="store_true", dest="transfer", )
-	parser.add_argument("--bakpath", nargs="?", default="/home/kth/development/torq/backups3", help="where to put backups", action="store", )
-	parser.add_argument("--check-file", default=False, help="check database", action="store_true", dest="check_file", )
-	parser.add_argument("--chunks", nargs="?", default="4", help="chunks", action="store")
-	parser.add_argument("--batch_size", nargs="?", default=5, type=int, help="batch_size", action="store")
-	parser.add_argument("--combinecsv", default=False, help="make big csv", action="store_true", dest="combinecsv", )
 	parser.add_argument("--create-trips", default=False, help="create trip database", action="store_true", dest="create_trips", )
-	parser.add_argument("--check-db", default=False, help="check database", action="store_true", dest="check_db", )
 	parser.add_argument("--database_dropall", default=False, help="drop database", action="store_true", dest="database_dropall", )
 	parser.add_argument("--dbhost", default="localhost", help="dbname", action="store")
 	parser.add_argument("--dbmode", default="sqlite", help="sqlmode mysql/psql/sqlite/mariadb", action="store", dest="dbmode", )
@@ -58,23 +39,12 @@ def get_parser(appname):
 	parser.add_argument("--dbuser", default="torq", help="dbname", action="store")
 	parser.add_argument("--dbfile", default="torqfiskur.db", help="database file", action="store")
 	parser.add_argument("--db_limit", default=False, help="db_limit", action="store", dest="db_limit")
-	parser.add_argument("--db_rowlimit", default=False, help="db_rowlimit", action="store", dest="db_rowlimit")
-	parser.add_argument("--db_minrows", default=100, help="db_minrows", action="store", dest="db_minrows")
-	parser.add_argument("--dump-db", nargs="?", default=None, help="dump database to file", action="store", )
 	parser.add_argument("--file", nargs="?", default=".", help="path to single csv file", action="store")
 	parser.add_argument("--logpath", nargs="?", default=".", help="path to csv files", action="store")
-	parser.add_argument("--max_workers", nargs="?", default="4", help="max_workers", action="store")
-	parser.add_argument("--oldlogpath", nargs="?", default=".", help="oldlogpath", action="store")
 	parser.add_argument("--sqlchunksize", nargs="?", default=1000, type=int, help="sql chunk", action="store")
-	parser.add_argument("--webstart", default=False, help="start web listener", action="store_true", dest="web", )
 	parser.add_argument("-i", "--info", "--dbinfo", default=False, help="show dbinfo", action="store_true", dest="dbinfo", )
 	parser.add_argument("-d", "--debug", default=False, help="debugmode", action="store_true", dest="debug", )
-	parser.add_argument("--extradebug", default=False, help="extradebug", action="store_true", dest="extradebug", )
-	# parser.add_argument("--gui", default=False, help="Run gui", action="store_true", dest='gui')
-	# parser.add_argument("--init-db", default=False, help="init database", action="store_true", dest='init_db')
-
 	return parser
-
 
 class TimeZoneAwareConstructorWarning:
 	pass
@@ -337,20 +307,6 @@ def get_csv_files(searchpath: str, args):
 	# scan searchpath for csv files
 	torqcsvfiles = [({"csvfile": k, "csvhash": md5(open(k, "rb").read()).hexdigest(), "size": os.stat(k).st_size, "dbmode": args.dbmode, }) for k in Path(searchpath).glob("**/*.csv") if k.stat().st_size >= MIN_FILESIZE]  # and not os.path.exists(f'{k}.fixed.csv')]
 	return torqcsvfiles
-
-def get_bad_vals(csvfile: str):
-	with open(csvfile, "r") as reader:
-		data = reader.readlines()
-	for line in data:
-		l0 = line.split(",")
-		for lx in l0:
-			try:
-				lx.encode("ascii")
-			except (UnicodeEncodeError, UnicodeDecodeError) as e:
-				logger.error(f"unicodeerr: {e} in {csvfile} lt={type(line)} l={line}")
-			except AttributeError as e:
-				logger.error(f"AttributeError: {e} in {csvfile} lt={type(line)} l={line}")
-
 
 def get_engine_session(args):
 	dburl = None
@@ -651,43 +607,6 @@ def get_temp_stats(temp_cols):
 			"name": c.name, f"{c.name}.min": c.min(), f"{c.name}.mean": c.mean(), f"{c.name}.max": c.max(), }
 	return stats
 
-def check_database_columns(session, args=None, limit=1000):
-	"""
-	collect some info about database columns
-	"""
-	skip_cols = ['id', 'fileid', 'devicetime', 'gpstime','time', 'csvfile', 'csvhash', 'read_flag', 'error_flag', 'send_flag', 'send_flag', 'data_flag', 'distance']
-	df = pd.DataFrame(session.execute(text('select column_name from information_schema.columns where table_name = "torqlogs" order by table_name,ordinal_position')).all())
-	# df = pd.DataFrame(session.execute(text('select column_name from information_schema.columns where table_schema = "torq" order by table_name,ordinal_position')).all())
-	# df2 = pd.DataFrame(session.execute(text('SELECT id,fileid,o2sensor1widerangecurrentma FROM torqlogs WHERE o2sensor1widerangecurrentma IS NULL  OR o2sensor1widerangecurrentma=";" ')).all())
-	column_names = sorted([k for k in set([k[0] for k in df.values]) if k not in skip_cols])
-	logger.info(f'found {len(column_names)} columns in database, limit:{limit}')
-	maxnlen = max([len(k) for k in column_names])  # longest name, for formatting
-	for col in column_names:
-		if args.debug:
-			logger.debug(f'checking {col} limit:{limit} ')
-		if not limit:
-			df = pd.DataFrame(session.execute(text(f'select {col} from torqlogs')).all())
-		else:
-			df = pd.DataFrame(session.execute(text(f'select {col} from torqlogs limit {limit}')).all())
-		try:
-			nulls = df.isnull().sum().values[0]
-		except (IndexError,AttributeError) as e:
-			logger.error(f'{type(e)} {e} {col=} ')
-			nulls = 0.0
-		# nullratio = len(df)/df.isnull().sum().values[0]
-		nr = 0.0
-		if nulls > 0:
-			try:
-				nr = len(df)/nulls
-			except (Exception, RuntimeError, ZeroDivisionError) as e:
-				logger.error(f'{type(e)} {e} {col=} {df.describe()}')
-
-		minval = df.min().values[0] or 0.0
-		mednval = df.median().values[0] or 0.0
-		meannval = df.mean().values[0] or 0.0
-		maxnval = df.max().values[0] or 0.0
-		logger.info(f'  {col:<{maxnlen}} nulls: {nulls:>3} nr: {nr:>3.3} {minval:>3.3} {mednval:>3.3} {meannval:>3.3} {maxnval:>3.3}')
-
 def get_tripfile_stats(fileid, session, args=None, limit=1000):
 	"""
 	collect some info about database columns
@@ -798,53 +717,6 @@ def read_profile(profile_fn: str):
 		logger.error(f"unhandled {type(e)} {e}")
 	finally:
 		return tripdate
-
-
-def transfer_older_logs(args):
-	# transfer old tripLogs to new format
-	# todo read more info from profile.properties file
-	#
-
-	old_dirs = [
-		k
-		for k in Path(args.oldlogpath).glob("*")
-		if k.is_dir() and len(str(k.name)) == 13
-	]
-	# pick only directories with 13 digits
-
-	transfered_logs = []
-	# to keep track of the logs that have been transfered
-
-	logger.debug(f"found {len(old_dirs)} old tripLogs")
-	for od in old_dirs:
-		profile_fn = os.path.join(od, "profile.properties")
-		# old_timestamp = datetime.fromtimestamp(int(od.name)/1000).strftime("%Y-%b-%d_%H-%M-%S")
-		if Path(profile_fn).exists():
-			# read profile.properties file, to extract some data
-			profiledata = read_profile(profile_fn)
-		else:
-			logger.warning(f"no profile.properties file found in {od}")
-			profiledata = None
-		# rename log file to new format
-		if profiledata:
-			trip_date = profiledata.strftime("%Y-%b-%d_%H-%M-%S")
-			new_log_fn = Path(os.path.join(args.logpath, f"trackLog-{trip_date}.csv"))
-			if len(new_log_fn.name) != 33:
-				logger.warning(f"new log filename {new_log_fn} is not 33 chars long")
-			if Path(new_log_fn).exists():
-				logger.warning(f"file {new_log_fn} exists, skipping")
-			else:
-				old_log_name = os.path.join(od, "trackLog.csv")
-				logger.debug(f"move/copy from {old_log_name} to {new_log_fn}")
-				try:
-					shutil.copyfile(old_log_name, new_log_fn)
-					transfered_logs.append(new_log_fn)
-				except Exception as e:
-					logger.error(f"Error {type(e)} {e} {old_log_name} -> {new_log_fn}")
-		else:
-			logger.warning(f"could not extract profiledata from {profile_fn}")
-	logger.info(f"transfered {len(transfered_logs)} of {len(old_dirs)} old tripLogs to {args.logpath}")
-	return transfered_logs
 
 if __name__ == "__main__":
 	pass
