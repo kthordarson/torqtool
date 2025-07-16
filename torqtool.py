@@ -2,7 +2,6 @@
 import asyncio
 import sys
 from collections.abc import AsyncIterable
-from datetime import datetime
 from pathlib import Path
 import pandas as pd
 from loguru import logger
@@ -11,7 +10,7 @@ from sqlalchemy.exc import OperationalError
 # sys.path.append('c:/apps/torqtool/torqtool')
 from utils import get_parser
 from datamodels import TorqFile, Torqlogs, Torqtrips, database_dropall, send_torqfiles
-from utils import fix_logfile, generate_torqdata, get_csv_files, get_engine_session, send_torqtripdata
+from utils import generate_torqdata, get_csv_files, get_engine_session, send_torqtripdata
 
 # june2024 rewrite: log files are stored diffrently from previous versions
 # now the app stores the logs on the phone under /storage/emulated/0/Documents/torqueLogs
@@ -65,7 +64,7 @@ async def collect(async_iterable):
 
 
 async def main(args):
-    t0 = datetime.now()
+    # t0 = datetime.now()
     engine, session = get_engine_session(args)
     if args.database_dropall:
         try:

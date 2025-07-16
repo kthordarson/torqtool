@@ -7,16 +7,11 @@ import sys
 from datetime import datetime
 from hashlib import md5
 from pathlib import Path
-from pickle import PicklingError
 import argparse
 import pandas as pd
-import polars as pl
 import pymysql
 import pytz
 from loguru import logger
-from polars import ComputeError
-from polars import read_csv as read_csv_polars
-from polars.exceptions import ColumnNotFoundError, InvalidOperationError
 from sqlalchemy import DateTime
 from sqlalchemy import create_engine, text, MetaData, Table, Column, Float, String, Integer
 from sqlalchemy.exc import ArgumentError, DataError,IntegrityError, InternalError, OperationalError, ProgrammingError
@@ -732,8 +727,8 @@ def populate_trips_and_update_files(session):
 	Uses raw SQL for aggregation and column discovery.
 	"""
 	# Discover columns in torqlogs
-	columns_result = session.execute(text("PRAGMA table_info(torqlogs)"))
-	columns = [row[1] for row in columns_result]
+	# columns_result = session.execute(text("PRAGMA table_info(torqlogs)"))
+	# columns = [row[1] for row in columns_result]
 	# Required columns for trip aggregation
 	# required = {"fileid", "gpstime", "latitude", "longitude"}
 	# if not required.issubset(set(map(str.lower, columns))):

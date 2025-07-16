@@ -5,8 +5,6 @@ from loguru import logger
 from sqlalchemy import Column, DateTime, Float, ForeignKey, Integer, Text, text, String
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-from sqlalchemy.sql.sqltypes import Double
-from sqlalchemy import func
 
 COLUMN_TYPES = {
 		'GPS_Time': String,

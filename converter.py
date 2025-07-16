@@ -2,7 +2,6 @@
 import asyncio
 import argparse
 import sys
-from datetime import datetime
 from hashlib import md5
 from pathlib import Path
 import pandas as pd
@@ -14,9 +13,7 @@ from sqlalchemy.exc import DataError, IntegrityError, OperationalError
 from sqlalchemy.orm import sessionmaker
 import sqlite3
 from datamodels import TorqFile, database_init
-from utils import get_parser, get_engine_session, MIN_FILESIZE, transfer_older_logs, convert_string_to_datetime, read_csvs_to_dataframe_and_insert
-from utils import populate_trips_and_update_files
-from updatetripdata import update_torqfile
+from utils import get_parser, get_engine_session, MIN_FILESIZE, convert_string_to_datetime, read_csvs_to_dataframe_and_insert
 
 pd.set_option("future.no_silent_downcasting", True)
 

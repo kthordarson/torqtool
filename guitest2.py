@@ -5,13 +5,10 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtWidgets import QAbstractItemView
 from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex
-from PySide6.QtSql import QSqlDatabase, QSqlTableModel
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-
-from datamodels import TorqFile, Torqlogs  # adjust import if needed
 
 DB_PATH = "sqlite:///torqfiskur1.db"  # adjust if needed
 
