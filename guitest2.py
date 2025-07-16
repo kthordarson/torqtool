@@ -1,13 +1,19 @@
+import contextily as ctx  # Add this import at the top
+import geopandas as gpd
+from shapely.geometry import Point
 import sys
 import pandas as pd
 from PySide6.QtWidgets import (
 	QApplication, QMainWindow, QTableView, QVBoxLayout, QWidget, QSplitter
 )
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QAbstractItemView
 from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex
 from PySide6.QtSql import QSqlDatabase, QSqlTableModel
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+import matplotlib
+matplotlib.use("QtAgg")
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 
@@ -36,7 +42,6 @@ class MainWindow(QMainWindow):
 	def __init__(self):
 		super().__init__()
 		self.setWindowTitle("TorqFiles Viewer")
-
 		# Set up SQLAlchemy session
 		self.engine = create_engine(DB_PATH)
 		self.Session = sessionmaker(bind=self.engine)
@@ -46,6 +51,11 @@ class MainWindow(QMainWindow):
 		splitter = QSplitter(Qt.Horizontal)
 		self.table = QTableView()
 		self.map_canvas = MapCanvas()
+
+		# Make font a little smaller
+		font = QFont()
+		font.setPointSize(9)
+		self.table.setFont(font)
 
 		splitter.addWidget(self.table)
 		splitter.addWidget(self.map_canvas)
@@ -60,32 +70,58 @@ class MainWindow(QMainWindow):
 		# self.df_files = pd.read_sql(self.session.query(TorqFile).statement, self.engine)
 		# self.df_files = pd.read_sql(self.session.query(TorqFile).statement, self.engine, parse_dates=False)
 		self.df_files = pd.read_sql("SELECT fileid,trip_start,trip_duration FROM torqfiles", self.engine)
+		self.df_files['trip_start'] = pd.to_datetime(self.df_files['trip_start'], errors='coerce')
+		self.df_files['trip_start'] = self.df_files['trip_start'].dt.strftime('%Y-%m-%d %H:%M')
+		self.df_files.set_index('fileid', inplace=True)
+
 		self.table_model = PandasModel(self.df_files)
 		self.table.setModel(self.table_model)
 		self.table.setSortingEnabled(True)
-		# self.table.setSelectionBehavior(self.table.SelectRows)
 		self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
 		self.table.selectionModel().selectionChanged.connect(self.on_row_selected)
+		self.table.horizontalHeader().setStretchLastSection(True)
+		self.table.resizeColumnsToContents()
+
+		# self.table_model = PandasModel(self.df_files)
+		# self.table.setModel(self.table_model)
+		# self.table.setSortingEnabled(True)
+		# # self.table.setSelectionBehavior(self.table.SelectRows)
+		# self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+		# self.table.selectionModel().selectionChanged.connect(self.on_row_selected)
 
 	def on_row_selected(self, selected, deselected):
 		# Get all selected rows (unique row indices)
 		rows = sorted(set(index.row() for index in self.table.selectionModel().selectedRows()))
-		fileids = self.df_files.iloc[rows]['fileid'].tolist()
+		# fileids = self.df_files.iloc[rows]  # ['fileid'].tolist()
+		fileids = self.df_files.index[rows].tolist()
 		self.map_canvas.ax.clear()
 		cmap = plt.colormaps['tab10']
 		# colors = plt.cm.get_cmap('tab10', len(fileids))
 		# colors = plt.colormaps.get_cmap('tab10', len(fileids))
-		for idx, fileid in enumerate(fileids):
-			df_part = pd.read_sql(f"SELECT Latitude,Longitude,Speed_OBDkmh FROM torqlogs WHERE fileid={fileid}", self.engine)
+		plots = []
+		for idx, fileid in enumerate(fileids):  # enumerate(self.df_files.iterrows()):
+			# fileid = df_file[0]
+			df_part = pd.read_sql(f"SELECT Longitude,Latitude,Speed_OBDkmh FROM torqlogs WHERE fileid={fileid}", self.engine)
 			if not df_part.empty:
-				sizes = df_part['Speed_OBDkmh'].fillna(0).clip(lower=0, upper=20) + 2
+				gdf = gpd.GeoDataFrame(df_part,geometry=[Point(xy) for xy in zip(df_part['Longitude'], df_part['Latitude'])], crs="EPSG:4326").to_crs(epsg=3857)
+				sizes = df_part['Speed_OBDkmh'].fillna(0).clip(lower=1, upper=10) + 2
 				color = cmap(idx % 10)  # tab10 has 10 distinct colors
-				self.map_canvas.ax.scatter(df_part['Longitude'], df_part['Latitude'],s=sizes, c=[color], label=f"fileid {fileid}")
+				sc = self.map_canvas.ax.scatter(gdf.geometry.x, gdf.geometry.y, s=sizes, c=[color], label=f"fileid {fileid}")
+				plots.append(sc)
+				# color2 = cmap(idx % 2)  # tab10 has 10 distinct colors
+				# self.map_canvas.ax.scatter(df_part['Longitude'], df_part['Latitude'],s=1, c=[color2], label=f"fileid {fileid}")
+				# self.map_canvas.ax.scatter(df_part['Latitude'], df_part['Longitude'], s=sizes, c=[color], label=f"fileid {fileid}")
+		# Add basemap if at least one trip
+		if plots:
+			# ctx.add_basemap(self.map_canvas.ax, crs="EPSG:3857", source=ctx.providers.OpenStreetMap.Mapnik)
+			zoom = min(16, max(10, int(self.map_canvas.ax.get_xlim()[1] - self.map_canvas.ax.get_xlim()[0]) // 10000))
+			ctx.add_basemap(self.map_canvas.ax, crs="EPSG:3857", source=ctx.providers.OpenStreetMap.Mapnik, zoom=zoom)
+			# ctx.add_basemap(self.map_canvas.ax, crs="EPSG:3857", source=ctx.providers.OpenStreetMap.Mapnik, zoom=16)
 		self.map_canvas.ax.set_title("Trip Map")
 		self.map_canvas.ax.set_xlabel("Longitude")
 		self.map_canvas.ax.set_ylabel("Latitude")
-		if len(fileids) > 1:
-			self.map_canvas.ax.legend(fontsize='small')
+		# if len(fileids) > 1:
+		# 	self.map_canvas.ax.legend(fontsize='small')
 		self.map_canvas.draw()
 
 	def old_on_row_selected(self, selected, deselected):
@@ -119,6 +155,14 @@ class PandasModel(QAbstractTableModel):
 	def sort(self, column, order):
 		colname = self._data.columns[column]
 		self.layoutAboutToBeChanged.emit()
+		self._data.sort_values(by=colname, ascending=(order == Qt.AscendingOrder), inplace=True)
+		self._data.reset_index(inplace=True)
+		self._data.set_index('fileid', inplace=True)
+		self.layoutChanged.emit()
+
+	def old_sort(self, column, order):
+		colname = self._data.columns[column]
+		self.layoutAboutToBeChanged.emit()
 		self._data.sort_values(by=colname, ascending=(order == Qt.AscendingOrder), inplace=True, ignore_index=True)
 		self.layoutChanged.emit()
 
@@ -144,6 +188,7 @@ class PandasModel(QAbstractTableModel):
 if __name__ == "__main__":
 	app = QApplication(sys.argv)
 	window = MainWindow()
-	window.resize(1000, 600)
-	window.show()
+	window.showMaximized()
+	# window.resize(1000, 600)
+	# window.show()
 	sys.exit(app.exec())
