@@ -1,82 +1,46 @@
 # utils and db things here
-
+import random
 import os
 import re
-import shutil
 import sys
 from datetime import datetime
 from hashlib import md5
 from pathlib import Path
-from pickle import PicklingError
-import random
 import argparse
 import pandas as pd
-import polars as pl
 import pymysql
 import pytz
 from loguru import logger
-from polars import ComputeError
-from polars import read_csv as read_csv_polars
-from polars.exceptions import ColumnNotFoundError, InvalidOperationError
 from sqlalchemy import DateTime
 from sqlalchemy import create_engine, text, MetaData, Table, Column, Float, String, Integer
 from sqlalchemy.exc import ArgumentError, DataError,IntegrityError, InternalError, OperationalError, ProgrammingError
-from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.orm import sessionmaker
 import sqlite3
 from commonformats import fmt_20, fmt_24, fmt_26, fmt_28, fmt_30, fmt_34, fmt_36
-from datamodels import database_init, TorqFile, COLUMN_TYPES
+from datamodels import database_init, COLUMN_TYPES
 
 MIN_FILESIZE = 3000
 
 def get_parser(appname):
 	parser = argparse.ArgumentParser(description=appname)
-	parser.add_argument("--find-optimal-batch-size", default=False, help="Run tests to find optimal batch size", action="store_true", dest="find_optimal_batch_size")
-	parser.add_argument("--fixer", default=False, help="run fixer, set --bakpath", action="store_true", dest="fixer")
-	parser.add_argument("--fixcsv", default=False, help="repair csv", action="store_true", dest="fixcsv")
-	parser.add_argument("--getcols", default=False, help="prep cols", action="store_true", dest="getcols")
-	parser.add_argument("--repairsplit", default=False, help="enable splitting of strange log files", action="store_true", dest="repairsplit", )
-	parser.add_argument("--samplemode", default=False, help="use samplemode, select small random number of logs-for debugging", action="store_true", dest="samplemode", )
 	parser.add_argument("--scanpath", default=False, help="run scanpath", action="store_true", dest="scanpath", )
-	parser.add_argument("--old_scanpath", default=False, help="run old_scanpath", action="store_true", dest="old_scanpath", )
-	parser.add_argument("--showdrops", default=False, help="show dropped columns", action="store_true", dest="showdrops", )
-	parser.add_argument("--skipwrites", default=False, help="skipwrites", action="store_true", dest="skipwrites", )
 	parser.add_argument("--filestats", default=True, help="create filestats", action="store_true", dest="filestats", )
-	parser.add_argument("--testnewreader", default=False, help="run testnewreader", action="store_true", dest="testnewreader", )
-	parser.add_argument("--threadmode", default="ppe", help="threadmode ppe/oldppe/tpe", action="store")
-	parser.add_argument("--torqdata", default=False, help="create torqdata", action="store_true", dest="torqdata", )
-	parser.add_argument("--transfer", default=False, help="transfer old logs, set oldlogpath to location of old triplogs", action="store_true", dest="transfer", )
-	parser.add_argument("--bakpath", nargs="?", default="/home/kth/development/torq/backups3", help="where to put backups", action="store", )
-	parser.add_argument("--check-file", default=False, help="check database", action="store_true", dest="check_file", )
-	parser.add_argument("--chunks", nargs="?", default="4", help="chunks", action="store")
-	parser.add_argument("--batch_size", nargs="?", default=5, type=int, help="batch_size", action="store")
-	parser.add_argument("--combinecsv", default=False, help="make big csv", action="store_true", dest="combinecsv", )
 	parser.add_argument("--create-trips", default=False, help="create trip database", action="store_true", dest="create_trips", )
-	parser.add_argument("--check-db", default=False, help="check database", action="store_true", dest="check_db", )
 	parser.add_argument("--database_dropall", default=False, help="drop database", action="store_true", dest="database_dropall", )
 	parser.add_argument("--dbhost", default="localhost", help="dbname", action="store")
 	parser.add_argument("--dbmode", default="sqlite", help="sqlmode mysql/psql/sqlite/mariadb", action="store", dest="dbmode", )
 	parser.add_argument("--dbname", default="torq", help="dbname", action="store")
 	parser.add_argument("--dbpass", default="qrot", help="dbname", action="store")
 	parser.add_argument("--dbuser", default="torq", help="dbname", action="store")
-	parser.add_argument("--dbfile", default="torqfiskur.db", help="database file", action="store")
+	parser.add_argument("--dbfile", default="torqdata.db", help="database file", action="store")
 	parser.add_argument("--db_limit", default=False, help="db_limit", action="store", dest="db_limit")
-	parser.add_argument("--db_rowlimit", default=False, help="db_rowlimit", action="store", dest="db_rowlimit")
-	parser.add_argument("--db_minrows", default=100, help="db_minrows", action="store", dest="db_minrows")
-	parser.add_argument("--dump-db", nargs="?", default=None, help="dump database to file", action="store", )
+	parser.add_argument("--file_limit", default=False, help="file_limit", action="store_true", dest="file_limit")
 	parser.add_argument("--file", nargs="?", default=".", help="path to single csv file", action="store")
 	parser.add_argument("--logpath", nargs="?", default=".", help="path to csv files", action="store")
-	parser.add_argument("--max_workers", nargs="?", default="4", help="max_workers", action="store")
-	parser.add_argument("--oldlogpath", nargs="?", default=".", help="oldlogpath", action="store")
 	parser.add_argument("--sqlchunksize", nargs="?", default=1000, type=int, help="sql chunk", action="store")
-	parser.add_argument("--webstart", default=False, help="start web listener", action="store_true", dest="web", )
 	parser.add_argument("-i", "--info", "--dbinfo", default=False, help="show dbinfo", action="store_true", dest="dbinfo", )
 	parser.add_argument("-d", "--debug", default=False, help="debugmode", action="store_true", dest="debug", )
-	parser.add_argument("--extradebug", default=False, help="extradebug", action="store_true", dest="extradebug", )
-	# parser.add_argument("--gui", default=False, help="Run gui", action="store_true", dest='gui')
-	# parser.add_argument("--init-db", default=False, help="init database", action="store_true", dest='init_db')
-
 	return parser
-
 
 class TimeZoneAwareConstructorWarning:
 	pass
@@ -118,7 +82,7 @@ def create_or_update_table(engine, table_name, columns, column_types):
 		existing_columns = []
 
 	# Create table definition with all columns
-	table_columns = [Column(col, column_types.get(col, String)) for col in columns]
+	table_columns = [Column(col, column_types.get(col, String)) for col in sorted(columns)]
 
 	if not existing_columns:
 		# Create new table if it doesn't exist
@@ -286,6 +250,10 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs'):
 
 	for file_idx, csvfile in enumerate(csv_files):
 		try:
+			if csvfile.stat().st_size < MIN_FILESIZE:
+				logger.warning(f"Skipping {csvfile} - file size too small")
+				continue
+
 			# Read only the header row
 			df = pd.read_csv(csvfile, nrows=0)
 
@@ -297,7 +265,6 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs'):
 			if any(not col or col[0].isdigit() for col in normalized_columns):
 				logger.warning(f"Skipping {csvfile} - invalid column names")
 				continue
-
 			all_columns.update(normalized_columns)
 			valid_files.append((csvfile, normalized_columns))
 
@@ -314,7 +281,9 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs'):
 	if not valid_files:
 		logger.warning("No valid CSV files found after header validation")
 		return None, pd_columns
-	# valid_files = [k for k in valid_files][0:10]
+	if args.file_limit:
+		random.shuffle(valid_files)
+		valid_files = [k for k in valid_files][0:10]
 	logger.info(f"Found {len(valid_files)} valid CSV files with columns: {len(all_columns)}")
 	column_types = COLUMN_TYPES.copy()
 	for col in all_columns:
@@ -385,7 +354,7 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs'):
 					df = df[~df.apply(lambda row: list(row) == header_row, axis=1)]
 					df = df[~df.apply(lambda row: row.astype(str).str.contains(' Device Time').any(), axis=1)]
 
-					ordered_cols = ['fileid'] + [col for col in all_columns if col != 'fileid' and col in df.columns]
+					ordered_cols = ['fileid'] + [col for col in sorted(all_columns) if col != 'fileid' and col in df.columns]
 					df = df[ordered_cols]
 
 					# Insert data
@@ -436,20 +405,6 @@ def get_csv_files(searchpath: str, args):
 	# scan searchpath for csv files
 	torqcsvfiles = [({"csvfile": k, "csvhash": md5(open(k, "rb").read()).hexdigest(), "size": os.stat(k).st_size, "dbmode": args.dbmode, }) for k in Path(searchpath).glob("**/*.csv") if k.stat().st_size >= MIN_FILESIZE]  # and not os.path.exists(f'{k}.fixed.csv')]
 	return torqcsvfiles
-
-def get_bad_vals(csvfile: str):
-	with open(csvfile, "r") as reader:
-		data = reader.readlines()
-	for line in data:
-		l0 = line.split(",")
-		for lx in l0:
-			try:
-				lx.encode("ascii")
-			except (UnicodeEncodeError, UnicodeDecodeError) as e:
-				logger.error(f"unicodeerr: {e} in {csvfile} lt={type(line)} l={line}")
-			except AttributeError as e:
-				logger.error(f"AttributeError: {e} in {csvfile} lt={type(line)} l={line}")
-
 
 def get_engine_session(args):
 	dburl = None
@@ -609,43 +564,6 @@ def get_temp_stats(temp_cols):
 			"name": c.name, f"{c.name}.min": c.min(), f"{c.name}.mean": c.mean(), f"{c.name}.max": c.max(), }
 	return stats
 
-def check_database_columns(session, args=None, limit=1000):
-	"""
-	collect some info about database columns
-	"""
-	skip_cols = ['id', 'fileid', 'devicetime', 'gpstime','time', 'csvfile', 'csvhash', 'read_flag', 'error_flag', 'send_flag', 'send_flag', 'data_flag', 'distance']
-	df = pd.DataFrame(session.execute(text('select column_name from information_schema.columns where table_name = "torqlogs" order by table_name,ordinal_position')).all())
-	# df = pd.DataFrame(session.execute(text('select column_name from information_schema.columns where table_schema = "torq" order by table_name,ordinal_position')).all())
-	# df2 = pd.DataFrame(session.execute(text('SELECT id,fileid,o2sensor1widerangecurrentma FROM torqlogs WHERE o2sensor1widerangecurrentma IS NULL  OR o2sensor1widerangecurrentma=";" ')).all())
-	column_names = sorted([k for k in set([k[0] for k in df.values]) if k not in skip_cols])
-	logger.info(f'found {len(column_names)} columns in database, limit:{limit}')
-	maxnlen = max([len(k) for k in column_names])  # longest name, for formatting
-	for col in column_names:
-		if args.debug:
-			logger.debug(f'checking {col} limit:{limit} ')
-		if not limit:
-			df = pd.DataFrame(session.execute(text(f'select {col} from torqlogs')).all())
-		else:
-			df = pd.DataFrame(session.execute(text(f'select {col} from torqlogs limit {limit}')).all())
-		try:
-			nulls = df.isnull().sum().values[0]
-		except (IndexError,AttributeError) as e:
-			logger.error(f'{type(e)} {e} {col=} ')
-			nulls = 0.0
-		# nullratio = len(df)/df.isnull().sum().values[0]
-		nr = 0.0
-		if nulls > 0:
-			try:
-				nr = len(df)/nulls
-			except (Exception, RuntimeError, ZeroDivisionError) as e:
-				logger.error(f'{type(e)} {e} {col=} {df.describe()}')
-
-		minval = df.min().values[0] or 0.0
-		mednval = df.median().values[0] or 0.0
-		meannval = df.mean().values[0] or 0.0
-		maxnval = df.max().values[0] or 0.0
-		logger.info(f'  {col:<{maxnlen}} nulls: {nulls:>3} nr: {nr:>3.3} {minval:>3.3} {mednval:>3.3} {meannval:>3.3} {maxnval:>3.3}')
-
 def get_tripfile_stats(fileid, session, args=None, limit=1000):
 	"""
 	collect some info about database columns
@@ -736,77 +654,6 @@ def convert_string_to_datetime(s: str):
 	finally:
 		return datetimeobject
 
-def read_profile(profile_fn: str):
-	# read profile.properties file, to extract some data
-	tripdate = None
-	try:
-		with open(profile_fn, "r") as f:
-			data = f.readlines()
-		if len(data) == 8 or len(data) == 6:
-			# pdata_date = str(data[1][1:]).strip('\n')
-			# tripdate = datetime.strptime(pdata_date ,'%a %b %d %H:%M:%S %Z%z %Y')
-			if len(data[1]) == 30:
-				tripdate = datetime.strptime((str(data[1][1:]).strip("\n")), fmt_30)
-			elif len(data[1]) == 36:
-				# Tue May 17 17:55:43 GMT+02:00 2022
-				tripdate = datetime.strptime((str(data[1][1:]).strip("\n")), fmt_36)
-			else:
-				logger.warning(f"unknown date format {data[1]}")
-				tripdate = data[1]
-		else:
-			logger.warning(f"profile.properties file {profile_fn} has {len(data)} lines {data}")
-	except Exception as e:
-		logger.error(f"unhandled {type(e)} {e}")
-	finally:
-		return tripdate
-
-
-def transfer_older_logs(args):
-	# transfer old tripLogs to new format
-	# todo read more info from profile.properties file
-	#
-
-	old_dirs = [
-		k
-		for k in Path(args.oldlogpath).glob("*")
-		if k.is_dir() and len(str(k.name)) == 13
-	]
-	# pick only directories with 13 digits
-
-	transfered_logs = []
-	# to keep track of the logs that have been transfered
-
-	logger.debug(f"found {len(old_dirs)} old tripLogs")
-	for od in old_dirs:
-		profile_fn = os.path.join(od, "profile.properties")
-		# old_timestamp = datetime.fromtimestamp(int(od.name)/1000).strftime("%Y-%b-%d_%H-%M-%S")
-		if Path(profile_fn).exists():
-			# read profile.properties file, to extract some data
-			profiledata = read_profile(profile_fn)
-		else:
-			logger.warning(f"no profile.properties file found in {od}")
-			profiledata = None
-		# rename log file to new format
-		if profiledata:
-			trip_date = profiledata.strftime("%Y-%b-%d_%H-%M-%S")
-			new_log_fn = Path(os.path.join(args.logpath, f"trackLog-{trip_date}.csv"))
-			if len(new_log_fn.name) != 33:
-				logger.warning(f"new log filename {new_log_fn} is not 33 chars long")
-			if Path(new_log_fn).exists():
-				logger.warning(f"file {new_log_fn} exists, skipping")
-			else:
-				old_log_name = os.path.join(od, "trackLog.csv")
-				logger.debug(f"move/copy from {old_log_name} to {new_log_fn}")
-				try:
-					shutil.copyfile(old_log_name, new_log_fn)
-					transfered_logs.append(new_log_fn)
-				except Exception as e:
-					logger.error(f"Error {type(e)} {e} {old_log_name} -> {new_log_fn}")
-		else:
-			logger.warning(f"could not extract profiledata from {profile_fn}")
-	logger.info(f"transfered {len(transfered_logs)} of {len(old_dirs)} old tripLogs to {args.logpath}")
-	return transfered_logs
-
 def populate_trips_and_update_files(session):
 	"""
 	Populate Torqtrips based on torqlogs, grouped by fileid.
@@ -814,8 +661,8 @@ def populate_trips_and_update_files(session):
 	Uses raw SQL for aggregation and column discovery.
 	"""
 	# Discover columns in torqlogs
-	columns_result = session.execute(text("PRAGMA table_info(torqlogs)"))
-	columns = [row[1] for row in columns_result]
+	# columns_result = session.execute(text("PRAGMA table_info(torqlogs)"))
+	# columns = [row[1] for row in columns_result]
 	# Required columns for trip aggregation
 	# required = {"fileid", "gpstime", "latitude", "longitude"}
 	# if not required.issubset(set(map(str.lower, columns))):

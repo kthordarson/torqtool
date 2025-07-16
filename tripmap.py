@@ -7,10 +7,7 @@ from loguru import logger
 from datamodels import Torqlogs, TorqFile
 import matplotlib.pyplot as plt
 
-from plotutils import PLOT_DIR  # MAP_CACHE,
-from plotutils import plot_trip, combine_map_plot, download_maps
 # x = latitude y = longitude !
-
 
 def cli_main(args):
 	dburl = args.dburl  # 'sqlite:///torqfiskur.db'
@@ -19,20 +16,20 @@ def cli_main(args):
 	session = s()
 	if args.plotid:  # plot a single trip
 		logger.debug(f'plotting {args.plotid}')
-		plot_trip(args.plotid, session)
+		# plot_trip(args.plotid, session)
 		sys.exit(0)
 	elif args.combine:
 		logger.debug(f'combiner {args.combine}')
-		combine_map_plot(args.combine[0], args.combine[1], args.combine[2])
+		# combine_map_plot(args.combine[0], args.combine[1], args.combine[2])
 		# combine_map_plot(f'{MAP_CACHE}/tripmap-0001.png', f'{PLOT_DIR}/testplot1.png')
 	elif args.dlmaps:  # download all maps from mapbox
-		download_maps(args, session)
+		# download_maps(args, session)
 		sys.exit(0)
 	elif args.plotall:  # make a plot of all trips - no maps
 		trips = [k.fileid for k in session.query(TorqFile.fileid).all()]
 		for idx,trip in enumerate(trips):
 			logger.debug(f'[{idx}/{len(trips)}] plotting {trip}')
-			pltfilename = f'{PLOT_DIR}/tripmap-{trip:04d}-plotly.png'  # padding
+			pltfilename = f'tripmap-{trip:04d}-plotly.png'  # padding
 			# fileid = str(trips.iloc[0].values[0])
 			df = pd.DataFrame([k for k in session.query(Torqlogs.latitude, Torqlogs.longitude).filter(Torqlogs.fileid == trip).all()])
 			px = 1/plt.rcParams['figure.dpi']  # pixel in inches

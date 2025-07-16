@@ -9,7 +9,6 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QAbstractItemView
 from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex
-from PySide6.QtSql import QSqlDatabase, QSqlTableModel
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 import matplotlib
@@ -17,9 +16,7 @@ matplotlib.use("QtAgg")
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 
-from datamodels import TorqFile, Torqlogs  # adjust import if needed
-
-DB_PATH = "sqlite:///torqfiskur1.db"  # adjust if needed
+DB_PATH = "sqlite:///torqdata.db"  # adjust if needed
 
 class MapCanvas(FigureCanvas):
 	def __init__(self, parent=None):
@@ -103,8 +100,9 @@ class MainWindow(QMainWindow):
 			# fileid = df_file[0]
 			df_part = pd.read_sql(f"SELECT Longitude,Latitude,Speed_OBDkmh FROM torqlogs WHERE fileid={fileid}", self.engine)
 			if not df_part.empty:
-				gdf = gpd.GeoDataFrame(df_part,geometry=[Point(xy) for xy in zip(df_part['Longitude'], df_part['Latitude'])], crs="EPSG:4326").to_crs(epsg=3857)
-				sizes = df_part['Speed_OBDkmh'].fillna(0).clip(lower=1, upper=10) + 2
+				# Convert to numeric first to avoid fillna downcasting warning
+				speed_col = pd.to_numeric(df_part['Speed_OBDkmh'], errors='coerce').fillna(0)
+				sizes = speed_col.clip(lower=0, upper=20) + 2
 				color = cmap(idx % 10)  # tab10 has 10 distinct colors
 				sc = self.map_canvas.ax.scatter(gdf.geometry.x, gdf.geometry.y, s=sizes, c=[color], label=f"fileid {fileid}")
 				plots.append(sc)

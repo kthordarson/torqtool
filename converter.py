@@ -2,7 +2,6 @@
 import asyncio
 import argparse
 import sys
-from datetime import datetime
 from hashlib import md5
 from pathlib import Path
 import pandas as pd
@@ -14,9 +13,7 @@ from sqlalchemy.exc import DataError, IntegrityError, OperationalError
 from sqlalchemy.orm import sessionmaker
 import sqlite3
 from datamodels import TorqFile, database_init
-from utils import get_parser, get_engine_session, MIN_FILESIZE, transfer_older_logs, convert_string_to_datetime, read_csvs_to_dataframe_and_insert
-from utils import populate_trips_and_update_files
-from updatetripdata import update_torqfile
+from utils import get_parser, get_engine_session, MIN_FILESIZE, convert_string_to_datetime, read_csvs_to_dataframe_and_insert
 
 pd.set_option("future.no_silent_downcasting", True)
 
@@ -36,69 +33,6 @@ pd.set_option("future.no_silent_downcasting", True)
 
 class Polarsreaderror(Exception):
 	pass
-
-async def find_optimal_batch_size(args):
-	"""
-	Run processing with different batch sizes to determine which is optimal
-	Returns the optimal batch size based on files processed per second
-	"""
-	engine, session = get_engine_session(args)
-	try:
-		database_init(engine)
-
-		# Get files to process
-		with session.no_autoflush:
-			newfiles = await get_files_to_send(session, args=args)
-
-		if len(newfiles) == 0:
-			logger.warning("No files to process. Cannot determine optimal batch size.")
-			return args.batch_size
-
-		# Limit test set if we have many files
-		test_files = newfiles[:min(len(newfiles), 50)]  # Use at most 50 files for testing
-		logger.info(f"Testing batch sizes using {len(test_files)} files")
-
-		# Test various batch sizes
-		batch_sizes_to_test = [1,2,5,10,20,30]
-		# Filter out batch sizes too large for our test set
-		# batch_sizes_to_test = [bs for bs in batch_sizes_to_test if bs <= len(test_files)]
-
-		results = {}
-
-		for batch_size in batch_sizes_to_test:
-			logger.info(f"Testing batch_size={batch_size}")
-			start_time = datetime.now()
-
-			# Process files with this batch size
-			for i in range(0, len(test_files), batch_size):
-				batch = test_files[i:i+batch_size]
-				batch_results = await process_batch(batch, args)
-				# Don't do additional processing to keep timing focused on batch processing
-
-			elapsed_time = (datetime.now() - start_time).total_seconds()
-			files_per_second = len(test_files) / elapsed_time if elapsed_time > 0 else 0
-
-			results[batch_size] = {
-				'elapsed_time': elapsed_time,
-				'files_per_second': files_per_second
-			}
-			logger.info(f"  Batch size {batch_size}: {elapsed_time:.2f}s, {files_per_second:.2f} files/sec")
-
-			# Allow system to cool down between tests
-			await asyncio.sleep(0.1)
-
-		# Find the batch size with the highest throughput
-		optimal_batch_size = max(results, key=lambda x: results[x]['files_per_second'])
-
-		logger.info("\nResults summary:")
-		for bs in batch_sizes_to_test:
-			logger.info(f"  Batch size {bs}: {results[bs]['files_per_second']:.2f} files/sec")
-		logger.info(f"\nOptimal batch size: {optimal_batch_size} ({results[optimal_batch_size]['files_per_second']:.2f} files/sec)")
-
-		return optimal_batch_size
-
-	finally:
-		session.close()
 
 async def read_csv_file(logfile:str, args:argparse.Namespace):
 	"""
@@ -265,7 +199,8 @@ async def cli_main(args):
 		logcount = 0
 		try:
 			engine = get_engine_session(args)  # , session
-			logcount = 0  # session.execute(text("select count(*) from torqlogs")).all()
+			with engine.connect() as conn:
+				logcount = conn.execute(text("select count(*) from torqlogs")).all()
 		except Exception as e:
 			logger.error(f'error {type(e)} {e}')
 			sys.exit(-1)
@@ -290,65 +225,6 @@ async def cli_main(args):
 		except Exception as e:
 			logger.error(f'error {type(e)} {e}')
 			sys.exit(-1)
-
-	elif args.old_scanpath:
-		engine, session = get_engine_session(args)
-		try:
-			database_init(engine)
-
-			# Get files in one operation
-			with session.no_autoflush:
-				newfiles = await get_files_to_send(session, args=args)
-
-			if args.db_limit:
-				newfiles = newfiles[:int(args.db_limit)]
-
-			logger.info(f"Processing {len(newfiles)} new files")
-
-			# Process files in batches
-			# batch_size = 10  # Adjust based on your system capabilities
-			remaining = len(newfiles)
-			for i in range(0, len(newfiles), args.batch_size):
-				batch = newfiles[i:i+args.batch_size]
-				results = await process_batch(batch, args)
-				for result in results:
-					if result is None:
-						continue
-					csvfilename = result['file']
-					send_result = result['result']
-					if send_result['sent_rows'] == 0:
-						logger.warning(f'sent_rows = 0 {Path(csvfilename).name} {Path(csvfilename).stat().st_size} send_result: {send_result}')
-					else:
-						# Use the metadata we already extracted
-						fileinfo = {
-							'fileid': send_result['fileid'],
-							'sent_rows': send_result['sent_rows'],
-							**result['metadata']  # Unpack the metadata we already have
-						}
-						session.close()
-						try:
-							upchk = await update_torqfile(args, fileinfo)
-							logger.info(f'send {Path(csvfilename).name} {Path(csvfilename).stat().st_size} sent_rows: {send_result["sent_rows"]} upchk:{upchk}')
-						except ValueError as e:
-							logger.error(f"update_torqfile {type(e)} {e} for {csvfilename}")
-						except Exception as e:
-							logger.error(f"update_torqfile unhandled Exception {type(e)} {e} for {csvfilename}")
-					remaining = len(newfiles) - (i + len(batch))
-				# Optional: commit after each batch
-				session.commit()
-
-		finally:
-			session.close()
-	if args.transfer:
-		# oldlogpath root of the old tripLogs files, containing subfolder, each name as unix timestamp of the trip
-		# each sub folder contains a log file and profile.properties file
-		# step one, transfer older logs to new location with new filenames
-		new_old_logs = transfer_older_logs(args)
-		logger.debug(f"transfered {len(new_old_logs)} old logs")
-		sys.exit(0)
-	if args.find_optimal_batch_size:
-		optimal_batch_size = await find_optimal_batch_size(args)
-		logger.info(f"Recommended batch size for your system: {optimal_batch_size}")
 
 def get_args(appname):
 	parser = get_parser(appname)
