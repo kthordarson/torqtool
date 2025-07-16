@@ -103,9 +103,15 @@ class MainWindow(QMainWindow):
 				# Convert to numeric first to avoid fillna downcasting warning
 				gdf = gpd.GeoDataFrame(df_part, geometry=[Point(xy) for xy in zip(df_part['Longitude'], df_part['Latitude'])], crs="EPSG:4326").to_crs(epsg=3857)
 				speed_col = pd.to_numeric(df_part['Speed_OBDkmh'], errors='coerce').fillna(0)
-				sizes = speed_col.clip(lower=0, upper=20) + 2
+				sizes = speed_col.clip(lower=1, upper=100)
+				base_color = cmap(idx % 10)
 				color = cmap(idx % 10)  # tab10 has 10 distinct colors
-				sc = self.map_canvas.ax.scatter(gdf.geometry.x, gdf.geometry.y, s=sizes, c=[color], label=f"fileid {fileid}")
+				colors = [(
+					min(1, base_color[0] + 0.5 * (v / speed_col.max() if speed_col.max() > 0 else 0)),
+					min(1, base_color[1] + 0.5 * (v / speed_col.max() if speed_col.max() > 0 else 0)),
+					min(1, base_color[2] + 0.5 * (v / speed_col.max() if speed_col.max() > 0 else 0)),
+					base_color[3]) for v in speed_col]
+				sc = self.map_canvas.ax.scatter(gdf.geometry.x, gdf.geometry.y, s=sizes, c=colors, label=f"fileid {fileid}")
 				plots.append(sc)
 				# self.map_canvas.ax.scatter(df_part['Longitude'], df_part['Latitude'],s=sizes, c=[color], label=f"fileid {fileid}")
 				# color2 = cmap(idx % 2)  # tab10 has 10 distinct colors
