@@ -10,7 +10,7 @@ from sqlalchemy.orm import sessionmaker
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 
-DB_PATH = "sqlite:///torqfiskur1.db"  # adjust if needed
+DB_PATH = "sqlite:///torqdata.db"  # adjust if needed
 
 class MapCanvas(FigureCanvas):
 	def __init__(self, parent=None):
@@ -75,7 +75,9 @@ class MainWindow(QMainWindow):
 		for idx, fileid in enumerate(fileids):
 			df_part = pd.read_sql(f"SELECT Latitude,Longitude,Speed_OBDkmh FROM torqlogs WHERE fileid={fileid}", self.engine)
 			if not df_part.empty:
-				sizes = df_part['Speed_OBDkmh'].fillna(0).clip(lower=0, upper=20) + 2
+				# Convert to numeric first to avoid fillna downcasting warning
+				speed_col = pd.to_numeric(df_part['Speed_OBDkmh'], errors='coerce').fillna(0)
+				sizes = speed_col.clip(lower=0, upper=20) + 2
 				color = cmap(idx % 10)  # tab10 has 10 distinct colors
 				self.map_canvas.ax.scatter(df_part['Longitude'], df_part['Latitude'],s=sizes, c=[color], label=f"fileid {fileid}")
 		self.map_canvas.ax.set_title("Trip Map")
