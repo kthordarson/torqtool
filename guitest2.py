@@ -101,11 +101,13 @@ class MainWindow(QMainWindow):
 			df_part = pd.read_sql(f"SELECT Longitude,Latitude,Speed_OBDkmh FROM torqlogs WHERE fileid={fileid}", self.engine)
 			if not df_part.empty:
 				# Convert to numeric first to avoid fillna downcasting warning
+				gdf = gpd.GeoDataFrame(df_part, geometry=[Point(xy) for xy in zip(df_part['Longitude'], df_part['Latitude'])], crs="EPSG:4326").to_crs(epsg=3857)
 				speed_col = pd.to_numeric(df_part['Speed_OBDkmh'], errors='coerce').fillna(0)
 				sizes = speed_col.clip(lower=0, upper=20) + 2
 				color = cmap(idx % 10)  # tab10 has 10 distinct colors
 				sc = self.map_canvas.ax.scatter(gdf.geometry.x, gdf.geometry.y, s=sizes, c=[color], label=f"fileid {fileid}")
 				plots.append(sc)
+				# self.map_canvas.ax.scatter(df_part['Longitude'], df_part['Latitude'],s=sizes, c=[color], label=f"fileid {fileid}")
 				# color2 = cmap(idx % 2)  # tab10 has 10 distinct colors
 				# self.map_canvas.ax.scatter(df_part['Longitude'], df_part['Latitude'],s=1, c=[color2], label=f"fileid {fileid}")
 				# self.map_canvas.ax.scatter(df_part['Latitude'], df_part['Longitude'], s=sizes, c=[color], label=f"fileid {fileid}")
