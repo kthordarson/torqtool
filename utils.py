@@ -17,6 +17,7 @@ from loguru import logger
 from polars import ComputeError
 from polars import read_csv as read_csv_polars
 from polars.exceptions import ColumnNotFoundError, InvalidOperationError
+from sqlalchemy import DateTime
 from sqlalchemy import create_engine, text, MetaData, Table, Column, Float, String, Integer
 from sqlalchemy.exc import ArgumentError, DataError,IntegrityError, InternalError, OperationalError, ProgrammingError
 from sqlalchemy.orm import sessionmaker
@@ -127,6 +128,94 @@ def create_or_update_table(engine, table_name, columns, column_types):
 
 	return list(missing_columns)
 
+def update_trip_and_file_for_fileid(conn, fileid):
+	"""
+	Update TorqFile and Torqtrips for a single fileid after inserting its data.
+	"""
+	# Aggregate trip info for this fileid
+	sql = """
+	SELECT
+		fileid,
+		MIN(GPS_Time) AS trip_start,
+		MAX(GPS_Time) AS trip_end,
+		MIN(GPS_Latitude) AS startlat,
+		MIN(GPS_Longitude) AS startlon,
+		MAX(GPS_Latitude) AS endlat,
+		MAX(GPS_Longitude) AS endlon,
+		COUNT(*) AS row_count
+	FROM torqlogs
+	WHERE fileid = :fileid
+	GROUP BY fileid
+	"""
+	row = conn.execute(text(sql), {"fileid": fileid}).mappings().first()
+	if not row:
+		return
+
+	trip_start = row["trip_start"]
+	trip_end = row["trip_end"]
+	startlat = row["startlat"]
+	startlon = row["startlon"]
+	endlat = row["endlat"]
+	endlon = row["endlon"]
+	row_count = row["row_count"]
+
+	# Calculate trip duration
+	trip_duration = None
+	if trip_start and trip_end:
+		try:
+			trip_start_dt = convert_string_to_datetime(str(trip_start))
+			trip_end_dt = convert_string_to_datetime(str(trip_end))
+			if isinstance(trip_start_dt, datetime) and isinstance(trip_end_dt, datetime):
+				trip_duration = (trip_end_dt - trip_start_dt).total_seconds()
+			else:
+				trip_duration = None
+
+			# if not isinstance(trip_start, datetime):
+			# 	# trip_start = convert_string_to_datetime(trip_start)
+			# 	trip_start = convert_string_to_datetime(str(trip_start))
+			# if not isinstance(trip_end, datetime):
+			# 	# trip_end = convert_string_to_datetime(trip_end)
+			# 	trip_end = convert_string_to_datetime(str(trip_end))
+			# trip_duration = (trip_end - trip_start).total_seconds()
+		except Exception as e:
+			logger.error(f'{e} {type(e)} {trip_start=} {trip_end=}')
+			trip_duration = None
+
+	# Insert or update Torqtrips
+	conn.execute(text("""
+		INSERT OR IGNORE INTO torqtrips (fileid, tripdate, time)
+		VALUES (:fileid, :trip_start, :trip_duration)
+	"""), {
+		"fileid": fileid,
+		"trip_start": trip_start,
+		"trip_duration": trip_duration
+	})
+
+	# Update TorqFile
+	conn.execute(text("""
+		UPDATE torqfiles
+		SET trip_start = :trip_start,
+			trip_end = :trip_end,
+			trip_duration = :trip_duration,
+			startlat = :startlat,
+			startlon = :startlon,
+			endlat = :endlat,
+			endlon = :endlon,
+			sent_rows = :row_count
+		WHERE fileid = :fileid
+	"""), {
+		"fileid": fileid,
+		"trip_start": trip_start,
+		"trip_end": trip_end,
+		"trip_duration": trip_duration,
+		"startlat": startlat,
+		"startlon": startlon,
+		"endlat": endlat,
+		"endlon": endlon,
+		"row_count": row_count
+	})
+	logger.debug(f'Updated TorqFile and Torqtrips for fileid {fileid}: trip_start={trip_start}, trip_end={trip_end}, duration={trip_duration}, rows={row_count}')
+
 def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs'):
 	"""
 	Read all CSV files into a DataFrame, normalize column names, and insert into SQLite table.
@@ -194,7 +283,14 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs'):
 	if not valid_files:
 		logger.warning("No valid CSV files found after header validation")
 		return None, pd_columns
+	# valid_files = [k for k in valid_files][0:10]
 	logger.info(f"Found {len(valid_files)} valid CSV files with columns: {len(all_columns)}")
+	column_types = COLUMN_TYPES.copy()
+	for col in all_columns:
+		col_lower = col.lower()
+		if any(key in col_lower for key in ["time", "date"]):
+			column_types[col] = DateTime
+
 	# Update database schema if needed
 	try:
 		create_or_update_table(engine, table_name, all_columns, COLUMN_TYPES)
@@ -217,29 +313,28 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs'):
 				try:
 					# Check if file has already been processed
 					csvhash = md5(Path(csvfile).read_bytes()).hexdigest()
-					existing_file = conn.execute(
-						text("SELECT fileid FROM torqfiles WHERE csvhash = :csvhash"),
-						{"csvhash": csvhash}
-					).first()
+					existing_file = conn.execute(text("SELECT fileid FROM torqfiles WHERE csvhash = :csvhash"),{"csvhash": csvhash}).first()
 
 					if existing_file:
 						logger.info(f"[{csv_idx}/{len(valid_files)}] File {csvfile} already processed, skipping")
 						continue
 
+					before_count = conn.execute(text("SELECT count(*) from torqlogs")).scalar()
 					# Read CSV file
-					df = pd.read_csv(
-						csvfile,
-						low_memory=False,
-						on_bad_lines='skip',
-						encoding='utf-8',
-						encoding_errors='replace'
-					)
+					df = pd.read_csv(csvfile, low_memory=False, on_bad_lines='skip', encoding='utf-8', encoding_errors='replace')
+
+					for col in df.columns:
+						col_lower = col.lower()
+						if any(key in col_lower for key in ["time", "date"]):
+							try:
+								# df[col] = pd.to_datetime(df[col], errors='coerce')
+								# df[col] = df[col].apply(lambda x: convert_string_to_datetime(x) if pd.notnull(x) else pd.NaT)
+								df[col] = df[col].apply(lambda x: convert_string_to_datetime(x) if isinstance(x, str) and pd.notnull(x) else pd.NaT)
+							except Exception as e:
+								logger.warning(f"Could not convert column {col} to datetime: {e} {type(e)} in {csvfile}")
 
 					# Create TorqFile entry
-					result = conn.execute(
-						text("INSERT INTO torqfiles (csvfile, csvhash) VALUES (:csvfile, :csvhash) RETURNING fileid"),
-						{"csvfile": str(csvfile), "csvhash": csvhash}
-					)
+					result = conn.execute(text("INSERT INTO torqfiles (csvfile, csvhash) VALUES (:csvfile, :csvhash) RETURNING fileid"),{"csvfile": str(csvfile), "csvhash": csvhash})
 					fileid = result.scalar()
 
 					# Add fileid column first
@@ -254,6 +349,14 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs'):
 						if col in COLUMN_TYPES and COLUMN_TYPES[col] in [Float, Integer]:
 							df[col] = pd.to_numeric(df[col], errors='coerce')
 
+					# Remove rows that are identical to the header (possible repeated headers)
+					header_row = list(df.columns)
+					df = df[~df.apply(lambda row: list(row) == header_row, axis=1)]
+					df = df[~df.apply(lambda row: row.astype(str).str.contains(' Device Time').any(), axis=1)]
+
+					ordered_cols = ['fileid'] + [col for col in all_columns if col != 'fileid' and col in df.columns]
+					df = df[ordered_cols]
+
 					# Insert data
 					logger.info(f"[{csv_idx}/{len(valid_files)}] Sending {len(df)} rows from {csvfile} with fileid {fileid}")
 
@@ -261,20 +364,15 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs'):
 					chunk_size = min(1000, args.sqlchunksize)
 					for chunk_start in range(0, len(df), chunk_size):
 						chunk = df.iloc[chunk_start:chunk_start + chunk_size]
-						chunk.to_sql(
-							table_name,
-							conn,
-							if_exists='append',
-							index=False
-						)
+						chunk.to_sql(table_name, conn, if_exists='append', index=False)
+
+					# Update trip and file info for this fileid
+					update_trip_and_file_for_fileid(conn, fileid)
 
 					# Update TorqFile row count
-					conn.execute(
-						text("UPDATE torqfiles SET sent_rows = :rows WHERE fileid = :fileid"),
-						{"rows": len(df), "fileid": fileid}
-					)
-
-					logger.info(f"[{csv_idx}/{len(valid_files)}] Successfully inserted {len(df)} rows from {csvfile}")
+					conn.execute(text("UPDATE torqfiles SET sent_rows = :rows WHERE fileid = :fileid"),{"rows": len(df), "fileid": fileid})
+					after_count = conn.execute(text("SELECT count(*) from torqlogs")).scalar()
+					logger.info(f"[{csv_idx}/{len(valid_files)}] Successfully inserted {len(df)} rows from {csvfile} before_count={before_count} after_count={after_count}")
 
 				except Exception as e:
 					logger.error(f"Error processing {csvfile}: {e}")
@@ -417,147 +515,6 @@ def sqlsender_ppe(buffer, session, args):
 		logger.error(f"[!]{type(e)}\n{e}\n")
 	return results
 
-
-def read_buff(csvfile, tf_fileid, debug=False):
-	error_files = []
-	rb = {
-		"torqbuffer": pd.DataFrame(), "fileid": tf_fileid, "csvfile": csvfile, }
-	column_mapping = {
-			"GPS Time": "gpstime",
-			" Device Time": "devicetime",
-			" Longitude": "longitude",
-			" Latitude": "latitude"
-		}
-	try:
-		torqbuffer = read_csv_polars(csvfile, ignore_errors=True, try_parse_dates=True, truncate_ragged_lines=True, )  # , use_pyarrow=True ,  ) #, null_values=['NaN','-','0\x88\x9e'])
-		torqbuffer = torqbuffer.rename(column_mapping)
-		torqbuffer = torqbuffer.fill_null(0).fill_nan(0)
-
-	except (InvalidOperationError, ValueError) as e:
-		logger.error(f"[rb] {type(e)} {e} csvfile={csvfile}")
-		return rb, error_files
-	except ComputeError as e:
-		logger.error(f"[rb] {type(e)} {e} csvfile={csvfile}")
-		return rb, error_files
-	if torqbuffer.is_empty():
-		logger.error(f"[rb] torqbuffer is empty {csvfile}")
-		return rb, error_files
-	fileid_series = pl.Series("fileid", [tf_fileid for k in range(len(torqbuffer))])
-	torqbuffer.insert_at_idx(1, fileid_series)
-	rbx = None
-	errf = None
-	try:
-		rbx, errf = fix_timestamps(torqbuffer, csvfile, tf_fileid)
-	except Exception as e:
-		logger.error(f"[rb] {type(e)} {e} in fix_timestamps {csvfile}\nrbx: {rbx}\n")
-	if rbx:
-		rb["torqbuffer"] = rbx["torqbuffer"]
-	if errf:
-		error_files.extend(errf)
-	return rb, error_files
-
-
-def fix_timestamps(torqbuffer, csvfile, tf_fileid):
-	# todo fix gpstime and devicetime
-	# drop rows where either values are null or missing
-	error_files = []
-	resultbuffer = {
-		"torqbuffer": torqbuffer, "fileid": tf_fileid, "csvfile": csvfile, }
-	try:
-		idx = len(torqbuffer["devicetime"]) // 2  # get middle index to guess dateformat
-	except (ColumnNotFoundError, ComputeError, ValueError) as e:
-		logger.error(f"[rb] devicetime {type(e)} {e} csvfile: {csvfile}")
-		idx = 10
-	try:
-		idx = len(torqbuffer["gpstime"]) // 2  # get middle index to guess dateformat
-	except (ColumnNotFoundError, ComputeError, ValueError) as e:
-		logger.error(f"[rb] gpstime {type(e)} {e} csvfile: {csvfile}")
-		idx = 10
-	gpstime = torqbuffer["gpstime"]
-	devicetime = torqbuffer["devicetime"]
-	try:
-		if len(torqbuffer["devicetime"][idx]) == 28:
-			devicetime = pl.Series("devicetime", [datetime.strptime(k, fmt_28).astimezone(pytz.timezone("UTC")) for k in torqbuffer["devicetime"] if k], )
-		elif len(torqbuffer["devicetime"][idx]) == 24:
-			devicetime = pl.Series("devicetime", [datetime.strptime(k, fmt_24).astimezone(pytz.timezone("UTC")) for k in torqbuffer["devicetime"] if k], )
-		elif len(torqbuffer["devicetime"][idx]) == 26:
-			devicetime = pl.Series("devicetime", [datetime.strptime(k, fmt_26).astimezone(pytz.timezone("UTC")) for k in torqbuffer["devicetime"] if k], )
-		elif len(torqbuffer["devicetime"][idx]) == 20:
-			devicetime = pl.Series("devicetime", [datetime.strptime(k, fmt_20).astimezone(pytz.timezone("UTC")) for k in torqbuffer["devicetime"] if k], )
-		else:
-			logger.error(f'[rb] devicetime format error! len = {len(torqbuffer["devicetime"][idx])} {idx=} buffer: {torqbuffer["devicetime"]}')
-	except (ColumnNotFoundError, ComputeError, ValueError, TypeError) as e:
-		logger.error(f'[rb] devicetime {type(e)} {e} csvfile: {csvfile} len = {len(torqbuffer["devicetime"][idx])} {idx=} ')
-		error_files.append(csvfile)
-	try:
-		if len(torqbuffer["gpstime"][idx]) == 28:
-			gpstime = pl.Series("gpstime", [datetime.strptime(k, fmt_28).astimezone(pytz.timezone("UTC")) for k in torqbuffer["gpstime"] if k], )
-		elif len(torqbuffer["gpstime"][idx]) == 26:
-			# gpstime = pl.Series('gpstime', [datetime.strptime(k,fmt_26).astimezone(pytz.timezone('UTC')) for k in torqbuffer['gpstime'] if k])
-			gpstime = pl.Series("gpstime", [datetime.strptime(k, fmt_26).astimezone(pytz.timezone("UTC")) for k in torqbuffer["gpstime"] if k], )
-		elif len(torqbuffer["gpstime"][idx]) == 34:
-			# to fix TimeZoneAwareConstructorWarning
-			gpstime = pl.Series("gpstime", [datetime.strptime(k, fmt_34).astimezone(pytz.timezone("UTC")) for k in torqbuffer["gpstime"] if k], )
-		else:
-			logger.error(f'[rb] gpstime format error ex: {torqbuffer["gpstime"]} len: {len(torqbuffer["gpstime"])}')
-	except (ComputeError, ValueError, TypeError) as e:
-		logger.error(f'[rb] {type(e)} {e} csvfile: {csvfile} len = {len(torqbuffer["devicetime"][idx])} {idx=} buf: {torqbuffer["gpstime"]}')
-		error_files.append(csvfile)
-		# raise e
-
-	gpstime_err = [idx for idx, k in enumerate(torqbuffer["gpstime"]) if not k]
-	devicetime_err = [idx for idx, k in enumerate(torqbuffer["devicetime"]) if not k]
-	try:
-		torqbuffer = torqbuffer.drop("devicetime")
-		if len(torqbuffer) != len(devicetime):
-			torqbuffer = torqbuffer[0:len(devicetime)]
-		torqbuffer.insert_at_idx(4, devicetime)
-	except (AttributeError, UnboundLocalError, pl.exceptions.ShapeError) as e:
-		logger.error(f"[rb] {type(e)} {e} csvfile: {csvfile} tblen={len(torqbuffer)} glen={len(gpstime)} dlen={len(devicetime)} {gpstime_err=} {devicetime_err=}")
-		error_files.append(csvfile)
-	try:
-		torqbuffer = torqbuffer.drop("gpstime")
-		if len(torqbuffer) != len(gpstime):
-			torqbuffer = torqbuffer[0:len(gpstime)]
-		torqbuffer.insert_at_idx(3, gpstime)
-	except (AttributeError, UnboundLocalError, pl.exceptions.ShapeError) as e:
-		logger.error(f"[rb] {type(e)} {e} csvfile: {csvfile} tblen={len(torqbuffer)} glen={len(gpstime)} dlen={len(devicetime)} {gpstime_err=} {devicetime_err=}")
-		error_files.append(csvfile)
-	resultbuffer["torqbuffer"] = torqbuffer
-	# resultbuffer = {
-	# 	'torqbuffer' : torqbuffer, # 	'fileid' : tf_fileid, # 	'csvfile' : csvfile, # }
-	return resultbuffer, error_files
-
-
-async def torq_worker_ppe(tf, session, args):
-	buffer = None
-	results = None
-	t0 = datetime.now()
-	timetotal = 0
-	try:
-		buffer, error_files = read_buff(tf.csvfile, tf.fileid, args)
-		if not buffer:
-			logger.warning(f"[!] buffer is None tf={tf}")
-		if args.debug:
-			if len(error_files) > 0:
-				logger.warning(f"error_files: {len(error_files)} ")  # pass # logger.debug(f'file {tf.csvfile} buffer: {len(buffer["torqbuffer"])}')
-				_ = [logger.error(f"error in file: {k}") for k in error_files]
-	except (TypeError,) as e:
-		logger.error(f"[!] {type(e)} {e} in read_buff {tf.csvfile}")
-		raise e
-	except (InvalidOperationError, ValueError, PicklingError, ComputeError) as e:
-		logger.error(f"[!] {type(e)} {e} in read_buff {tf.csvfile}")
-		return None
-	try:
-		results = sqlsender_ppe(buffer, session, args)  # send triplog data
-		timetotal += (datetime.now() - t0).seconds
-		if args.debug:
-			logger.debug(f't: {(datetime.now()-t0).seconds}/{timetotal} fileid {results.get("fileid")} {results.get("status")} buffer: {len(buffer["torqbuffer"])}')
-	except (ValueError, TypeError, PicklingError) as e:
-		logger.error(f'[!] {type(e)} {e} in sqlsender buffer.is_empty() {buffer["torqbuffer"].is_empty()}')
-		return None
-
-
 def send_torqtripdata(stats_data: dict, session: sessionmaker, args: argparse.Namespace):
 	"""
 	generate some stats from torqlogs and send to database
@@ -669,6 +626,9 @@ def convert_string_to_datetime(s: str):
 	param s string with datetime
 	returns datetime object
 	"""
+	if not isinstance(s, str):
+		logger.warning(f'{s} is not str but {type(s)}')
+		s = str(s)
 	fmt_selector = len(s)
 	datetimeobject = s
 	try:
@@ -717,6 +677,133 @@ def read_profile(profile_fn: str):
 		logger.error(f"unhandled {type(e)} {e}")
 	finally:
 		return tripdate
+
+
+def transfer_older_logs(args):
+	# transfer old tripLogs to new format
+	# todo read more info from profile.properties file
+	#
+
+	old_dirs = [
+		k
+		for k in Path(args.oldlogpath).glob("*")
+		if k.is_dir() and len(str(k.name)) == 13
+	]
+	# pick only directories with 13 digits
+
+	transfered_logs = []
+	# to keep track of the logs that have been transfered
+
+	logger.debug(f"found {len(old_dirs)} old tripLogs")
+	for od in old_dirs:
+		profile_fn = os.path.join(od, "profile.properties")
+		# old_timestamp = datetime.fromtimestamp(int(od.name)/1000).strftime("%Y-%b-%d_%H-%M-%S")
+		if Path(profile_fn).exists():
+			# read profile.properties file, to extract some data
+			profiledata = read_profile(profile_fn)
+		else:
+			logger.warning(f"no profile.properties file found in {od}")
+			profiledata = None
+		# rename log file to new format
+		if profiledata:
+			trip_date = profiledata.strftime("%Y-%b-%d_%H-%M-%S")
+			new_log_fn = Path(os.path.join(args.logpath, f"trackLog-{trip_date}.csv"))
+			if len(new_log_fn.name) != 33:
+				logger.warning(f"new log filename {new_log_fn} is not 33 chars long")
+			if Path(new_log_fn).exists():
+				logger.warning(f"file {new_log_fn} exists, skipping")
+			else:
+				old_log_name = os.path.join(od, "trackLog.csv")
+				logger.debug(f"move/copy from {old_log_name} to {new_log_fn}")
+				try:
+					shutil.copyfile(old_log_name, new_log_fn)
+					transfered_logs.append(new_log_fn)
+				except Exception as e:
+					logger.error(f"Error {type(e)} {e} {old_log_name} -> {new_log_fn}")
+		else:
+			logger.warning(f"could not extract profiledata from {profile_fn}")
+	logger.info(f"transfered {len(transfered_logs)} of {len(old_dirs)} old tripLogs to {args.logpath}")
+	return transfered_logs
+
+def populate_trips_and_update_files(session):
+	"""
+	Populate Torqtrips based on torqlogs, grouped by fileid.
+	Also updates TorqFile fields based on aggregated torqlogs data.
+	Uses raw SQL for aggregation and column discovery.
+	"""
+	# Discover columns in torqlogs
+	columns_result = session.execute(text("PRAGMA table_info(torqlogs)"))
+	columns = [row[1] for row in columns_result]
+	# Required columns for trip aggregation
+	# required = {"fileid", "gpstime", "latitude", "longitude"}
+	# if not required.issubset(set(map(str.lower, columns))):
+	# 	raise RuntimeError(f"torqlogs missing required columns: {required - set(map(str.lower, columns))}")
+
+	# Group by fileid, aggregate trip start/end, start/end lat/lon, count
+	sql = """
+	SELECT
+		fileid,
+		MIN(GPS_Time) AS trip_start,
+		MAX(GPS_Time) AS trip_end,
+		MIN(GPS_Latitude) AS startlat,
+		MIN(GPS_Longitude) AS startlon,
+		MAX(GPS_Latitude) AS endlat,
+		MAX(GPS_Longitude) AS endlon,
+		COUNT(*) AS row_count
+	FROM torqlogs
+	GROUP BY fileid
+	"""
+	for row in session.execute(text(sql)):
+		fileid = row.fileid
+		trip_start = row.trip_start
+		trip_end = row.trip_end
+		startlat = row.startlat
+		startlon = row.startlon
+		endlat = row.endlat
+		endlon = row.endlon
+		row_count = row.row_count
+
+		# Insert into Torqtrips (if not exists)
+		session.execute(text("""
+			INSERT OR IGNORE INTO torqtrips (fileid, tripdate, triptime)
+			VALUES (:fileid, :trip_start, :trip_duration)
+		"""), {
+			"fileid": fileid,
+			"trip_start": trip_start,
+			"trip_duration": None if not (trip_start and trip_end) else (
+				(trip_end - trip_start).total_seconds()
+				if hasattr(trip_end, 'total_seconds') else None
+			)
+		})
+
+		# Update TorqFile
+		session.execute(text("""
+			UPDATE torqfiles
+			SET trip_start = :trip_start,
+				trip_end = :trip_end,
+				trip_duration = :trip_duration,
+				startlat = :startlat,
+				startlon = :startlon,
+				endlat = :endlat,
+				endlon = :endlon,
+				sent_rows = :row_count
+			WHERE fileid = :fileid
+		"""), {
+			"fileid": fileid,
+			"trip_start": trip_start,
+			"trip_end": trip_end,
+			"trip_duration": None if not (trip_start and trip_end) else (
+				(trip_end - trip_start).total_seconds()
+				if hasattr(trip_end, 'total_seconds') else None
+			),
+			"startlat": startlat,
+			"startlon": startlon,
+			"endlat": endlat,
+			"endlon": endlon,
+			"row_count": row_count
+		})
+
+	session.commit()
 
 if __name__ == "__main__":
 	pass

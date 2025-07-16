@@ -6,6 +6,7 @@ from sqlalchemy import Column, DateTime, Float, ForeignKey, Integer, Text, text,
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.sql.sqltypes import Double
+from sqlalchemy import func
 
 COLUMN_TYPES = {
 		'GPS_Time': String,
@@ -165,6 +166,7 @@ class Torqtrips(Base):
 	tripdate = Column('tripdate', DateTime)
 	profile = Column('profile', Text)
 	time = Column('time', Integer)
+	triptime = Column('triptime', Integer)
 
 	def __init__(self, fileid=None, csvfile=None, csvhash=None, distance=None, fuelcost=None, fuelused=None, distancewhilstconnectedtoobd=None, tripdate=None, profile=None, triptime=None):
 		self.fileid = fileid
@@ -177,6 +179,7 @@ class Torqtrips(Base):
 		self.tripdate = tripdate
 		self.profile = profile
 		self.time = triptime
+		self.triptime = triptime
 	# def __repr__(self):
 	# 	return f'<Torqtrips id:{self.id} file:{self.fileid} {self.csvfile}>'
 
@@ -187,7 +190,6 @@ class Torqlogs(Base):
 
 	def __init__(self, fileid):
 		self.fileid = fileid
-
 
 def database_dropall(engine):  # drop all tables
 	logger.warning(f'[database_dropall] engine:{engine}')

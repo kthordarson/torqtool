@@ -11,7 +11,7 @@ from sqlalchemy.exc import OperationalError
 # sys.path.append('c:/apps/torqtool/torqtool')
 from utils import get_parser
 from datamodels import TorqFile, Torqlogs, Torqtrips, database_dropall, send_torqfiles
-from utils import fix_logfile, generate_torqdata, get_csv_files, get_engine_session, send_torqtripdata, torq_worker_ppe
+from utils import fix_logfile, generate_torqdata, get_csv_files, get_engine_session, send_torqtripdata
 
 # june2024 rewrite: log files are stored diffrently from previous versions
 # now the app stores the logs on the phone under /storage/emulated/0/Documents/torqueLogs
@@ -53,26 +53,6 @@ async def scanpath(session, args):
         sys.exit(1)
     finally:
         return newfilelist
-
-async def send_torq_logs(filelist, session, args):
-    # get files from db that are fixed but not read or sent to db
-    # tripstart = timer()
-    # tripend = timer()
-    t0 = datetime.now()
-    if args.debug:
-        logger.debug(f"sendtorqlogs  starting torq_worker_ppe for {len(filelist)} files ")
-    async with asyncio.TaskGroup() as tg:
-        for idx, tf in enumerate(filelist):
-            # asyncio.set_event_loop(loop)
-            t = session.query(TorqFile).filter(TorqFile.fileid == tf.fileid).first()
-            if args.debug:
-                logger.debug(f'[tw] t0={datetime.now()-t0} {tf=} {t}')
-            if t:
-                tg.create_task(torq_worker_ppe(t, session, args))
-            else:
-                logger.warning(f"no t from {tf}")
-            # await asyncio.gather(*tasks)
-
 
 async def collect_info(session) -> AsyncIterable[str]:
     yield session.query(Torqtrips).count()
@@ -134,11 +114,6 @@ async def main(args):
                     logger.debug(f"[{idx}/{len(tf_ids)}] Sending {len(tripdata)} tripdata for fileid {tf.fileid} ")
                     send_torqtripdata(tripdata, session, args.debug)
         sys.exit(0)
-    if args.scanpath:
-        results = None
-        res = None
-        results = await scanpath(session, args)
-        await send_torq_logs(results, session, args)
 
 if __name__ == "__main__":
     parser = get_parser("torqtool")
