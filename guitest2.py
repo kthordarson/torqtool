@@ -4,7 +4,7 @@ from shapely.geometry import Point
 import sys
 import pandas as pd
 from PySide6.QtWidgets import (
-	QApplication, QMainWindow, QTableView, QVBoxLayout, QWidget, QSplitter, 
+	QApplication, QMainWindow, QTableView, QVBoxLayout, QWidget, QSplitter,
 	QHBoxLayout, QLabel, QComboBox
 )
 from PySide6.QtGui import QFont
@@ -50,41 +50,58 @@ class MainWindow(QMainWindow):
 		self.table = QTableView()
 		self.map_canvas = MapCanvas()
 
+		zoom_layout = QHBoxLayout()
+		zoom_label = QLabel("Zoom:")
+		self.zoom_combo = QComboBox()
+		zoom_levels = [str(z) for z in range(10, 19)]  # Typical OSM zoom levels
+		self.zoom_combo.addItems(zoom_levels)
+		self.zoom_combo.setCurrentText('10')  # Default zoom
+		self.zoom_combo.setFixedWidth(60)
+		self.zoom_combo.setMaximumHeight(25)
+		self.zoom_combo.currentTextChanged.connect(self.on_colormap_changed)  # Reuse plot refresh
+
+		zoom_layout.addWidget(zoom_label)
+		zoom_layout.addWidget(self.zoom_combo)
+		zoom_layout.addStretch()
+		zoom_layout.setSpacing(10)
+		zoom_layout.setContentsMargins(10, 5, 10, 5)
+
 		# Create colormap selection controls
 		colormap_layout = QHBoxLayout()
 		colormap_label = QLabel("Colormap:")
 		self.colormap_combo = QComboBox()
-		
+
 		# Add popular qualitative colormaps
 		qualitative_maps = ['Set1', 'tab10', 'tab20', 'Dark2', 'Pastel1', 'Pastel2', 'Set2', 'Set3', 'Accent']
 		# Add some sequential colormaps
 		sequential_maps = ['viridis', 'plasma', 'inferno', 'magma', 'Blues', 'Greens', 'Reds', 'YlOrRd']
-		
+
 		all_maps = qualitative_maps + sequential_maps
 		self.colormap_combo.addItems(all_maps)
 		self.colormap_combo.setCurrentText('Set1')  # Set default
 		self.colormap_combo.currentTextChanged.connect(self.on_colormap_changed)
-		
+
 		# Adjust size and appearance of the combo box
 		self.colormap_combo.setFixedWidth(120)  # Set fixed width
 		self.colormap_combo.setMaximumHeight(25)  # Limit height
-		
+
+		colormap_layout.addLayout(zoom_layout)
 		colormap_layout.addWidget(colormap_label)
 		colormap_layout.addWidget(self.colormap_combo)
 		# colormap_layout.addSpacing(20)
 		colormap_layout.addStretch()  # Push controls to the left
-		
+
 		# Adjust layout spacing and margins
 		colormap_layout.setSpacing(10)  # Space between widgets
 		colormap_layout.setContentsMargins(10, 5, 10, 5)  # left, top, right, bottom margins
-		
+
 		# Create right panel with map and controls
 		right_panel = QWidget()
 		right_layout = QVBoxLayout(right_panel)
-		
+
 		# Add map canvas first (give it more space)
 		right_layout.addWidget(self.map_canvas, stretch=10)  # Give map 10 parts of space
-		
+
 		# Add colormap controls at the bottom (minimal space)
 		colormap_widget = QWidget()
 		colormap_widget.setLayout(colormap_layout)
@@ -147,11 +164,11 @@ class MainWindow(QMainWindow):
 		# fileids = self.df_files.iloc[rows]  # ['fileid'].tolist()
 		fileids = self.df_files.index[rows].tolist()
 		self.map_canvas.ax.clear()
-		
+
 		# Get selected colormap
 		colormap_name = self.colormap_combo.currentText()
 		cmap = plt.colormaps[colormap_name]
-		
+
 		# Calculate colormap cycle length based on colormap type
 		if colormap_name in ['tab10']:
 			cycle_length = 10
@@ -165,7 +182,7 @@ class MainWindow(QMainWindow):
 			cycle_length = 12
 		else:
 			cycle_length = 10  # Default for sequential colormaps
-		
+
 		plots = []
 		for idx, fileid in enumerate(fileids):  # enumerate(self.df_files.iterrows()):
 			# fileid = df_file[0]
@@ -190,7 +207,8 @@ class MainWindow(QMainWindow):
 		# Add basemap if at least one trip
 		if plots:
 			# ctx.add_basemap(self.map_canvas.ax, crs="EPSG:3857", source=ctx.providers.OpenStreetMap.Mapnik)
-			zoom = min(32, max(10, int(self.map_canvas.ax.get_xlim()[1] - self.map_canvas.ax.get_xlim()[0]) // 10000))
+			zoom = int(self.zoom_combo.currentText())
+			# zoom = min(32, max(10, int(self.map_canvas.ax.get_xlim()[1] - self.map_canvas.ax.get_xlim()[0]) // 10000))
 			ctx.add_basemap(self.map_canvas.ax, crs="EPSG:3857", source=ctx.providers.OpenStreetMap.Mapnik, zoom=zoom)
 			# ctx.add_basemap(self.map_canvas.ax, crs="EPSG:3857", source=ctx.providers.OpenStreetMap.Mapnik, zoom=16)
 		self.map_canvas.ax.set_title("Trip Map")
