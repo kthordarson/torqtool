@@ -36,6 +36,21 @@ class MapCanvas(FigureCanvas):
 			self.ax.set_title("No GPS data")
 		self.draw()
 
+def format_duration(seconds):
+	if pd.isna(seconds):
+		return ""
+	seconds = int(seconds)
+	if seconds < 60:
+		return f"{seconds} s"
+	elif seconds < 3600:
+		minutes = seconds // 60
+		secs = seconds % 60
+		return f"{minutes}:{secs:02d} m"
+	else:
+		hours = seconds // 3600
+		minutes = (seconds % 3600) // 60
+		return f"{hours}h {minutes}m"
+
 class MainWindow(QMainWindow):
 	def __init__(self):
 		super().__init__()
@@ -128,6 +143,7 @@ class MainWindow(QMainWindow):
 		self.df_files = pd.read_sql("SELECT fileid,trip_start,trip_duration FROM torqfiles", self.engine)
 		self.df_files['trip_start'] = pd.to_datetime(self.df_files['trip_start'], errors='coerce')
 		self.df_files['trip_start'] = self.df_files['trip_start'].dt.strftime('%Y-%m-%d %H:%M')
+		self.df_files['trip_duration'] = self.df_files['trip_duration'].apply(format_duration)
 		self.df_files.set_index('fileid', inplace=True)
 
 		self.table_model = PandasModel(self.df_files)

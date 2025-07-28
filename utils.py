@@ -1,4 +1,5 @@
 # utils and db things here
+from math import radians, cos, sin, sqrt, atan2
 import random
 import os
 import re
@@ -123,6 +124,19 @@ def create_or_update_table(engine, table_name, columns, column_types):
 
 	return list(missing_columns)
 
+def haversine(lat1, lon1, lat2, lon2):
+	"""
+	Calculate the great-circle distance between two points on the Earth (specified in decimal degrees).
+	Returns distance in meters.
+	"""
+	R = 6371000  # Earth radius in meters
+	lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
+	dlat = lat2 - lat1
+	dlon = lon2 - lon1
+	a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
+	c = 2 * atan2(sqrt(a), sqrt(1-a))
+	return R * c
+
 def update_trip_and_file_for_fileid(conn, fileid):
 	"""
 	Update TorqFile and Torqtrips for a single fileid after inserting its data.
@@ -175,15 +189,38 @@ def update_trip_and_file_for_fileid(conn, fileid):
 		except Exception as e:
 			logger.error(f'{e} {type(e)} {trip_start=} {trip_end=}')
 			trip_duration = None
+	# Calculate trip distance (sum of all GPS point distances for this fileid)
+	trip_distance = None
+	try:
+		df_gps = pd.read_sql(
+			"SELECT GPS_Latitude, GPS_Longitude FROM torqlogs WHERE fileid = ? ORDER BY GPS_Time ASC",
+			conn,
+			params=(fileid,)
+		)
+		if len(df_gps) > 1:
+			distances = [
+				haversine(
+					df_gps.iloc[i-1]['GPS_Latitude'], df_gps.iloc[i-1]['GPS_Longitude'],
+					df_gps.iloc[i]['GPS_Latitude'], df_gps.iloc[i]['GPS_Longitude']
+				)
+				for i in range(1, len(df_gps))
+			]
+			trip_distance = float(sum(distances))
+		else:
+			trip_distance = 0.0
+	except Exception as e:
+		logger.error(f"Error calculating trip_distance for fileid {fileid}: {e}")
+		trip_distance = None
 
 	# Insert or update Torqtrips
 	conn.execute(text("""
-		INSERT OR IGNORE INTO torqtrips (fileid, tripdate, time)
-		VALUES (:fileid, :trip_start, :trip_duration)
+		INSERT OR IGNORE INTO torqtrips (fileid, tripdate, time, trip_distance)
+		VALUES (:fileid, :trip_start, :trip_duration, :trip_distance)
 	"""), {
 		"fileid": fileid,
 		"trip_start": trip_start,
-		"trip_duration": trip_duration
+		"trip_duration": trip_duration,
+		"trip_distance": trip_distance
 	})
 
 	# Update TorqFile
@@ -196,7 +233,8 @@ def update_trip_and_file_for_fileid(conn, fileid):
 			startlon = :startlon,
 			endlat = :endlat,
 			endlon = :endlon,
-			sent_rows = :row_count
+			sent_rows = :row_count,
+			trip_distance = :trip_distance
 		WHERE fileid = :fileid
 	"""), {
 		"fileid": fileid,
@@ -207,9 +245,10 @@ def update_trip_and_file_for_fileid(conn, fileid):
 		"startlon": startlon,
 		"endlat": endlat,
 		"endlon": endlon,
-		"row_count": row_count
+		"row_count": row_count,
+		"trip_distance": trip_distance
 	})
-	logger.debug(f'Updated TorqFile and Torqtrips for fileid {fileid}: trip_start={trip_start}, trip_end={trip_end}, duration={trip_duration}, rows={row_count}')
+	logger.debug(f'Updated TorqFile and Torqtrips for fileid {fileid}: trip_start={trip_start}, trip_end={trip_end}, duration={trip_duration}, distance={trip_distance}, rows={row_count}')
 
 def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs'):
 	"""
