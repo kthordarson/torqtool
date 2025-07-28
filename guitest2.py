@@ -1,3 +1,4 @@
+#!/usr/bin/python3
 import contextily as ctx
 import geopandas as gpd
 from shapely.geometry import Point

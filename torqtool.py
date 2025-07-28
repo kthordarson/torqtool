@@ -1,12 +1,13 @@
 #!/usr/bin/python3
 import asyncio
 import sys
+from sqlalchemy.orm import sessionmaker
 from collections.abc import AsyncIterable
 from pathlib import Path
 import pandas as pd
 from loguru import logger
 from sqlalchemy.exc import OperationalError
-
+from sqlalchemy import text
 # sys.path.append('c:/apps/torqtool/torqtool')
 from utils import get_parser
 from datamodels import TorqFile, Torqlogs, Torqtrips, database_dropall, send_torqfiles
@@ -53,11 +54,13 @@ async def scanpath(session, args):
     finally:
         return newfilelist
 
-async def collect_info(session) -> AsyncIterable[str]:
-    yield session.query(Torqtrips).count()
-    yield session.query(TorqFile).count()
-    yield session.query(Torqlogs).count()
-
+async def collect_info(engine) -> AsyncIterable[str]:
+    with engine.connect() as conn:
+        logcount = conn.execute(text("select count(*) from torqlogs")).all()
+        yield logcount
+        # yield conn.query(Torqtrips).count()
+        # yield conn.query(TorqFile).count()
+        #  yield conn.query(Torqlogs).count()
 
 async def collect(async_iterable):
     return [item async for item in async_iterable]
@@ -65,7 +68,7 @@ async def collect(async_iterable):
 
 async def main(args):
     # t0 = datetime.now()
-    engine, session = get_engine_session(args)
+    engine = get_engine_session(args)
     if args.database_dropall:
         try:
             database_dropall(engine)
@@ -79,18 +82,20 @@ async def main(args):
     if args.dbinfo:
         # info = collect_info()
         tasks = [
-            asyncio.create_task(collect(collect_info(session))),
+            asyncio.create_task(collect(collect_info(engine))),
             # asyncio.create_task(collect(iterable())),
             # asyncio.create_task(collect(iterable()))
         ]
         results = await asyncio.gather(*tasks)
-        logger.info(f"[dbinfo]  trips: {results[0][0]} files: {results[0][1]} logs: {results[0][2]} data: {results[0][3]}")
+        logger.info(f"[dbinfo]  {results}")
         # files = session.query(Torqtrips).count()
         # trips = session.query(Torqtrips).count()
         # logs = session.query(Torqlogs).count()
         # logger.info(f'[main] {files=} {trips=} {logs=:,} {data=}')
         sys.exit(0)
     if args.create_trips:
+        sess = sessionmaker(bind=engine)
+        session = sess()
         # create trips data from database
         tf_ids = session.query(TorqFile.fileid).all()
         data = pd.DataFrame()

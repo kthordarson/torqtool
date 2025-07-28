@@ -138,6 +138,7 @@ class TorqFile(Base):
 	trip_start = Column('trip_start', DateTime)
 	trip_end = Column('trip_end', DateTime)
 	trip_duration = Column('trip_duration', Float)
+	trip_distance = Column('trip_distance', Integer)
 	readtime = Column('readtime', Float)
 	sendtime = Column('sendtime', Float)
 	startlon = Column('startlon', Float)
@@ -158,6 +159,7 @@ class Torqtrips(Base):
 	csvfile = Column('csvfile', Text)
 	csvhash = Column('csvhash', Text)
 	distance = Column('distance', Integer)
+	trip_distance = Column('trip_distance', Integer)
 	fuelcost = Column('fuelcost', Integer)
 	fuelused = Column('fuelused', Integer)
 	distancewhilstconnectedtoobd = Column('distancewhilstconnectedtoobd', Integer)
@@ -171,6 +173,7 @@ class Torqtrips(Base):
 		self.csvfile = csvfile
 		self.csvhash = csvhash
 		self.distance = distance
+		self.trip_distance = distance
 		self.fuelcost = fuelcost
 		self.fuelused = fuelused
 		self.distancewhilstconnectedtoobd = distancewhilstconnectedtoobd

@@ -293,6 +293,15 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs'):
 				logger.warning(f"Skipping {csvfile} - file size too small")
 				continue
 
+			# Check if file has already been processed
+			csvhash = md5(Path(csvfile).read_bytes()).hexdigest()
+			with engine.connect() as conn:
+				existing_file = conn.execute(text("SELECT fileid FROM torqfiles WHERE csvhash = :csvhash"),{"csvhash": csvhash}).first()
+
+			if existing_file:
+				logger.info(f"[{file_idx}/{len(csv_files)}] File {csvfile} already processed, skipping")
+				continue
+
 			# Read only the header row
 			df = pd.read_csv(csvfile, nrows=0)
 
@@ -350,13 +359,6 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs'):
 		try:
 			for csv_idx, (csvfile, normalized_columns) in enumerate(valid_files):
 				try:
-					# Check if file has already been processed
-					csvhash = md5(Path(csvfile).read_bytes()).hexdigest()
-					existing_file = conn.execute(text("SELECT fileid FROM torqfiles WHERE csvhash = :csvhash"),{"csvhash": csvhash}).first()
-
-					if existing_file:
-						logger.info(f"[{csv_idx}/{len(valid_files)}] File {csvfile} already processed, skipping")
-						continue
 
 					before_count = conn.execute(text("SELECT count(*) from torqlogs")).scalar()
 					# Read CSV file
