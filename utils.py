@@ -61,6 +61,10 @@ def get_table_columns(engine, table_name):
 	"""
 	with engine.connect() as conn:
 		try:
+			# your code here
+			result = conn.execute(text(f"PRAGMA table_info({table_name})")).fetchall()
+		except Exception as e:
+			logger.error(f"An error occurred: {e}")
 			result = conn.execute(text(f"PRAGMA table_info({table_name})")).fetchall()
 		except Exception as e:
 			logger.error(f"Error fetching table columns: {e} {type(e)} table_name={table_name}")
@@ -701,15 +705,6 @@ def populate_trips_and_update_files(session):
 	Also updates TorqFile fields based on aggregated torqlogs data.
 	Uses raw SQL for aggregation and column discovery.
 	"""
-	# Discover columns in torqlogs
-	# columns_result = session.execute(text("PRAGMA table_info(torqlogs)"))
-	# columns = [row[1] for row in columns_result]
-	# Required columns for trip aggregation
-	# required = {"fileid", "gpstime", "latitude", "longitude"}
-	# if not required.issubset(set(map(str.lower, columns))):
-	# 	raise RuntimeError(f"torqlogs missing required columns: {required - set(map(str.lower, columns))}")
-
-	# Group by fileid, aggregate trip start/end, start/end lat/lon, count
 	sql = """
 	SELECT
 		fileid,
@@ -733,17 +728,60 @@ def populate_trips_and_update_files(session):
 		endlon = row.endlon
 		row_count = row.row_count
 
+		# Calculate trip_duration
+		trip_duration = None
+		if trip_start and trip_end:
+			try:
+				trip_start_dt = convert_string_to_datetime(str(trip_start))
+				trip_end_dt = convert_string_to_datetime(str(trip_end))
+				if isinstance(trip_start_dt, datetime) and isinstance(trip_end_dt, datetime):
+					trip_duration = (trip_end_dt - trip_start_dt).total_seconds()
+			except Exception as e:
+				logger.error(f'{e} {type(e)} {trip_start=} {trip_end=}')
+				trip_duration = None
+
+		# Calculate trip_distance
+		trip_distance = None
+		try:
+			df_gps = pd.read_sql(
+				"SELECT GPS_Latitude, GPS_Longitude FROM torqlogs WHERE fileid = ? ORDER BY GPS_Time ASC",
+				session.bind,
+				params=(fileid,)
+			)
+			if len(df_gps) > 1:
+				distances = [
+					haversine(
+						df_gps.iloc[i-1]['GPS_Latitude'], df_gps.iloc[i-1]['GPS_Longitude'],
+						df_gps.iloc[i]['GPS_Latitude'], df_gps.iloc[i]['GPS_Longitude']
+					)
+					for i in range(1, len(df_gps))
+				]
+				trip_distance = float(sum(distances))
+			else:
+				trip_distance = 0.0
+		except Exception as e:
+			logger.error(f"Error calculating trip_distance for fileid {fileid}: {e}")
+			trip_distance = None
+
 		# Insert into Torqtrips (if not exists)
 		session.execute(text("""
-			INSERT OR IGNORE INTO torqtrips (fileid, tripdate, triptime)
-			VALUES (:fileid, :trip_start, :trip_duration)
+			INSERT OR IGNORE INTO torqtrips (
+				fileid, tripdate, trip_end, startlat, startlon, endlat, endlon, row_count, trip_duration, trip_distance
+			)
+			VALUES (
+				:fileid, :trip_start, :trip_end, :startlat, :startlon, :endlat, :endlon, :row_count, :trip_duration, :trip_distance
+			)
 		"""), {
 			"fileid": fileid,
 			"trip_start": trip_start,
-			"trip_duration": None if not (trip_start and trip_end) else (
-				(trip_end - trip_start).total_seconds()
-				if hasattr(trip_end, 'total_seconds') else None
-			)
+			"trip_end": trip_end,
+			"startlat": startlat,
+			"startlon": startlon,
+			"endlat": endlat,
+			"endlon": endlon,
+			"row_count": row_count,
+			"trip_duration": trip_duration,
+			"trip_distance": trip_distance
 		})
 
 		# Update TorqFile
@@ -756,24 +794,20 @@ def populate_trips_and_update_files(session):
 				startlon = :startlon,
 				endlat = :endlat,
 				endlon = :endlon,
-				sent_rows = :row_count
+				sent_rows = :row_count,
+				trip_distance = :trip_distance
 			WHERE fileid = :fileid
 		"""), {
 			"fileid": fileid,
 			"trip_start": trip_start,
 			"trip_end": trip_end,
-			"trip_duration": None if not (trip_start and trip_end) else (
-				(trip_end - trip_start).total_seconds()
-				if hasattr(trip_end, 'total_seconds') else None
-			),
+			"trip_duration": trip_duration,
 			"startlat": startlat,
 			"startlon": startlon,
 			"endlat": endlat,
 			"endlon": endlon,
-			"row_count": row_count
+			"row_count": row_count,
+			"trip_distance": trip_distance
 		})
 
 	session.commit()
-
-if __name__ == "__main__":
-	pass

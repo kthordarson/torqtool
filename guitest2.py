@@ -18,7 +18,7 @@ matplotlib.use("QtAgg")
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 
-DB_PATH = "sqlite:///torqdata.db"
+DB_PATH = "sqlite:///torqdata2.db"
 
 class MapCanvas(FigureCanvas):
 	def __init__(self, parent=None):
@@ -147,7 +147,15 @@ class MainWindow(QMainWindow):
 		self.df_files['trip_duration'] = self.df_files['trip_duration'].apply(format_duration)
 		self.df_files.set_index('fileid', inplace=True)
 
-		self.table_model = PandasModel(self.df_files)
+		self.df_trips = pd.read_sql("SELECT id,fileid,trip_distance,tripdate,time FROM torqtrips", self.engine)
+		self.df_trips['tripdate'] = pd.to_datetime(self.df_trips['tripdate'], errors='coerce')
+		self.df_trips['tripdate'] = self.df_trips['tripdate'].dt.strftime('%Y-%m-%d %H:%M')
+		self.df_trips['time'] = self.df_trips['time'].apply(format_duration)
+		self.df_trips['trip_distance'] = self.df_trips['trip_distance'].apply(lambda x: f"{x/1000:.1f} km" if pd.notna(x) else "")
+		self.df_trips.set_index('id', inplace=True)
+
+		# self.table_model = PandasModel(self.df_files)
+		self.table_model = PandasModel(self.df_trips)
 		self.table.setModel(self.table_model)
 		self.table.setSortingEnabled(True)
 		self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
