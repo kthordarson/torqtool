@@ -10,7 +10,7 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy import text
 # sys.path.append('c:/apps/torqtool/torqtool')
 from utils import get_parser
-from datamodels import TorqFile, Torqlogs, Torqtrips, database_dropall, send_torqfiles
+from datamodels import TorqFile, Torqlogs, database_dropall, send_torqfiles
 from utils import generate_torqdata, get_csv_files, get_engine_session, send_torqtripdata
 
 # june2024 rewrite: log files are stored diffrently from previous versions
