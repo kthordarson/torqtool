@@ -6,7 +6,6 @@ from datetime import datetime
 from loguru import logger
 import sys
 from sqlalchemy import (text)
-from sqlalchemy.exc import OperationalError  # , DuplicateColumnError)
 from utils import get_parser, get_engine_session, convert_string_to_datetime
 from schemas import dataschema  # schema_datatypes,
 from datamodels import TorqFile, Startpos, Endpos
@@ -81,26 +80,17 @@ def collect_db_filestats(args, todatabase=True, droptable=True):
 	agg_sql = text(f'SELECT {", ".join(select_parts)} FROM torqlogs WHERE fileid = :fileid')
 
 	for fileidx, file in enumerate(file_ids.itertuples()):
-		if args.debug:
-			logger.debug(f"[{fileidx}/{len(file_ids)}] working on fileid {file.fileid} ")
 		row = session.execute(agg_sql, {"fileid": file.fileid}).mappings().one()
 		total_rows = int(row["total_rows"] or 0)
 		if total_rows == 0:
 			logger.warning(f"no rows for {file.fileid}")
 			continue
-		else:
-			logger.info(f"total_rows={total_rows} for {file.fileid}")
 
 		for idx, (requested_col, actual_col) in enumerate(column_pairs):
 			alias = f"nulls_{requested_col}"
 			nulls = int(row.get(alias, 0) or 0)
-			if args.debug:
-				logger.debug(f"[{fileidx}/{len(file_ids)}] fileid {file.fileid} col: {requested_col}->{actual_col}")
-			notnulls = total_rows - nulls
+			# notnulls = total_rows - nulls
 			# dfval = df.values[0][0]
-			if args.debug and nulls > 0 and total_rows > 0:
-				logger.debug(f"[{fileidx}/{len(file_ids)}/{idx}/{len(requested_columns)}] {file.fileid} - {requested_col} nulls {nulls} ratio:  {nulls/total_rows} notnulls:{notnulls} ratio: {notnulls/total_rows}")
-
 			result = ({
 					"fileid": file.fileid,
 					"column": actual_col,
@@ -109,7 +99,7 @@ def collect_db_filestats(args, todatabase=True, droptable=True):
 				}
 			)
 			results.append(result)
-		logger.info(f"[{fileidx}/{len(file_ids)}] {file.fileid} ")
+		logger.info(f"[{fileidx}/{len(file_ids)}] fileid: {file.fileid} results: {len(results)}")
 
 	if todatabase and results:
 		try:
@@ -258,35 +248,41 @@ def collect_db_columnstats(args):
 		session.rollback()
 		return 0
 	t0 = datetime.now()
-	total_rows = pd.DataFrame(session.execute(text("select count(*) from torqlogs"))).values[0][0]
 	requested_columns = [k for k in dataschema if k not in ['gpstime','devicetime']]
 	resolved_columns = _resolve_schema_columns(session, requested_columns)
+	column_pairs = [(req, resolved_columns[req]) for req in requested_columns if req in resolved_columns]
+	if not column_pairs:
+		logger.warning("No compatible columns found for column stats")
+		return 0
+
+	select_parts = ["COUNT(*) AS total_rows"]
+	for req, actual in column_pairs:
+		alias = f"nulls_{req}"
+		select_parts.append(f'SUM(CASE WHEN "{actual}" IS NULL THEN 1 ELSE 0 END) AS "{alias}"')
+
+	agg_sql = text(f'SELECT {", ".join(select_parts)} FROM torqlogs')
+	row = session.execute(agg_sql).mappings().one()
+	total_rows = int(row.get("total_rows", 0) or 0)
 	logger.info(f"{total_rows} in db t0: {(datetime.now()-t0).seconds} requested_columns: {len(requested_columns)} resolved_columns: {len(resolved_columns)}")
-	results = pd.DataFrame()
+	if total_rows == 0:
+		logger.warning("No rows in torqlogs")
+		return 0
+
 	tempres = {}
-	for idx, requested_col in enumerate(requested_columns):
-		actual_col = resolved_columns.get(requested_col)
-		if not actual_col:
-			continue
-		# t1 = datetime.now()
-		try:
-			nulls = pd.DataFrame(session.execute(text(f'select count(*) as count from torqlogs where "{actual_col}" is null')).all()).values[0][0]
-			notnulls = total_rows - nulls
-			# dfval = df.values[0][0]
-			if nulls / total_rows > 0.9:
-				logger.warning(f"[{idx}/{len(requested_columns)}]  {requested_col}->{actual_col} nulls {nulls} ratio:  {nulls/total_rows} notnulls:{notnulls} nlr: {notnulls/total_rows}")
-			else:
-				logger.info(f"[{idx}/{len(requested_columns)}] {requested_col}->{actual_col} nulls {nulls} ratio:  {nulls/total_rows} notnulls:{notnulls} nlr: {notnulls/total_rows}")
-			# results = pd.concat([pd.DataFrame([{"column_name": column, "nulls": nulls, "nullratio": nulls / total_rows,}]),results])
-			tempres[actual_col] = {"column_name": actual_col, "nulls": nulls, "nullratio": nulls / total_rows,}
-		except (OperationalError,) as e:
-			logger.warning(f"{type(e)} {e} for {requested_col}->{actual_col}")
-			# session.rollback()
-			# continue
-		except Exception as e:
-			logger.error(f"{type(e)} {e} for {requested_col}->{actual_col}")
-			# session.rollback()
-			# continue
+	for idx, (requested_col, actual_col) in enumerate(column_pairs):
+		nulls = int(row.get(f"nulls_{requested_col}", 0) or 0)
+		notnulls = total_rows - nulls
+		nullratio = nulls / total_rows
+		if nullratio > 0.9:
+			logger.warning(f"[{idx}/{len(column_pairs)}]  {requested_col}->{actual_col} nulls {nulls} ratio:  {nullratio} notnulls:{notnulls} nlr: {notnulls/total_rows}")
+		else:
+			logger.info(f"[{idx}/{len(column_pairs)}] {requested_col}->{actual_col} nulls {nulls} ratio:  {nullratio} notnulls:{notnulls} nlr: {notnulls/total_rows}")
+		tempres[actual_col] = {
+			"column_name": actual_col,
+			"nulls": nulls,
+			"nullratio": nullratio,
+		}
+
 	results = pd.DataFrame([tempres[k] for k in tempres])
 	try:
 		logger.info(f"sending {len(results)}")
