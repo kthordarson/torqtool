@@ -4,13 +4,14 @@ import geopandas as gpd
 from shapely.geometry import Point
 import sys
 import pandas as pd
+from typing import Any, cast
 from PySide6.QtWidgets import (
 	QApplication, QMainWindow, QTableView, QVBoxLayout, QWidget, QSplitter,
 	QHBoxLayout, QLabel, QComboBox
 )
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QAbstractItemView
-from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex, QPersistentModelIndex
+from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex, QPersistentModelIndex, QTimer, QObject, Signal, QThread
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 import matplotlib
@@ -55,6 +56,31 @@ class MapCanvas(FigureCanvas):
 			self.ax.set_title("No GPS data")
 		self.draw()
 
+
+class BasemapWorker(QObject):
+	finished = Signal(object, object, int)
+	error = Signal(str, int)
+
+	def __init__(self, bounds, zoom: int, request_id: int):
+		super().__init__()
+		self.bounds = bounds
+		self.zoom = zoom
+		self.request_id = request_id
+
+	def run(self):
+		try:
+			west, east, south, north = self.bounds
+			img, ext = ctx.bounds2img(  # type: ignore[call-arg]
+				west,
+				south,
+				east,
+				north,
+				zoom=cast(Any, self.zoom),
+			)
+			self.finished.emit(img, ext, self.request_id)
+		except Exception as e:
+			self.error.emit(f'{e} {type(e)}', self.request_id)
+
 def format_duration(seconds):
 	if pd.isna(seconds):
 		return ""
@@ -80,6 +106,13 @@ class MainWindow(QMainWindow):
 			self.engine,
 			['latitude', 'longitude', 'speedobdkmh']
 		)
+		self._trip_plot_cache: dict[int, dict[str, list[float]]] = {}
+		self._plot_refresh_timer = QTimer(self)
+		self._plot_refresh_timer.setSingleShot(True)
+		self._plot_refresh_timer.timeout.connect(self.refresh_plot)
+		self._basemap_request_id = 0
+		self._basemap_thread: QThread | None = None
+		self._basemap_worker: BasemapWorker | None = None
 		self.Session = sessionmaker(bind=self.engine)
 		self.session = self.Session()
 
@@ -96,7 +129,7 @@ class MainWindow(QMainWindow):
 		self.zoom_combo.setCurrentText('10')  # Default zoom
 		self.zoom_combo.setFixedWidth(60)
 		self.zoom_combo.setMaximumHeight(25)
-		self.zoom_combo.currentTextChanged.connect(self.on_colormap_changed)  # Reuse plot refresh
+		self.zoom_combo.currentTextChanged.connect(self.on_zoom_changed)
 
 		zoom_layout.addWidget(zoom_label)
 		zoom_layout.addWidget(self.zoom_combo)
@@ -194,22 +227,64 @@ class MainWindow(QMainWindow):
 
 	def on_colormap_changed(self, colormap_name):
 		"""Called when user changes the colormap selection"""
-		# Refresh the current plot with new colormap
-		self.refresh_plot()
+		# Debounce to avoid repeated heavy redraws on rapid UI changes.
+		self._plot_refresh_timer.start(200)
+
+	def on_zoom_changed(self, zoom_level):
+		"""Called when user changes map zoom"""
+		# Debounce zoom updates to avoid blocking UI with repeated basemap fetches.
+		self._plot_refresh_timer.start(300)
 
 	def refresh_plot(self):
 		"""Refresh the current plot with selected rows"""
 		# Get currently selected rows and replot
 		rows = sorted(set(index.row() for index in self.table.selectionModel().selectedRows()))
 		if rows:
-			# Simulate selection change to refresh plot
-			self.on_row_selected(None, None)
+			self._plot_for_rows(rows)
 
-	def on_row_selected(self, selected, deselected):
-		# Get all selected rows (unique row indices)
-		rows = sorted(set(index.row() for index in self.table.selectionModel().selectedRows()))
-		# fileids = self.df_files.iloc[rows]  # ['fileid'].tolist()
-		fileids = self.df_files.index[rows].tolist()
+	def _get_selected_fileids(self, rows):
+		if not rows:
+			return []
+		if 'fileid' in self.df_trips.columns:
+			return [int(k) for k in self.df_trips.iloc[rows]['fileid'].tolist()]
+		return []
+
+	def _load_trip_plot_data(self, fileid: int) -> dict[str, list[float]] | None:
+		if fileid in self._trip_plot_cache:
+			return self._trip_plot_cache[fileid]
+
+		lat_col = self._resolved_torqlogs_columns.get('latitude')
+		lon_col = self._resolved_torqlogs_columns.get('longitude')
+		speed_col_name = self._resolved_torqlogs_columns.get('speedobdkmh')
+		if not (lat_col and lon_col and speed_col_name):
+			return None
+
+		q = (
+			f'SELECT "{lon_col}" AS Longitude, "{lat_col}" AS Latitude, '
+			f'"{speed_col_name}" AS Speed_OBDkmh FROM torqlogs WHERE fileid = {int(fileid)}'
+		)
+		df_part = pd.read_sql(q, self.engine)
+		if df_part.empty:
+			self._trip_plot_cache[fileid] = {"x": [], "y": [], "speed": []}
+			return self._trip_plot_cache[fileid]
+
+		gdf = gpd.GeoDataFrame(
+			df_part,
+			geometry=[Point(xy) for xy in zip(df_part['Longitude'], df_part['Latitude'])],
+			crs="EPSG:4326",
+		).to_crs(epsg=3857)
+		speed_series = pd.to_numeric(df_part['Speed_OBDkmh'], errors='coerce').fillna(0)
+
+		payload: dict[str, list[float]] = {
+			"x": gdf.geometry.x.tolist(),
+			"y": gdf.geometry.y.tolist(),
+			"speed": speed_series.tolist(),
+		}
+		self._trip_plot_cache[fileid] = payload
+		return payload
+
+	def _plot_for_rows(self, rows):
+		fileids = self._get_selected_fileids(rows)
 		self.map_canvas.ax.clear()
 
 		# Get selected colormap
@@ -228,54 +303,80 @@ class MainWindow(QMainWindow):
 		elif colormap_name in ['Set3', 'Pastel1']:
 			cycle_length = 12
 		else:
-			cycle_length = 10  # Default for sequential colormaps
+			cycle_length = 10
 
 		plots = []
-		lat_col = self._resolved_torqlogs_columns.get('latitude')
-		lon_col = self._resolved_torqlogs_columns.get('longitude')
-		speed_col = self._resolved_torqlogs_columns.get('speedobdkmh')
-		if not (lat_col and lon_col and speed_col):
-			self.map_canvas.ax.set_title("Missing required torqlogs columns")
-			self.map_canvas.draw()
-			return
+		for idx, fileid in enumerate(fileids):
+			plot_data = self._load_trip_plot_data(fileid)
+			if not plot_data:
+				continue
 
-		for idx, fileid in enumerate(fileids):  # enumerate(self.df_files.iterrows()):
-			# fileid = df_file[0]
-			q = (
-				f'SELECT "{lon_col}" AS Longitude, "{lat_col}" AS Latitude, '
-				f'"{speed_col}" AS Speed_OBDkmh FROM torqlogs WHERE fileid = {int(fileid)}'
-			)
-			df_part = pd.read_sql(q, self.engine)
-			if not df_part.empty:
-				# Convert to numeric first to avoid fillna downcasting warning
-				gdf = gpd.GeoDataFrame(df_part, geometry=[Point(xy) for xy in zip(df_part['Longitude'], df_part['Latitude'])], crs="EPSG:4326").to_crs(epsg=3857)
-				speed_col = pd.to_numeric(df_part['Speed_OBDkmh'], errors='coerce').fillna(0)
-				sizes = speed_col.clip(lower=1, upper=100)
-				base_color = cmap(idx % cycle_length)
-				colors = [(
-					min(1, base_color[0] + 0.5 * (v / speed_col.max() if speed_col.max() > 0 else 0)),
-					min(1, base_color[1] + 0.5 * (v / speed_col.max() if speed_col.max() > 0 else 0)),
-					min(1, base_color[2] + 0.5 * (v / speed_col.max() if speed_col.max() > 0 else 0)),
-					base_color[3]) for v in speed_col]
-				sc = self.map_canvas.ax.scatter(gdf.geometry.x, gdf.geometry.y, s=sizes, c=colors, label=f"fileid {fileid}")
-				plots.append(sc)
-				# self.map_canvas.ax.scatter(df_part['Longitude'], df_part['Latitude'],s=sizes, c=[color], label=f"fileid {fileid}")
-				# color2 = cmap(idx % 2)  # tab10 has 10 distinct colors
-				# self.map_canvas.ax.scatter(df_part['Longitude'], df_part['Latitude'],s=1, c=[color2], label=f"fileid {fileid}")
-				# self.map_canvas.ax.scatter(df_part['Latitude'], df_part['Longitude'], s=sizes, c=[color], label=f"fileid {fileid}")
-		# Add basemap if at least one trip
+			x_vals = plot_data["x"]
+			y_vals = plot_data["y"]
+			speed_vals = pd.to_numeric(pd.Series(plot_data["speed"]), errors='coerce').fillna(0)
+			if len(x_vals) == 0:
+				continue
+
+			sizes = speed_vals.clip(lower=1, upper=100)
+			base_color = cmap(idx % cycle_length)
+			speed_max = speed_vals.max()
+			colors = [(
+				min(1, base_color[0] + 0.5 * (v / speed_max if speed_max > 0 else 0)),
+				min(1, base_color[1] + 0.5 * (v / speed_max if speed_max > 0 else 0)),
+				min(1, base_color[2] + 0.5 * (v / speed_max if speed_max > 0 else 0)),
+				base_color[3]) for v in speed_vals]
+			sc = self.map_canvas.ax.scatter(x_vals, y_vals, s=sizes, c=colors, label=f"fileid {fileid}", zorder=2)
+			plots.append(sc)
+
 		if plots:
-			# ctx.add_basemap(self.map_canvas.ax, crs="EPSG:3857", source=ctx.providers.OpenStreetMap.Mapnik)
 			zoom = int(self.zoom_combo.currentText())
-			# zoom = min(32, max(10, int(self.map_canvas.ax.get_xlim()[1] - self.map_canvas.ax.get_xlim()[0]) // 10000))
-			ctx.add_basemap(self.map_canvas.ax, crs="EPSG:3857", zoom=zoom)  # type: ignore[arg-type]
-			# ctx.add_basemap(self.map_canvas.ax, crs="EPSG:3857", source=ctx.providers.OpenStreetMap.Mapnik, zoom=16)
+			self._start_async_basemap(zoom)
 		self.map_canvas.ax.set_title("Trip Map")
 		self.map_canvas.ax.set_xlabel("Longitude")
 		self.map_canvas.ax.set_ylabel("Latitude")
-		# if len(fileids) > 1:
-		# 	self.map_canvas.ax.legend(fontsize='small')
-		self.map_canvas.draw()
+		self.map_canvas.draw_idle()
+
+	def _start_async_basemap(self, zoom: int):
+		xmin, xmax = self.map_canvas.ax.get_xlim()
+		ymin, ymax = self.map_canvas.ax.get_ylim()
+		if xmax <= xmin or ymax <= ymin:
+			return
+
+		self._basemap_request_id += 1
+		request_id = self._basemap_request_id
+
+		thread = QThread(self)
+		worker = BasemapWorker((xmin, xmax, ymin, ymax), zoom, request_id)
+		worker.moveToThread(thread)
+
+		thread.started.connect(worker.run)
+		worker.finished.connect(self._on_basemap_loaded)
+		worker.error.connect(self._on_basemap_error)
+		worker.finished.connect(thread.quit)
+		worker.error.connect(thread.quit)
+		thread.finished.connect(worker.deleteLater)
+		thread.finished.connect(thread.deleteLater)
+
+		self._basemap_worker = worker
+		self._basemap_thread = thread
+		thread.start()
+
+	def _on_basemap_loaded(self, img, ext, request_id: int):
+		if request_id != self._basemap_request_id:
+			return
+		self.map_canvas.ax.imshow(img, extent=ext, interpolation='bilinear', zorder=0)
+		self.map_canvas.draw_idle()
+
+	def _on_basemap_error(self, err: str, request_id: int):
+		if request_id != self._basemap_request_id:
+			return
+		# Tile/network failures should not break UI interaction.
+		print(f"{self} Basemap load failed: {err} (request_id={request_id}) current_id={self._basemap_request_id}")
+
+	def on_row_selected(self, selected, deselected):
+		rows = sorted(set(index.row() for index in self.table.selectionModel().selectedRows()))
+		if rows:
+			self._plot_for_rows(rows)
 
 class PandasModel(QAbstractTableModel):
 	"""Minimal Qt model for pandas DataFrame for QTableView."""
