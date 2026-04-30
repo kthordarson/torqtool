@@ -5,17 +5,32 @@ from sqlalchemy.orm import sessionmaker
 
 from torqcols import allcols
 
+
+def _normalize_col_name(value: str) -> str:
+	return "".join(ch.lower() for ch in str(value) if ch.isalnum())
+
+
+def _get_torqlogs_columns(session) -> list[str]:
+	rows = session.execute(text("PRAGMA table_info(torqlogs)")).all()
+	return [row[1] for row in rows]
+
 def get_trip_data(trip, session):
 	resdata = []
+	actual_columns = _get_torqlogs_columns(session)
+	normalized_actual = {_normalize_col_name(col): col for col in actual_columns}
+
 	for c in allcols:
+		actual_col = normalized_actual.get(_normalize_col_name(c))
+		if not actual_col:
+			continue
 		res = None
 		try:
-			# res = pd.read_sql(f'SELECT tripid, MIN({c}) as min{c}, MAX({c}) as max{c}, AVG({c}) as avg{c} FROM torqlogs WHERE tripid = "{trip}"', engine)
-			res = session.execute(text(f'SELECT tripid, MIN({c}) as min{c}, MAX({c}) as max{c}, AVG({c}) as avg{c} FROM torqlogs WHERE tripid = "{trip}"')).fetchall()
+			# res = pd.read_sql(f'SELECT fileid, MIN("{actual_col}") as min_{c}, MAX("{actual_col}") as max_{c}, AVG("{actual_col}") as avg_{c} FROM torqlogs WHERE fileid = "{trip}"', engine)
+			res = session.execute(text(f'SELECT fileid, MIN("{actual_col}") as min_{c}, MAX("{actual_col}") as max_{c}, AVG("{actual_col}") as avg_{c} FROM torqlogs WHERE fileid = "{trip}"')).fetchall()
 			resdata.append(res)
 		except OperationalError as e:
 			if e.code != 'e3q8':
-				logger.warning(f'[err] col={c} code={e} {e.statement}')
+				logger.warning(f'[err] col={c} mapped={actual_col} code={e} {e.statement}')
 				res = None
 	logger.info(f'[trip] id:{trip} len={len(resdata)}')
 	return resdata

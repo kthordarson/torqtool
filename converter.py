@@ -33,6 +33,29 @@ pd.set_option("future.no_silent_downcasting", True)
 class Polarsreaderror(Exception):
 	pass
 
+
+def _normalized_col_name(value: str) -> str:
+	return "".join(ch.lower() for ch in str(value) if ch.isalnum())
+
+
+def _resolve_col_name(columns: list[str], candidates: list[str]) -> str | None:
+	if not columns:
+		return None
+
+	# Exact match first.
+	for candidate in candidates:
+		if candidate in columns:
+			return candidate
+
+	# Fallback to normalized matching for odd encodings/spaces/symbols.
+	norm_map = {_normalized_col_name(col): col for col in columns}
+	for candidate in candidates:
+		resolved = norm_map.get(_normalized_col_name(candidate))
+		if resolved:
+			return resolved
+
+	return None
+
 async def read_csv_file(logfile:str, args:argparse.Namespace):
 	"""
 	Optimized version that combines filtering operations and reduces conversions
@@ -41,9 +64,18 @@ async def read_csv_file(logfile:str, args:argparse.Namespace):
 	try:
 		# Use lazy evaluation to improve performance
 		data = pl.scan_csv(logfile, ignore_errors=True, try_parse_dates=True, truncate_ragged_lines=True, null_values=nullvals)
+		columns = data.columns
+
+		time_col = _resolve_col_name(columns, ['gpstime', 'GPS_Time', 'GPS Time'])
+		if not time_col:
+			logger.warning(f"Skipping {logfile} - missing GPS time column")
+			return pd.DataFrame()
+
+		lat_col = _resolve_col_name(columns, ['latitude', 'Latitude', 'GPS_Latitude', 'GPS Latitude'])
+		lon_col = _resolve_col_name(columns, ['longitude', 'Longitude', 'GPS_Longitude', 'GPS Longitude'])
 
 		# Apply all filters in one operation
-		data = data.filter((pl.col('gpstime') != '-') & (pl.col('gpstime') != 'GPS Time'))
+		data = data.filter((pl.col(time_col) != '-') & (pl.col(time_col) != 'GPS Time'))
 
 		# Collect the data only once
 		data = data.collect()
@@ -54,8 +86,8 @@ async def read_csv_file(logfile:str, args:argparse.Namespace):
 			return pd.DataFrame()
 
 		# Check trip duration more efficiently
-		first_time = convert_string_to_datetime(data['gpstime'][0])
-		last_time = convert_string_to_datetime(data['gpstime'][-1])
+		first_time = convert_string_to_datetime(data[time_col][0])
+		last_time = convert_string_to_datetime(data[time_col][-1])
 		tripdur = (last_time - first_time).total_seconds()
 
 		if tripdur > 86400:
@@ -70,7 +102,18 @@ async def read_csv_file(logfile:str, args:argparse.Namespace):
 				logger.warning(f"Skipping {logfile} - already in db with trip_start: {first_time}")
 				return pd.DataFrame()
 
-			return data.to_pandas()
+			df = data.to_pandas()
+			rename_map = {}
+			if time_col in df.columns and time_col != 'gpstime':
+				rename_map[time_col] = 'gpstime'
+			if lat_col and lat_col in df.columns and lat_col != 'latitude':
+				rename_map[lat_col] = 'latitude'
+			if lon_col and lon_col in df.columns and lon_col != 'longitude':
+				rename_map[lon_col] = 'longitude'
+			if rename_map:
+				df = df.rename(columns=rename_map)
+
+			return df
 		finally:
 			session.close()
 
