@@ -3,7 +3,7 @@ import re
 from datetime import datetime
 import pandas as pd
 from loguru import logger
-from sqlalchemy import Column, DateTime, Float, ForeignKey, Integer, Text, text, String
+from sqlalchemy import Column, DateTime, Float, ForeignKey, Integer, Text, text, String, LargeBinary, UniqueConstraint
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -153,6 +153,21 @@ class TorqFile(Base):
 		self.csvfile = csvfile
 		self.csvhash = csvhash
 		self.import_date = datetime.now()
+
+
+class MapImageCache(Base):
+	__tablename__ = 'mapimagecache'
+	__table_args__ = (
+		UniqueConstraint('selection_key', 'zoom', 'colormap', name='uq_mapimagecache_key'),
+	)
+	cacheid: Mapped[int] = mapped_column(primary_key=True)
+	fileid: Mapped[int | None] = mapped_column(ForeignKey('torqfiles.fileid'), nullable=True)
+	selection_key: Mapped[str] = mapped_column(Text, nullable=False)
+	zoom: Mapped[int] = mapped_column(Integer, nullable=False)
+	colormap: Mapped[str] = mapped_column(Text, nullable=False)
+	image_png: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+	created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+	updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
 class Torqtrips(Base):
 	__tablename__ = 'torqtrips'

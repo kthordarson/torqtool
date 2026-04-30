@@ -3,6 +3,7 @@ import contextily as ctx
 import geopandas as gpd
 from shapely.geometry import Point
 import sys
+import io
 import pandas as pd
 from typing import Any, cast
 from PySide6.QtWidgets import (
@@ -17,8 +18,10 @@ from sqlalchemy.orm import sessionmaker
 import matplotlib
 matplotlib.use("QtAgg")
 import matplotlib.pyplot as plt
+import matplotlib.image as mpimg
 # from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+from datamodels import database_init
 
 DB_PATH = "sqlite:///torqdata.db"
 
@@ -102,6 +105,7 @@ class MainWindow(QMainWindow):
 		self.setWindowTitle("TorqFiles Viewer")
 		# Set up SQLAlchemy session
 		self.engine = create_engine(DB_PATH)
+		database_init(self.engine)
 		self._resolved_torqlogs_columns = _resolve_torqlogs_columns(
 			self.engine,
 			['latitude', 'longitude', 'speedobdkmh']
@@ -111,6 +115,7 @@ class MainWindow(QMainWindow):
 		self._plot_refresh_timer.setSingleShot(True)
 		self._plot_refresh_timer.timeout.connect(self.refresh_plot)
 		self._basemap_request_id = 0
+		self._basemap_request_context: dict[int, dict[str, object]] = {}
 		self._basemap_thread: QThread | None = None
 		self._basemap_worker: BasemapWorker | None = None
 		self.Session = sessionmaker(bind=self.engine)
@@ -283,12 +288,79 @@ class MainWindow(QMainWindow):
 		self._trip_plot_cache[fileid] = payload
 		return payload
 
+	def _selection_key(self, fileids: list[int]) -> str:
+		return ",".join(str(fid) for fid in sorted(fileids))
+
+	def _cache_fileid(self, fileids: list[int]) -> int | None:
+		return int(fileids[0]) if len(fileids) == 1 else None
+
+	def _load_cached_map_image(self, fileids: list[int], zoom: int, colormap: str) -> bytes | None:
+		selection_key = self._selection_key(fileids)
+		q = text(
+			"""
+			SELECT image_png
+			FROM mapimagecache
+			WHERE selection_key = :selection_key AND zoom = :zoom AND colormap = :colormap
+			LIMIT 1
+			"""
+		)
+		with self.engine.connect() as conn:
+			row = conn.execute(q, {
+				"selection_key": selection_key,
+				"zoom": zoom,
+				"colormap": colormap,
+			}).first()
+		if row:
+			return row[0]
+		return None
+
+	def _save_cached_map_image(self, fileids: list[int], zoom: int, colormap: str):
+		selection_key = self._selection_key(fileids)
+		fileid = self._cache_fileid(fileids)
+		buf = io.BytesIO()
+		self.map_canvas.figure.savefig(buf, format='png', dpi=100, bbox_inches='tight')
+		image_bytes = buf.getvalue()
+		upsert_sql = text(
+			"""
+			INSERT INTO mapimagecache (fileid, selection_key, zoom, colormap, image_png, created_at, updated_at)
+			VALUES (:fileid, :selection_key, :zoom, :colormap, :image_png, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+			ON CONFLICT(selection_key, zoom, colormap)
+			DO UPDATE SET
+				fileid = excluded.fileid,
+				image_png = excluded.image_png,
+				updated_at = CURRENT_TIMESTAMP
+			"""
+		)
+		with self.engine.begin() as conn:
+			conn.execute(upsert_sql, {
+				"fileid": fileid,
+				"selection_key": selection_key,
+				"zoom": zoom,
+				"colormap": colormap,
+				"image_png": image_bytes,
+			})
+
 	def _plot_for_rows(self, rows):
 		fileids = self._get_selected_fileids(rows)
+		if not fileids:
+			return
+
+		zoom = int(self.zoom_combo.currentText())
+		colormap_name = self.colormap_combo.currentText()
+		cached_img = self._load_cached_map_image(fileids, zoom, colormap_name)
+		if cached_img:
+			self.map_canvas.ax.clear()
+			img = mpimg.imread(io.BytesIO(cached_img), format='png')
+			self.map_canvas.ax.imshow(img)
+			self.map_canvas.ax.set_title("Trip Map (cached)")
+			self.map_canvas.ax.set_xlabel("Longitude")
+			self.map_canvas.ax.set_ylabel("Latitude")
+			self.map_canvas.draw_idle()
+			return
+
 		self.map_canvas.ax.clear()
 
 		# Get selected colormap
-		colormap_name = self.colormap_combo.currentText()
 		cmap = plt.colormaps[colormap_name]
 
 		# Calculate colormap cycle length based on colormap type
@@ -329,14 +401,13 @@ class MainWindow(QMainWindow):
 			plots.append(sc)
 
 		if plots:
-			zoom = int(self.zoom_combo.currentText())
-			self._start_async_basemap(zoom)
+			self._start_async_basemap(zoom, fileids, colormap_name)
 		self.map_canvas.ax.set_title("Trip Map")
 		self.map_canvas.ax.set_xlabel("Longitude")
 		self.map_canvas.ax.set_ylabel("Latitude")
 		self.map_canvas.draw_idle()
 
-	def _start_async_basemap(self, zoom: int):
+	def _start_async_basemap(self, zoom: int, fileids: list[int], colormap_name: str):
 		xmin, xmax = self.map_canvas.ax.get_xlim()
 		ymin, ymax = self.map_canvas.ax.get_ylim()
 		if xmax <= xmin or ymax <= ymin:
@@ -344,6 +415,11 @@ class MainWindow(QMainWindow):
 
 		self._basemap_request_id += 1
 		request_id = self._basemap_request_id
+		self._basemap_request_context[request_id] = {
+			"fileids": fileids,
+			"zoom": zoom,
+			"colormap": colormap_name,
+		}
 
 		thread = QThread(self)
 		worker = BasemapWorker((xmin, xmax, ymin, ymax), zoom, request_id)
@@ -366,10 +442,19 @@ class MainWindow(QMainWindow):
 			return
 		self.map_canvas.ax.imshow(img, extent=ext, interpolation='bilinear', zorder=0)
 		self.map_canvas.draw_idle()
+		ctx = self._basemap_request_context.get(request_id)
+		if ctx:
+			self._save_cached_map_image(
+				cast(list[int], ctx["fileids"]),
+				cast(int, ctx["zoom"]),
+				cast(str, ctx["colormap"]),
+			)
+			self._basemap_request_context.pop(request_id, None)
 
 	def _on_basemap_error(self, err: str, request_id: int):
 		if request_id != self._basemap_request_id:
 			return
+		self._basemap_request_context.pop(request_id, None)
 		# Tile/network failures should not break UI interaction.
 		print(f"{self} Basemap load failed: {err} (request_id={request_id}) current_id={self._basemap_request_id}")
 
