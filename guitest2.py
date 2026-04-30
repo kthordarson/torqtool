@@ -22,6 +22,7 @@ import matplotlib.image as mpimg
 # from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from datamodels import database_init
+from schemas import dataschema
 
 DB_PATH = "sqlite:///torqdata.db"
 
@@ -106,11 +107,12 @@ class MainWindow(QMainWindow):
 		# Set up SQLAlchemy session
 		self.engine = create_engine(DB_PATH)
 		database_init(self.engine)
+		self._torqlogs_norm_to_actual = self._build_torqlogs_column_map()
 		self._resolved_torqlogs_columns = _resolve_torqlogs_columns(
 			self.engine,
 			['latitude', 'longitude', 'speedobdkmh']
 		)
-		self._trip_plot_cache: dict[int, dict[str, list[float]]] = {}
+		self._trip_plot_cache: dict[tuple[int, str], dict[str, list[float]]] = {}
 		self._plot_refresh_timer = QTimer(self)
 		self._plot_refresh_timer.setSingleShot(True)
 		self._plot_refresh_timer.timeout.connect(self.refresh_plot)
@@ -146,6 +148,8 @@ class MainWindow(QMainWindow):
 		colormap_layout = QHBoxLayout()
 		colormap_label = QLabel("Colormap:")
 		self.colormap_combo = QComboBox()
+		metric_label = QLabel("Metric:")
+		self.metric_combo = QComboBox()
 
 		# Add popular qualitative colormaps
 		qualitative_maps = ['Set1', 'tab10', 'tab20', 'Dark2', 'Pastel1', 'Pastel2', 'Set2', 'Set3', 'Accent']
@@ -157,11 +161,21 @@ class MainWindow(QMainWindow):
 		self.colormap_combo.setCurrentText('Set1')  # Set default
 		self.colormap_combo.currentTextChanged.connect(self.on_colormap_changed)
 
+		metric_columns = sorted(dataschema.keys())
+		self.metric_combo.addItems(metric_columns)
+		if 'speedobdkmh' in metric_columns:
+			self.metric_combo.setCurrentText('speedobdkmh')
+		self.metric_combo.currentTextChanged.connect(self.on_metric_changed)
+
 		# Adjust size and appearance of the combo box
 		self.colormap_combo.setFixedWidth(120)  # Set fixed width
 		self.colormap_combo.setMaximumHeight(25)  # Limit height
+		self.metric_combo.setFixedWidth(200)
+		self.metric_combo.setMaximumHeight(25)
 
 		colormap_layout.addLayout(zoom_layout)
+		colormap_layout.addWidget(metric_label)
+		colormap_layout.addWidget(self.metric_combo)
 		colormap_layout.addWidget(colormap_label)
 		colormap_layout.addWidget(self.colormap_combo)
 		# colormap_layout.addSpacing(20)
@@ -240,6 +254,19 @@ class MainWindow(QMainWindow):
 		# Debounce zoom updates to avoid blocking UI with repeated basemap fetches.
 		self._plot_refresh_timer.start(300)
 
+	def on_metric_changed(self, metric_name):
+		"""Called when user changes plotted metric"""
+		self._plot_refresh_timer.start(200)
+
+	def _build_torqlogs_column_map(self) -> dict[str, str]:
+		with self.engine.connect() as conn:
+			rows = conn.execute(text("PRAGMA table_info(torqlogs)")).all()
+		actual_columns = [row[1] for row in rows]
+		return {_normalize_col_name(col): col for col in actual_columns}
+
+	def _resolve_actual_torqlogs_column(self, requested_column: str) -> str | None:
+		return self._torqlogs_norm_to_actual.get(_normalize_col_name(requested_column))
+
 	def refresh_plot(self):
 		"""Refresh the current plot with selected rows"""
 		# Get currently selected rows and replot
@@ -254,48 +281,49 @@ class MainWindow(QMainWindow):
 			return [int(k) for k in self.df_trips.iloc[rows]['fileid'].tolist()]
 		return []
 
-	def _load_trip_plot_data(self, fileid: int) -> dict[str, list[float]] | None:
-		if fileid in self._trip_plot_cache:
-			return self._trip_plot_cache[fileid]
+	def _load_trip_plot_data(self, fileid: int, metric_name: str) -> dict[str, list[float]] | None:
+		cache_key = (fileid, metric_name)
+		if cache_key in self._trip_plot_cache:
+			return self._trip_plot_cache[cache_key]
 
 		lat_col = self._resolved_torqlogs_columns.get('latitude')
 		lon_col = self._resolved_torqlogs_columns.get('longitude')
-		speed_col_name = self._resolved_torqlogs_columns.get('speedobdkmh')
+		speed_col_name = self._resolve_actual_torqlogs_column(metric_name)
 		if not (lat_col and lon_col and speed_col_name):
 			return None
 
 		q = (
 			f'SELECT "{lon_col}" AS Longitude, "{lat_col}" AS Latitude, '
-			f'"{speed_col_name}" AS Speed_OBDkmh FROM torqlogs WHERE fileid = {int(fileid)}'
+			f'"{speed_col_name}" AS SelectedMetric FROM torqlogs WHERE fileid = {int(fileid)}'
 		)
 		df_part = pd.read_sql(q, self.engine)
 		if df_part.empty:
-			self._trip_plot_cache[fileid] = {"x": [], "y": [], "speed": []}
-			return self._trip_plot_cache[fileid]
+			self._trip_plot_cache[cache_key] = {"x": [], "y": [], "speed": []}
+			return self._trip_plot_cache[cache_key]
 
 		gdf = gpd.GeoDataFrame(
 			df_part,
 			geometry=[Point(xy) for xy in zip(df_part['Longitude'], df_part['Latitude'])],
 			crs="EPSG:4326",
 		).to_crs(epsg=3857)
-		speed_series = pd.to_numeric(df_part['Speed_OBDkmh'], errors='coerce').fillna(0)
+		speed_series = pd.to_numeric(df_part['SelectedMetric'], errors='coerce').fillna(0)
 
 		payload: dict[str, list[float]] = {
 			"x": gdf.geometry.x.tolist(),
 			"y": gdf.geometry.y.tolist(),
 			"speed": speed_series.tolist(),
 		}
-		self._trip_plot_cache[fileid] = payload
+		self._trip_plot_cache[cache_key] = payload
 		return payload
 
-	def _selection_key(self, fileids: list[int]) -> str:
-		return ",".join(str(fid) for fid in sorted(fileids))
+	def _selection_key(self, fileids: list[int], metric_name: str) -> str:
+		return f"metric={metric_name}|" + ",".join(str(fid) for fid in sorted(fileids))
 
 	def _cache_fileid(self, fileids: list[int]) -> int | None:
 		return int(fileids[0]) if len(fileids) == 1 else None
 
-	def _load_cached_map_image(self, fileids: list[int], zoom: int, colormap: str) -> bytes | None:
-		selection_key = self._selection_key(fileids)
+	def _load_cached_map_image(self, fileids: list[int], zoom: int, colormap: str, metric_name: str) -> bytes | None:
+		selection_key = self._selection_key(fileids, metric_name)
 		q = text(
 			"""
 			SELECT image_png
@@ -314,8 +342,8 @@ class MainWindow(QMainWindow):
 			return row[0]
 		return None
 
-	def _save_cached_map_image(self, fileids: list[int], zoom: int, colormap: str):
-		selection_key = self._selection_key(fileids)
+	def _save_cached_map_image(self, fileids: list[int], zoom: int, colormap: str, metric_name: str):
+		selection_key = self._selection_key(fileids, metric_name)
 		fileid = self._cache_fileid(fileids)
 		buf = io.BytesIO()
 		self.map_canvas.figure.savefig(buf, format='png', dpi=100, bbox_inches='tight')
@@ -347,7 +375,8 @@ class MainWindow(QMainWindow):
 
 		zoom = int(self.zoom_combo.currentText())
 		colormap_name = self.colormap_combo.currentText()
-		cached_img = self._load_cached_map_image(fileids, zoom, colormap_name)
+		selected_metric = self.metric_combo.currentText()
+		cached_img = self._load_cached_map_image(fileids, zoom, colormap_name, selected_metric)
 		if cached_img:
 			self.map_canvas.ax.clear()
 			img = mpimg.imread(io.BytesIO(cached_img), format='png')
@@ -379,7 +408,7 @@ class MainWindow(QMainWindow):
 
 		plots = []
 		for idx, fileid in enumerate(fileids):
-			plot_data = self._load_trip_plot_data(fileid)
+			plot_data = self._load_trip_plot_data(fileid, selected_metric)
 			if not plot_data:
 				continue
 
@@ -389,7 +418,7 @@ class MainWindow(QMainWindow):
 			if len(x_vals) == 0:
 				continue
 
-			sizes = speed_vals.clip(lower=1, upper=100)
+			sizes = speed_vals.clip(lower=1, upper=50)
 			base_color = cmap(idx % cycle_length)
 			speed_max = speed_vals.max()
 			colors = [(
@@ -401,13 +430,13 @@ class MainWindow(QMainWindow):
 			plots.append(sc)
 
 		if plots:
-			self._start_async_basemap(zoom, fileids, colormap_name)
-		self.map_canvas.ax.set_title("Trip Map")
+			self._start_async_basemap(zoom, fileids, colormap_name, selected_metric)
+		self.map_canvas.ax.set_title(f"Trip Map - {selected_metric}")
 		self.map_canvas.ax.set_xlabel("Longitude")
 		self.map_canvas.ax.set_ylabel("Latitude")
 		self.map_canvas.draw_idle()
 
-	def _start_async_basemap(self, zoom: int, fileids: list[int], colormap_name: str):
+	def _start_async_basemap(self, zoom: int, fileids: list[int], colormap_name: str, metric_name: str):
 		xmin, xmax = self.map_canvas.ax.get_xlim()
 		ymin, ymax = self.map_canvas.ax.get_ylim()
 		if xmax <= xmin or ymax <= ymin:
@@ -419,6 +448,7 @@ class MainWindow(QMainWindow):
 			"fileids": fileids,
 			"zoom": zoom,
 			"colormap": colormap_name,
+			"metric": metric_name,
 		}
 
 		thread = QThread(self)
@@ -448,6 +478,7 @@ class MainWindow(QMainWindow):
 				cast(list[int], ctx["fileids"]),
 				cast(int, ctx["zoom"]),
 				cast(str, ctx["colormap"]),
+				cast(str, ctx["metric"]),
 			)
 			self._basemap_request_context.pop(request_id, None)
 
