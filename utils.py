@@ -12,10 +12,10 @@ import pandas as pd
 import pymysql
 import pytz
 from loguru import logger
-from sqlalchemy import DateTime
+from sqlalchemy import DateTime, Engine
 from sqlalchemy import create_engine, text, MetaData, Table, Column, Float, String, Integer
 from sqlalchemy.exc import ArgumentError, DataError,IntegrityError, InternalError, OperationalError, ProgrammingError
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import sessionmaker, Session
 import sqlite3
 from commonformats import fmt_20, fmt_24, fmt_26, fmt_28, fmt_30, fmt_34, fmt_36
 from datamodels import database_init, COLUMN_TYPES
@@ -59,16 +59,13 @@ def get_table_columns(engine, table_name):
 	"""
 	Get the current columns of the table from the SQLite database.
 	"""
+	result = []
 	with engine.connect() as conn:
 		try:
 			# your code here
 			result = conn.execute(text(f"PRAGMA table_info({table_name})")).fetchall()
 		except Exception as e:
-			logger.error(f"An error occurred: {e}")
-			result = conn.execute(text(f"PRAGMA table_info({table_name})")).fetchall()
-		except Exception as e:
-			logger.error(f"Error fetching table columns: {e} {type(e)} table_name={table_name}")
-			return []
+			logger.error(f"An error occurred: {e} {type(e)} while fetching columns for table {table_name}")
 		return [row[1].lower() for row in result]  # Extract column names
 
 def create_or_update_table(engine, table_name, columns, column_types):
@@ -99,6 +96,7 @@ def create_or_update_table(engine, table_name, columns, column_types):
 		with engine.connect() as conn:
 			# Convert all column names to lowercase for comparison
 			new_columns = set(col.lower() for col in columns) - set(existing_columns)
+			orig_col = ''
 			if new_columns:
 				logger.info(f"Adding {len(new_columns)} new columns to {table_name}")
 				for col in new_columns:
@@ -194,7 +192,9 @@ def update_trip_and_file_for_fileid(conn, fileid):
 			logger.error(f'{e} {type(e)} {trip_start=} {trip_end=}')
 			trip_duration = None
 	# Calculate trip distance (sum of all GPS point distances for this fileid)
-	trip_distance = None
+	trip_distance = 0.0
+	df_gps = pd.DataFrame()
+	distances = []
 	try:
 		df_gps = pd.read_sql(
 			"SELECT GPS_Latitude, GPS_Longitude FROM torqlogs WHERE fileid = ? ORDER BY GPS_Time ASC",
@@ -213,8 +213,8 @@ def update_trip_and_file_for_fileid(conn, fileid):
 		else:
 			trip_distance = 0.0
 	except Exception as e:
-		logger.error(f"Error calculating trip_distance for fileid {fileid}: {e}")
-		trip_distance = None
+		logger.error(f"Error calculating trip_distance for fileid {fileid}: {e} {type(e)}")
+		trip_distance = 0.0
 
 	# Insert or update Torqtrips
 	conn.execute(text("""
@@ -274,6 +274,7 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs'):
 	# First pass: Collect and validate headers from all files
 	all_columns = set()
 	valid_files = []
+	csvhash = ''
 	# engine = get_engine_session(args)
 	engine = create_engine(
 		f'sqlite:///{args.dbfile}',
@@ -294,7 +295,7 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs'):
 	for file_idx, csvfile in enumerate(csv_files):
 		try:
 			if csvfile.stat().st_size < MIN_FILESIZE:
-				logger.warning(f"Skipping {csvfile} - file size too small")
+				logger.warning(f"Skipping {csvfile} - file size too small {csvfile.stat().st_size} min {MIN_FILESIZE}")
 				continue
 
 			# Check if file has already been processed
@@ -350,11 +351,8 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs'):
 		logger.error(f"Error updating table schema: {e} {type(e)}")
 		return None, pd_columns
 
-	# Create session
-	# Session = sessionmaker(bind=engine)
-	# session = Session()
-
 	# Second pass: Read and insert data from valid files
+	df = pd.DataFrame()
 	with engine.connect() as conn:
 		conn.execute(text("PRAGMA journal_mode = WAL"))  # Use Write-Ahead Logging
 		conn.execute(text("PRAGMA synchronous = NORMAL"))  # Reduce synchronization
@@ -374,7 +372,7 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs'):
 							try:
 								# df[col] = pd.to_datetime(df[col], errors='coerce')
 								# df[col] = df[col].apply(lambda x: convert_string_to_datetime(x) if pd.notnull(x) else pd.NaT)
-								df[col] = df[col].apply(lambda x: convert_string_to_datetime(x) if isinstance(x, str) and pd.notnull(x) else pd.NaT)
+								df[col] = df[col].apply(lambda x: convert_string_to_datetime(x) if isinstance(x, str) and pd.notnull(x) else pd.NaT)  # type: ignore
 							except Exception as e:
 								logger.warning(f"Could not convert column {col} to datetime: {e} {type(e)} in {csvfile}")
 
@@ -451,7 +449,7 @@ def get_csv_files(searchpath: str, args):
 	torqcsvfiles = [({"csvfile": k, "csvhash": md5(open(k, "rb").read()).hexdigest(), "size": os.stat(k).st_size, "dbmode": args.dbmode, }) for k in Path(searchpath).glob("**/*.csv") if k.stat().st_size >= MIN_FILESIZE]  # and not os.path.exists(f'{k}.fixed.csv')]
 	return torqcsvfiles
 
-def get_engine_session(args):
+def get_engine_session(args: argparse.Namespace) -> Session:
 	dburl = None
 	engine = None
 	if args.dbmode == "mysql":
@@ -484,7 +482,8 @@ def get_engine_session(args):
 	except AssertionError as e:
 		logger.error(f"[maindbinit] {e}")
 		sys.exit(-1)
-	return engine  # , session
+	SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+	return SessionLocal()
 
 def sqlsender_ppe(buffer, session, args):
 	# engine = create_engine(url=dburl, echo=False)
@@ -609,7 +608,7 @@ def get_temp_stats(temp_cols):
 			"name": c.name, f"{c.name}.min": c.min(), f"{c.name}.mean": c.mean(), f"{c.name}.max": c.max(), }
 	return stats
 
-def get_tripfile_stats(fileid, session, args=None, limit=1000):
+def get_tripfile_stats(fileid, session, args, limit=1000):
 	"""
 	collect some info about database columns
 	"""
@@ -644,7 +643,7 @@ def get_tripfile_stats(fileid, session, args=None, limit=1000):
 		maxnval = df.max().values[0] or 0.0
 		logger.info(f'  {col:<{maxnlen}} nulls: {nulls:>3} nr: {nr:>3.3} {minval:>3.3} {mednval:>3.3} {meannval:>3.3} {maxnval:>3.3}')
 
-def generate_torqdata(df: pd.DataFrame, session: sessionmaker = None, args: argparse.Namespace = None):
+def generate_torqdata(df: pd.DataFrame, session: sessionmaker, args: argparse.Namespace):
 	# generate torqdata from torqlogs
 	# df = pd.DataFrame([k.__dict__ for k in data])
 	time_cols = [df[k] for k in df.columns if "gpstime" in k or "devicetime" in k]
@@ -665,7 +664,7 @@ def generate_torqdata(df: pd.DataFrame, session: sessionmaker = None, args: argp
 
 	return stats
 
-def convert_string_to_datetime(s: str):
+def convert_string_to_datetime(s: str) -> datetime:
 	"""
 	try to convert string to datetime, based on string length apply fmt
 	param s string with datetime
@@ -697,7 +696,8 @@ def convert_string_to_datetime(s: str):
 	except (ValueError, TypeError, KeyError) as e:
 		logger.error(f"dateconverter {type(e)} {e} {s=}")
 	finally:
-		return datetimeobject
+		pass
+	return datetimeobject  # type: ignore
 
 def populate_trips_and_update_files(session):
 	"""
@@ -741,7 +741,7 @@ def populate_trips_and_update_files(session):
 				trip_duration = None
 
 		# Calculate trip_distance
-		trip_distance = None
+		trip_distance = 0.0
 		try:
 			df_gps = pd.read_sql(
 				"SELECT GPS_Latitude, GPS_Longitude FROM torqlogs WHERE fileid = ? ORDER BY GPS_Time ASC",
@@ -761,7 +761,7 @@ def populate_trips_and_update_files(session):
 				trip_distance = 0.0
 		except Exception as e:
 			logger.error(f"Error calculating trip_distance for fileid {fileid}: {e}")
-			trip_distance = None
+			trip_distance = 0.0
 
 		# Insert into Torqtrips (if not exists)
 		session.execute(text("""

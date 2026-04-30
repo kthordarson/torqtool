@@ -10,7 +10,7 @@ from loguru import logger
 import sqlalchemy
 from sqlalchemy import text
 from sqlalchemy.exc import DataError, IntegrityError, OperationalError
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import sessionmaker, Session
 import sqlite3
 from datamodels import TorqFile, database_init
 from utils import get_parser, get_engine_session, MIN_FILESIZE, convert_string_to_datetime, read_csvs_to_dataframe_and_insert
@@ -64,7 +64,7 @@ async def read_csv_file(logfile:str, args:argparse.Namespace):
 			# return pd.DataFrame()
 
 		# Check for duplicate trips in one database call
-		engine, session = get_engine_session(args)
+		session = get_engine_session(args)
 		try:
 			ts_temp = session.query(TorqFile).filter(TorqFile.trip_start == first_time).all()
 			if ts_temp:
@@ -90,7 +90,7 @@ async def send_data_to_db(args: argparse.Namespace, data: pd.DataFrame, csvfilen
 	send this csvdata to database, catch all exceptions in here
 	return dict {'fileid': fileid, 'rows': len(data)}
 	"""
-	engine, session = get_engine_session(args)
+	session = get_engine_session(args)
 	csvhash = md5(open(csvfilename, "rb").read()).hexdigest()
 	# fileinfo = {
 	# 	'dtripstart': data['gpstime'][0],
@@ -115,18 +115,18 @@ async def send_data_to_db(args: argparse.Namespace, data: pd.DataFrame, csvfilen
 
 	try:
 		# _ = data.to_sql("torqlogs", con=engine, if_exists="append", index=False)
-		_ = data.to_sql("torqlogs", con=engine, if_exists="append", index=False, method='multi', chunksize=args.sqlchunksize)
+		_ = data.to_sql("torqlogs", con=session.get_bind(), if_exists="append", index=False, method='multi', chunksize=args.sqlchunksize)
 		send_results["sent_rows"] = session.execute(text(f"select count(*) from torqlogs where fileid={t.fileid} ; ")).one()[0]
 		# logger.debug(f'fileid {t.fileid} sent {len(data)} rows to db  sent_rows: {send_results["sent_rows"]}')
 	except DataError as e:
 		logger.warning(f"{type(e)} {e.args[0]} {csvfilename=}")
-	except (sqlalchemy.exc.OperationalError, OperationalError, sqlite3.OperationalError,) as e:
+	except (OperationalError, sqlite3.OperationalError,) as e:
 		logger.error(f"{type(e)} {e} {csvfilename=}")
 	except Exception as e:
 		logger.error(f"unhandled {type(e)} {e} ")
 	finally:
 		session.close()
-		return send_results
+	return send_results
 
 async def calculate_hash(path):
 	"""Calculate MD5 hash of a file asynchronously"""
@@ -136,7 +136,7 @@ async def calculate_hash(path):
 		lambda: md5(open(path, "rb").read()).hexdigest()
 	)
 
-async def get_files_to_send(session: sessionmaker, args):
+async def get_files_to_send(session: Session, args):
 	"""More efficient file processing that caches hashes using async"""
 	# Get all hashes from database in one query
 	alldbfiles = session.query(TorqFile).all()
@@ -198,8 +198,8 @@ async def cli_main(args):
 	if args.dbinfo:
 		logcount = 0
 		try:
-			engine = get_engine_session(args)  # , session
-			with engine.connect() as conn:
+			session = get_engine_session(args)  # , session
+			with session.get_bind().connect() as conn:
 				logcount = conn.execute(text("select count(*) from torqlogs")).all()
 		except Exception as e:
 			logger.error(f'error {type(e)} {e}')
@@ -208,9 +208,9 @@ async def cli_main(args):
 			logger.info(f'{logcount=}')
 	elif args.scanpath:
 		try:
-			engine = get_engine_session(args)  # , session
-			database_init(engine)
-			sess = sessionmaker(bind=engine)
+			session = get_engine_session(args)  # , session
+			database_init(session.get_bind())
+			sess = sessionmaker(bind=session.get_bind())
 			s = sess()
 			logcount = s.execute(text("select count(*) from torqlogs")).all()
 			logger.info(f'{logcount=}')

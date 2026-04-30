@@ -52,7 +52,8 @@ async def scanpath(session, args):
         logger.error(f"[!] unhandled {type(e)} {e}")
         sys.exit(1)
     finally:
-        return newfilelist
+        pass
+    return newfilelist
 
 async def collect_info(engine) -> AsyncIterable[str]:
     with engine.connect() as conn:
