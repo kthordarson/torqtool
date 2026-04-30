@@ -13,6 +13,7 @@ from sqlalchemy.orm import sessionmaker, Session
 import sqlite3
 from datamodels import TorqFile, database_init
 from utils import get_parser, get_engine_session, MIN_FILESIZE, convert_string_to_datetime, read_csvs_to_dataframe_and_insert
+from schemas import canonicalize_columns
 
 pd.set_option("future.no_silent_downcasting", True)
 
@@ -71,9 +72,6 @@ async def read_csv_file(logfile:str, args:argparse.Namespace):
 			logger.warning(f"Skipping {logfile} - missing GPS time column")
 			return pd.DataFrame()
 
-		lat_col = _resolve_col_name(columns, ['latitude', 'Latitude', 'GPS_Latitude', 'GPS Latitude'])
-		lon_col = _resolve_col_name(columns, ['longitude', 'Longitude', 'GPS_Longitude', 'GPS Longitude'])
-
 		# Apply all filters in one operation
 		data = data.filter((pl.col(time_col) != '-') & (pl.col(time_col) != 'GPS Time'))
 
@@ -103,15 +101,7 @@ async def read_csv_file(logfile:str, args:argparse.Namespace):
 				return pd.DataFrame()
 
 			df = data.to_pandas()
-			rename_map = {}
-			if time_col in df.columns and time_col != 'gpstime':
-				rename_map[time_col] = 'gpstime'
-			if lat_col and lat_col in df.columns and lat_col != 'latitude':
-				rename_map[lat_col] = 'latitude'
-			if lon_col and lon_col in df.columns and lon_col != 'longitude':
-				rename_map[lon_col] = 'longitude'
-			if rename_map:
-				df = df.rename(columns=rename_map)
+			df = df.rename(columns=canonicalize_columns(list(df.columns)))
 
 			return df
 		finally:

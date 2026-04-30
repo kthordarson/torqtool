@@ -305,11 +305,22 @@ def collect_db_speeds(args):
 		logger.error(f"{type(e)} {e}")
 		session.rollback()
 		return -1
-	# res = session.execute(text('drop table speeds'))
-	# print(res)
-	# q = "select fileid,avg(gpsspeedkmh) as gpsspeedkmh, avg(speedobdkmh) as speedobdkmh, avg(speedgpskmh) as speedgpskmh, min(gpstime) as gpstime  from torqlogs where gpsspeedkmh is not null and gpsspeedkmh>0 and speedobdkmh is not null and speedobdkmh>0  and speedgpskmh is not null and speedgpskmh>0 group by fileid "
-	q = 'select fileid,avg(Speed_GPSkmh) as gpsspeedkmh, avg(Speed_OBDkmh) as speedobdkmh, avg(Speed_GPSkmh) as speedgpskmh, min(GPS_Time) as gpstime  from torqlogs group by fileid; '
-	# oldq = 'select fileid,avg(gpsspeedkmh) as speed,min(gpstime) as gpstime  from torqlogs group by fileid'
+	resolved = _resolve_schema_columns(session, ['gpstime', 'gpsspeedkmh', 'speedgpskmh', 'speedobdkmh'])
+	time_col = resolved.get('gpstime')
+	obd_col = resolved.get('speedobdkmh')
+	gps_col = resolved.get('speedgpskmh') or resolved.get('gpsspeedkmh')
+	if not (time_col and obd_col and gps_col):
+		logger.error("Missing required columns for speed aggregation")
+		return -1
+
+	q = (
+		f'select fileid, '
+		f'avg("{gps_col}") as gpsspeedkmh, '
+		f'avg("{obd_col}") as speedobdkmh, '
+		f'avg("{gps_col}") as speedgpskmh, '
+		f'min("{time_col}") as gpstime '
+		f'from torqlogs group by fileid; '
+	)
 	if args.db_limit:
 		q += f" limit {args.limit}"
 	try:

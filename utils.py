@@ -19,6 +19,7 @@ from sqlalchemy.orm import sessionmaker, Session
 import sqlite3
 from commonformats import fmt_20, fmt_24, fmt_26, fmt_28, fmt_30, fmt_34, fmt_36
 from datamodels import database_init, COLUMN_TYPES
+from schemas import canonicalize_column_name, canonicalize_columns
 
 MIN_FILESIZE = 3000
 
@@ -139,20 +140,44 @@ def haversine(lat1, lon1, lat2, lon2):
 	c = 2 * atan2(sqrt(a), sqrt(1-a))
 	return R * c
 
+
+def _normalize_col_name(value: str) -> str:
+	return "".join(ch.lower() for ch in str(value) if ch.isalnum())
+
+
+def _resolve_torqlogs_columns(conn, requested_columns: list[str]) -> dict[str, str]:
+	rows = conn.execute(text("PRAGMA table_info(torqlogs)")).all()
+	actual_columns = [row[1] for row in rows]
+	normalized_actual = {_normalize_col_name(col): col for col in actual_columns}
+	resolved: dict[str, str] = {}
+	for requested in requested_columns:
+		actual = normalized_actual.get(_normalize_col_name(requested))
+		if actual:
+			resolved[requested] = actual
+	return resolved
+
 def update_trip_and_file_for_fileid(conn, fileid):
 	"""
 	Update TorqFile and Torqtrips for a single fileid after inserting its data.
 	"""
+	resolved = _resolve_torqlogs_columns(conn, ["gpstime", "latitude", "longitude"])
+	time_col = resolved.get("gpstime")
+	lat_col = resolved.get("latitude")
+	lon_col = resolved.get("longitude")
+	if not (time_col and lat_col and lon_col):
+		logger.error(f"Missing required torqlogs columns for fileid {fileid}: {resolved}")
+		return
+
 	# Aggregate trip info for this fileid
-	sql = """
+	sql = f"""
 	SELECT
 		fileid,
-		MIN(GPS_Time) AS trip_start,
-		MAX(GPS_Time) AS trip_end,
-		MIN(GPS_Latitude) AS startlat,
-		MIN(GPS_Longitude) AS startlon,
-		MAX(GPS_Latitude) AS endlat,
-		MAX(GPS_Longitude) AS endlon,
+		MIN("{time_col}") AS trip_start,
+		MAX("{time_col}") AS trip_end,
+		MIN("{lat_col}") AS startlat,
+		MIN("{lon_col}") AS startlon,
+		MAX("{lat_col}") AS endlat,
+		MAX("{lon_col}") AS endlon,
 		COUNT(*) AS row_count
 	FROM torqlogs
 	WHERE fileid = :fileid
@@ -197,15 +222,15 @@ def update_trip_and_file_for_fileid(conn, fileid):
 	distances = []
 	try:
 		df_gps = pd.read_sql(
-			"SELECT GPS_Latitude, GPS_Longitude FROM torqlogs WHERE fileid = ? ORDER BY GPS_Time ASC",
+			f'SELECT "{lat_col}" AS latitude, "{lon_col}" AS longitude FROM torqlogs WHERE fileid = ? ORDER BY "{time_col}" ASC',
 			conn,
 			params=(fileid,)
 		)
 		if len(df_gps) > 1:
 			distances = [
 				haversine(
-					df_gps.iloc[i-1]['GPS_Latitude'], df_gps.iloc[i-1]['GPS_Longitude'],
-					df_gps.iloc[i]['GPS_Latitude'], df_gps.iloc[i]['GPS_Longitude']
+					df_gps.iloc[i-1]['latitude'], df_gps.iloc[i-1]['longitude'],
+					df_gps.iloc[i]['latitude'], df_gps.iloc[i]['longitude']
 				)
 				for i in range(1, len(df_gps))
 			]
@@ -310,16 +335,16 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs'):
 			# Read only the header row
 			df = pd.read_csv(csvfile, nrows=0)
 
-			# Normalize column names
+			# Normalize columns using shared Torq header mapping.
 			original_columns = df.columns.to_list()
-			normalized_columns = [normalize_column_name(col) for col in original_columns]
+			normalized_columns = [canonicalize_column_name(col) for col in original_columns]
 
 			# Validate columns - check for empty or numeric column names
 			if any(not col or col[0].isdigit() for col in normalized_columns):
 				logger.warning(f"Skipping {csvfile} - invalid column names")
 				continue
 			all_columns.update(normalized_columns)
-			valid_files.append((csvfile, normalized_columns))
+			valid_files.append((csvfile, normalized_columns, csvhash))
 
 			# Store file info
 			pd_columns['files'][str(csvfile)] = {
@@ -359,7 +384,7 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs'):
 		conn.execute(text("BEGIN TRANSACTION"))  # Start transaction
 
 		try:
-			for csv_idx, (csvfile, normalized_columns) in enumerate(valid_files):
+			for csv_idx, (csvfile, normalized_columns, csvhash) in enumerate(valid_files):
 				try:
 
 					before_count = conn.execute(text("SELECT count(*) from torqlogs")).scalar()
@@ -376,15 +401,18 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs'):
 							except Exception as e:
 								logger.warning(f"Could not convert column {col} to datetime: {e} {type(e)} in {csvfile}")
 
-					# Create TorqFile entry
-					result = conn.execute(text("INSERT INTO torqfiles (csvfile, csvhash) VALUES (:csvfile, :csvhash) RETURNING fileid"),{"csvfile": str(csvfile), "csvhash": csvhash})
+					# Create TorqFile entry with required metadata.
+					result = conn.execute(
+						text("INSERT INTO torqfiles (csvfile, csvhash, import_date) VALUES (:csvfile, :csvhash, :import_date) RETURNING fileid"),
+						{"csvfile": str(csvfile), "csvhash": csvhash, "import_date": datetime.now()}
+					)
 					fileid = result.scalar()
 
 					# Add fileid column first
 					df.insert(0, 'fileid', fileid)
 
 					# Process columns and data
-					df = df.rename(columns={col: normalize_column_name(col) for col in df.columns})
+					df = df.rename(columns=canonicalize_columns(list(df.columns)))
 					df = df.replace(['-', '∞', 'inf', '-inf'], pd.NA)
 
 					# Convert numeric columns
@@ -705,15 +733,23 @@ def populate_trips_and_update_files(session):
 	Also updates TorqFile fields based on aggregated torqlogs data.
 	Uses raw SQL for aggregation and column discovery.
 	"""
-	sql = """
+	resolved = _resolve_torqlogs_columns(session, ["gpstime", "latitude", "longitude"])
+	time_col = resolved.get("gpstime")
+	lat_col = resolved.get("latitude")
+	lon_col = resolved.get("longitude")
+	if not (time_col and lat_col and lon_col):
+		logger.error(f"Missing required torqlogs columns for trip population: {resolved}")
+		return
+
+	sql = f"""
 	SELECT
 		fileid,
-		MIN(GPS_Time) AS trip_start,
-		MAX(GPS_Time) AS trip_end,
-		MIN(GPS_Latitude) AS startlat,
-		MIN(GPS_Longitude) AS startlon,
-		MAX(GPS_Latitude) AS endlat,
-		MAX(GPS_Longitude) AS endlon,
+		MIN("{time_col}") AS trip_start,
+		MAX("{time_col}") AS trip_end,
+		MIN("{lat_col}") AS startlat,
+		MIN("{lon_col}") AS startlon,
+		MAX("{lat_col}") AS endlat,
+		MAX("{lon_col}") AS endlon,
 		COUNT(*) AS row_count
 	FROM torqlogs
 	GROUP BY fileid
@@ -744,15 +780,15 @@ def populate_trips_and_update_files(session):
 		trip_distance = 0.0
 		try:
 			df_gps = pd.read_sql(
-				"SELECT GPS_Latitude, GPS_Longitude FROM torqlogs WHERE fileid = ? ORDER BY GPS_Time ASC",
+				f'SELECT "{lat_col}" AS latitude, "{lon_col}" AS longitude FROM torqlogs WHERE fileid = ? ORDER BY "{time_col}" ASC',
 				session.bind,
 				params=(fileid,)
 			)
 			if len(df_gps) > 1:
 				distances = [
 					haversine(
-						df_gps.iloc[i-1]['GPS_Latitude'], df_gps.iloc[i-1]['GPS_Longitude'],
-						df_gps.iloc[i]['GPS_Latitude'], df_gps.iloc[i]['GPS_Longitude']
+						df_gps.iloc[i-1]['latitude'], df_gps.iloc[i-1]['longitude'],
+						df_gps.iloc[i]['latitude'], df_gps.iloc[i]['longitude']
 					)
 					for i in range(1, len(df_gps))
 				]

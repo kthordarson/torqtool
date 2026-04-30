@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QAbstractItemView
 from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex, QPersistentModelIndex
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 import matplotlib
 matplotlib.use("QtAgg")
@@ -20,6 +20,23 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 
 DB_PATH = "sqlite:///torqdata.db"
+
+
+def _normalize_col_name(value: str) -> str:
+	return "".join(ch.lower() for ch in str(value) if ch.isalnum())
+
+
+def _resolve_torqlogs_columns(engine, requested_columns: list[str]) -> dict[str, str]:
+	with engine.connect() as conn:
+		rows = conn.execute(text("PRAGMA table_info(torqlogs)")).all()
+	actual_columns = [row[1] for row in rows]
+	normalized_actual = {_normalize_col_name(col): col for col in actual_columns}
+	resolved: dict[str, str] = {}
+	for requested in requested_columns:
+		actual = normalized_actual.get(_normalize_col_name(requested))
+		if actual:
+			resolved[requested] = actual
+	return resolved
 
 class MapCanvas(FigureCanvas):
 	def __init__(self, parent=None):
@@ -59,6 +76,10 @@ class MainWindow(QMainWindow):
 		self.setWindowTitle("TorqFiles Viewer")
 		# Set up SQLAlchemy session
 		self.engine = create_engine(DB_PATH)
+		self._resolved_torqlogs_columns = _resolve_torqlogs_columns(
+			self.engine,
+			['latitude', 'longitude', 'speedobdkmh']
+		)
 		self.Session = sessionmaker(bind=self.engine)
 		self.session = self.Session()
 
@@ -210,9 +231,21 @@ class MainWindow(QMainWindow):
 			cycle_length = 10  # Default for sequential colormaps
 
 		plots = []
+		lat_col = self._resolved_torqlogs_columns.get('latitude')
+		lon_col = self._resolved_torqlogs_columns.get('longitude')
+		speed_col = self._resolved_torqlogs_columns.get('speedobdkmh')
+		if not (lat_col and lon_col and speed_col):
+			self.map_canvas.ax.set_title("Missing required torqlogs columns")
+			self.map_canvas.draw()
+			return
+
 		for idx, fileid in enumerate(fileids):  # enumerate(self.df_files.iterrows()):
 			# fileid = df_file[0]
-			df_part = pd.read_sql(f"SELECT Longitude,Latitude,Speed_OBDkmh FROM torqlogs WHERE fileid={fileid}", self.engine)
+			q = (
+				f'SELECT "{lon_col}" AS Longitude, "{lat_col}" AS Latitude, '
+				f'"{speed_col}" AS Speed_OBDkmh FROM torqlogs WHERE fileid = {int(fileid)}'
+			)
+			df_part = pd.read_sql(q, self.engine)
 			if not df_part.empty:
 				# Convert to numeric first to avoid fillna downcasting warning
 				gdf = gpd.GeoDataFrame(df_part, geometry=[Point(xy) for xy in zip(df_part['Longitude'], df_part['Latitude'])], crs="EPSG:4326").to_crs(epsg=3857)

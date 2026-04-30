@@ -1,4 +1,5 @@
 import sys
+import re
 from datetime import datetime
 import pandas as pd
 from loguru import logger
@@ -86,6 +87,11 @@ COLUMN_TYPES = {
 		'O2_Sensor1_Wide_Range_Equivalence_Ratio': Float,
 		'O2_Sensor1_Wide_Range_VoltageV': Float,
 	}
+
+# Also support normalized Torq header variants (for example GPS_Time -> gpstime).
+for _col_name, _col_type in list(COLUMN_TYPES.items()):
+	_normalized = re.sub(r'[^A-Za-z0-9]+', '', _col_name).lower()
+	COLUMN_TYPES.setdefault(_normalized, _col_type)
 
 class Base(DeclarativeBase):
 	pass
