@@ -12,7 +12,7 @@ import pandas as pd
 import pymysql
 import pytz
 from loguru import logger
-from sqlalchemy import DateTime, Engine
+from sqlalchemy import DateTime
 from sqlalchemy import create_engine, text, MetaData, Table, Column, Float, String, Integer
 from sqlalchemy.exc import ArgumentError, DataError,IntegrityError, InternalError, OperationalError, ProgrammingError
 from sqlalchemy.orm import sessionmaker, Session
@@ -444,9 +444,9 @@ def check_split(logfile: Path, debug=False):
 		splits = sum([k[0:4].lower().count("gps") for k in data])
 	return splits
 
-def get_csv_files(searchpath: str, args):
+def get_csv_files(searchpath: Path, args):
 	# scan searchpath for csv files
-	torqcsvfiles = [({"csvfile": k, "csvhash": md5(open(k, "rb").read()).hexdigest(), "size": os.stat(k).st_size, "dbmode": args.dbmode, }) for k in Path(searchpath).glob("**/*.csv") if k.stat().st_size >= MIN_FILESIZE]  # and not os.path.exists(f'{k}.fixed.csv')]
+	torqcsvfiles = [({"csvfile": k, "csvhash": md5(open(k, "rb").read()).hexdigest(), "size": os.stat(k).st_size, "dbmode": args.dbmode, }) for k in searchpath.glob("**/*.csv") if k.stat().st_size >= MIN_FILESIZE]  # and not os.path.exists(f'{k}.fixed.csv')]
 	return torqcsvfiles
 
 def get_engine_session(args: argparse.Namespace) -> Session:
@@ -559,7 +559,7 @@ def sqlsender_ppe(buffer, session, args):
 		logger.error(f"[!]{type(e)}\n{e}\n")
 	return results
 
-def send_torqtripdata(stats_data: dict, session: sessionmaker, args: argparse.Namespace):
+def send_torqtripdata(stats_data: dict, session: Session, args: argparse.Namespace):
 	"""
 	generate some stats from torqlogs and send to database
 	param stats_data dict of stats, session sqlalchemy session, args
@@ -643,7 +643,7 @@ def get_tripfile_stats(fileid, session, args, limit=1000):
 		maxnval = df.max().values[0] or 0.0
 		logger.info(f'  {col:<{maxnlen}} nulls: {nulls:>3} nr: {nr:>3.3} {minval:>3.3} {mednval:>3.3} {meannval:>3.3} {maxnval:>3.3}')
 
-def generate_torqdata(df: pd.DataFrame, session: sessionmaker, args: argparse.Namespace):
+def generate_torqdata(df: pd.DataFrame, session: Session, args: argparse.Namespace):
 	# generate torqdata from torqlogs
 	# df = pd.DataFrame([k.__dict__ for k in data])
 	time_cols = [df[k] for k in df.columns if "gpstime" in k or "devicetime" in k]

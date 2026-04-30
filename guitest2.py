@@ -10,15 +10,16 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QAbstractItemView
-from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex
+from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex, QPersistentModelIndex
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 import matplotlib
 matplotlib.use("QtAgg")
 import matplotlib.pyplot as plt
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+# from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 
-DB_PATH = "sqlite:///torqdata2.db"
+DB_PATH = "sqlite:///torqdata.db"
 
 class MapCanvas(FigureCanvas):
 	def __init__(self, parent=None):
@@ -62,7 +63,7 @@ class MainWindow(QMainWindow):
 		self.session = self.Session()
 
 		# Set up UI
-		splitter = QSplitter(Qt.Horizontal)
+		splitter = QSplitter(Qt.Orientation.Horizontal)
 		self.table = QTableView()
 		self.map_canvas = MapCanvas()
 
@@ -158,7 +159,7 @@ class MainWindow(QMainWindow):
 		self.table_model = PandasModel(self.df_trips)
 		self.table.setModel(self.table_model)
 		self.table.setSortingEnabled(True)
-		self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+		self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
 		self.table.selectionModel().selectionChanged.connect(self.on_row_selected)
 		self.table.horizontalHeader().setStretchLastSection(True)
 		self.table.resizeColumnsToContents()
@@ -234,7 +235,7 @@ class MainWindow(QMainWindow):
 			# ctx.add_basemap(self.map_canvas.ax, crs="EPSG:3857", source=ctx.providers.OpenStreetMap.Mapnik)
 			zoom = int(self.zoom_combo.currentText())
 			# zoom = min(32, max(10, int(self.map_canvas.ax.get_xlim()[1] - self.map_canvas.ax.get_xlim()[0]) // 10000))
-			ctx.add_basemap(self.map_canvas.ax, crs="EPSG:3857", source=ctx.providers.OpenStreetMap.Mapnik, zoom=zoom)
+			ctx.add_basemap(self.map_canvas.ax, crs="EPSG:3857", zoom=zoom)  # type: ignore[arg-type]
 			# ctx.add_basemap(self.map_canvas.ax, crs="EPSG:3857", source=ctx.providers.OpenStreetMap.Mapnik, zoom=16)
 		self.map_canvas.ax.set_title("Trip Map")
 		self.map_canvas.ax.set_xlabel("Longitude")
@@ -249,34 +250,34 @@ class PandasModel(QAbstractTableModel):
 		super().__init__()
 		self._data = data
 
-	def sort(self, column, order):
+	def sort(self, column: int, order: Qt.SortOrder = Qt.SortOrder.AscendingOrder) -> None:
 		colname = self._data.columns[column]
 		self.layoutAboutToBeChanged.emit()
-		self._data.sort_values(by=colname, ascending=(order == Qt.AscendingOrder), inplace=True)
+		self._data.sort_values(by=colname, ascending=(order == Qt.SortOrder.AscendingOrder), inplace=True)
 		self._data.reset_index(inplace=True)
-		self._data.set_index('fileid', inplace=True)
+		self._data.set_index(self._data.columns[0], inplace=True)
 		self.layoutChanged.emit()
 
 	def old_sort(self, column, order):
 		colname = self._data.columns[column]
 		self.layoutAboutToBeChanged.emit()
-		self._data.sort_values(by=colname, ascending=(order == Qt.AscendingOrder), inplace=True, ignore_index=True)
+		self._data.sort_values(by=colname, ascending=(order == Qt.SortOrder.AscendingOrder), inplace=True, ignore_index=True)
 		self.layoutChanged.emit()
 
-	def rowCount(self, parent=QModelIndex()):
+	def rowCount(self, parent: QModelIndex | QPersistentModelIndex = QModelIndex()) -> int:
 		return self._data.shape[0]
 
-	def columnCount(self, parent=QModelIndex()):
+	def columnCount(self, parent: QModelIndex | QPersistentModelIndex = QModelIndex()) -> int:
 		return self._data.shape[1]
 
-	def data(self, index, role=Qt.DisplayRole):
-		if role == Qt.DisplayRole:
+	def data(self, index: QModelIndex | QPersistentModelIndex, role: int = Qt.ItemDataRole.DisplayRole) -> object:
+		if role == Qt.ItemDataRole.DisplayRole:
 			return str(self._data.iloc[index.row(), index.column()])
 		return None
 
-	def headerData(self, section, orientation, role=Qt.DisplayRole):
-		if role == Qt.DisplayRole:
-			if orientation == Qt.Horizontal:
+	def headerData(self, section: int, orientation: Qt.Orientation, role: int = Qt.ItemDataRole.DisplayRole) -> object:
+		if role == Qt.ItemDataRole.DisplayRole:
+			if orientation == Qt.Orientation.Horizontal:
 				return self._data.columns[section]
 			else:
 				return str(section)

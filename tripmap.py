@@ -31,7 +31,7 @@ def cli_main(args):
 			logger.debug(f'[{idx}/{len(trips)}] plotting {trip}')
 			pltfilename = f'tripmap-{trip:04d}-plotly.png'  # padding
 			# fileid = str(trips.iloc[0].values[0])
-			df = pd.DataFrame([k for k in session.query(Torqlogs.latitude, Torqlogs.longitude).filter(Torqlogs.fileid == trip).all()])
+			df = pd.DataFrame([k for k in session.query(Torqlogs.Latitude, Torqlogs.longitude).filter(Torqlogs.fileid == trip).all()])  # type: ignore
 			px = 1/plt.rcParams['figure.dpi']  # pixel in inches
 			fig,ax1 = plt.subplots(figsize=(800*px,600*px))
 			plt.axis('off')

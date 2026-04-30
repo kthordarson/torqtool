@@ -2,21 +2,34 @@
 import sys
 import pandas as pd
 import PySide6
+from typing import Any
 from loguru import logger
-from PySide6 import QtCore, QtSql, QtGui
+from PySide6 import QtCore, QtSql
 from PySide6.QtCharts import QChart, QChartView, QLineSeries, QScatterSeries
 from PySide6.QtCore import QAbstractTableModel, Qt, QObject, QEvent
 from PySide6.QtGui import QFont, QPen
-from PySide6.QtSql import QSqlQueryModel
-from PySide6.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QMainWindow
+from PySide6.QtCore import QModelIndex, QPersistentModelIndex
 import PySide6.QtCharts
 import numpy as np
 from sqlalchemy import text
-from datamodels import Torqlogs, TorqFile
-from ui_untitled import UiMainWindow
+from datamodels import Torqlogs, TorqFile, Speeds
+from ui_untitled import Ui_main_window
 from utils import get_engine_session
 from converter import get_args
+from numbers import Real
+
 # x = latitude y = longitude !
+
+def _to_float(value: object) -> float | None:
+    if isinstance(value, Real) and not isinstance(value, bool):
+        return float(value)
+    if isinstance(value, (str, bytes, bytearray, memoryview)):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+    return None
 
 class Mymodel(QAbstractTableModel):
 	pass
@@ -25,7 +38,7 @@ mymodel = Mymodel()
 
 class KeyPressFilter(QObject):
 	def event_filter(self, widget, event):
-		if event.type() == QEvent.KeyPress:
+		if event.type() == QEvent.Type.KeyPress:
 			text = event.text()
 			logger.debug(f'Key {text} {event=}')
 			if event.modifiers():
@@ -36,65 +49,65 @@ class KeyPressFilter(QObject):
 
 
 class TripplotModel(QtSql.QSqlQueryModel):
-	def __init__(self, fileid):
-		super().__init__()
-		self.fileid = fileid
-		self.setQuery(f'select latitude, longitude from torqlogs where fileid={self.fileid}')
-		self.setHeaderData(1, QtCore.Qt.Horizontal, "latitude")
-		self.setHeaderData(2, QtCore.Qt.Horizontal, "longitude")
+    def __init__(self, fileid):
+        super().__init__()
+        self.fileid = fileid
+        self.setQuery(f'select latitude, longitude from torqlogs where fileid={self.fileid}')
+        self.setHeaderData(1, QtCore.Qt.Orientation.Horizontal, "latitude")
+        self.setHeaderData(2, QtCore.Qt.Orientation.Horizontal, "longitude")
 
 
 class Torqfilemodel(QtSql.QSqlQueryModel):
-	def __init__(self):
-		super().__init__()
-		self.setQuery('select fileid,trip_start,sent_rows from torqfiles ')
-		self.setHeaderData(0, QtCore.Qt.Horizontal, "fileid")
-		self.setHeaderData(1, QtCore.Qt.Horizontal, "trip_start")
-		self.setHeaderData(2, QtCore.Qt.Horizontal, "entries")
+    def __init__(self):
+        super().__init__()
+        self.setQuery('select fileid,trip_start,sent_rows from torqfiles ')
+        self.setHeaderData(0, QtCore.Qt.Orientation.Horizontal, "fileid")
+        self.setHeaderData(1, QtCore.Qt.Orientation.Horizontal, "trip_start")
+        self.setHeaderData(2, QtCore.Qt.Orientation.Horizontal, "entries")
 
 class CustomSqlModel(QtSql.QSqlQueryModel):
-	def data(self, index, role):
-		value = super(CustomSqlModel, self).data(index, role)
-		if value is not None and role == QtCore.Qt.DisplayRole:
+	def __init__(self) -> None:
+		super().__init__()
+		self.base_query = ""
+		self.sort_columns: list[str] = []
+
+	def data(
+		self,
+		index: QModelIndex | QPersistentModelIndex,
+		role: int = QtCore.Qt.ItemDataRole.DisplayRole,
+	) -> Any:
+		value = super().data(index, role)
+
+		if value is not None and role == QtCore.Qt.ItemDataRole.DisplayRole:
 			if index.column() == 0:
-				return '#%d' % value
-			elif index.column() == 2:
-				return value  # .upper()
-		if role == QtCore.Qt.ForegroundRole and index.column() == 1:
-			return QtGui.QColor(QtCore.Qt.blue)
+				return f"{value}"
+			if index.column() == 2:
+				pass
+
 		return value
+
+	def sort(
+		self,
+		column: int,
+		order: QtCore.Qt.SortOrder = QtCore.Qt.SortOrder.AscendingOrder,
+	) -> None:
+		if not self.base_query or column < 0 or column >= len(self.sort_columns):
+			return
+
+		direction = "ASC" if order == QtCore.Qt.SortOrder.AscendingOrder else "DESC"
+		sort_column = self.sort_columns[column]
+		self.setQuery(f"{self.base_query} ORDER BY {sort_column} {direction}")
 
 
 class MainApp(QMainWindow):
-	def __init__(self, args=None, dbconn=None, parent=None):
+	def __init__(self, args, dbconn=None, parent=None):
 		super(MainApp, self).__init__(parent=parent)
-		self.ui = UiMainWindow()
-		self.ui.setup_ui(self)
-
-		# Ensure we have proper layouts for charts
-		if not hasattr(self.ui, 'main_layout'):
-			self.ui.main_layout = QVBoxLayout()
-			self.ui.centralwidget.setLayout(self.ui.main_layout)
-
-		# Layout for trip map
-		self.ui.trip_chart_widget = QWidget()
-		self.ui.trip_chart_layout = QVBoxLayout()
-		self.ui.trip_chart_widget.setLayout(self.ui.trip_chart_layout)
-
-		if not hasattr(self.ui, 'entrieslayout'):
-			self.ui.entrieslayout = QVBoxLayout()
-			# Create a widget for this layout
-			entries_widget = QWidget()
-			entries_widget.setLayout(self.ui.entrieslayout)
-			self.ui.main_layout.addWidget(entries_widget)
-
-			# Add widgets to main layout in the order you want them displayed
-			self.ui.main_layout.addWidget(self.ui.trip_chart_widget)  # Trip chart at top
-			self.ui.main_layout.addWidget(entries_widget)            # Entries chart below
+		self.ui = Ui_main_window()
+		self.ui.setupUi(self)
 
 		self.con = dbconn
 		self.args = args
-		engine, session = get_engine_session(self.args)
+		session = get_engine_session(self.args)
 		self.session = session
 
 		# Add debug output to check data
@@ -121,12 +134,16 @@ class MainApp(QMainWindow):
 		self.close()
 
 	def populate_torqfiles(self):
-		self.filemodel = QSqlQueryModel()
-		self.filemodel.setQuery('select fileid,trip_start, sent_rows from torqfiles ')
-		self.filemodel.setHeaderData(0, QtCore.Qt.Horizontal, "fileid")
-		self.filemodel.setHeaderData(1, QtCore.Qt.Horizontal, "trip_start")
-		self.filemodel.setHeaderData(2, QtCore.Qt.Horizontal, "entries")
+		self.filemodel = CustomSqlModel()
+		self.filemodel.base_query = 'select fileid,trip_start, sent_rows from torqfiles'
+		self.filemodel.sort_columns = ["fileid", "trip_start", "sent_rows"]
+		self.filemodel.setQuery(self.filemodel.base_query)
+		self.filemodel.setHeaderData(0, Qt.Orientation.Horizontal, "fileid")
+		self.filemodel.setHeaderData(1, Qt.Orientation.Horizontal, "trip_start")
+		self.filemodel.setHeaderData(2, Qt.Orientation.Horizontal, "entries")
 		self.ui.tableView.setModel(self.filemodel)
+		self.ui.tableView.setSortingEnabled(True)
+		self.ui.tableView.sortByColumn(0, Qt.SortOrder.AscendingOrder)
 		self.ui.tableView.resizeColumnsToContents()
 
 	def doubleclicked_table(self):
@@ -138,11 +155,26 @@ class MainApp(QMainWindow):
 		logger.debug(f"Double clicked on file ID: {fileid}")
 
 		# Fetch data and ensure it's clean
-		lat_lon_data = self.session.query(Torqlogs.latitude, Torqlogs.longitude).filter(Torqlogs.fileid == fileid).all()
+		try:
+			lat_lon_data = self.session.query(Torqlogs.latitude, Torqlogs.longitude).filter(Torqlogs.fileid == fileid).all()
+		except Exception as e:
+			logger.error(f"Error fetching lat/lon data: {e} {type(e)}")
+			return
 		lat_lon_df = pd.DataFrame(lat_lon_data).fillna(0)
-
-		speed_data = self.session.query(Torqlogs.id, Torqlogs.speedgpskmh, Torqlogs.gpsspeedkmh, Torqlogs.speedobdkmh).filter(Torqlogs.fileid == fileid).all()
-		speed_df = pd.DataFrame(speed_data).fillna(0)
+		try:
+			speed_data = self.session.query(
+				Speeds.index,
+				Speeds.speedgpskmh,
+				Speeds.gpsspeedkmh,
+				Speeds.speedobdkmh,
+			).filter(Speeds.fileid == fileid).all()
+		except Exception as e:
+			logger.error(f"Error fetching speed data: {e} {type(e)}")
+			return
+		speed_df = pd.DataFrame(
+			speed_data,
+			columns=["id", "speedgpskmh", "gpsspeedkmh", "speedobdkmh"],
+		).fillna(0)
 
 		# Create chart series
 		latlonscatter = QScatterSeries()
@@ -152,9 +184,9 @@ class MainApp(QMainWindow):
 
 		# Set up pens for different series
 		pens = {
-			'blue': QPen(Qt.blue),
-			'green': QPen(Qt.green),
-			'red': QPen(Qt.red)
+			'blue': QPen(Qt.GlobalColor.blue),
+			'green': QPen(Qt.GlobalColor.green),
+			'red': QPen(Qt.GlobalColor.red)
 		}
 		for pen in pens.values():
 			pen.setWidth(1)
@@ -165,20 +197,31 @@ class MainApp(QMainWindow):
 
 		# Add lat/lon data points
 		for row in lat_lon_df.itertuples():
-			if pd.notna(row.latitude) and pd.notna(row.longitude):
-				latlonscatter.append(float(row.latitude), float(row.longitude))
+			lat = _to_float(row.latitude)
+			lon = _to_float(row.longitude)
+			if lat is not None and lon is not None:
+				latlonscatter.append(lat, lon)
 
 		# Add speed data points
 		for row in speed_df.itertuples():
-			if pd.notna(row.id) and pd.notna(row.speedgpskmh):
-				speedgpskmh.append(float(row.id), float(row.speedgpskmh))
-			if pd.notna(row.id) and pd.notna(row.gpsspeedkmh):
-				gpsspeedkmh.append(float(row.id), float(row.gpsspeedkmh))
-			if pd.notna(row.id) and pd.notna(row.speedobdkmh):
-				speedobdkmh.append(float(row.id), float(row.speedobdkmh))
+			x = _to_float(row.id)
+			s1 = _to_float(row.speedgpskmh)
+			s2 = _to_float(row.gpsspeedkmh)
+			s3 = _to_float(row.speedobdkmh)
+
+			if x is not None and s1 is not None:
+				speedgpskmh.append(x, s1)
+			if x is not None and s2 is not None:
+				gpsspeedkmh.append(x, s2)
+			if x is not None and s3 is not None:
+				speedobdkmh.append(x, s3)
 
 		# Create and configure trip chart (lat/lon)
+		if latlonscatter.count() == 0:
+			logger.warning(f"No valid lat/lon data points for file ID {fileid}")
+			return
 		if latlonscatter.count() > 0:
+			logger.debug(f"Creating trip chart with {latlonscatter.count()} lat/lon points for file ID {fileid}")
 			# Create new chart
 			trip_chart = QChart()
 			trip_chart.addSeries(latlonscatter)
@@ -212,8 +255,8 @@ class MainApp(QMainWindow):
 				axis_lon.setTitleText("Longitude")
 
 				# Add axes to chart
-				trip_chart.addAxis(axis_lat, Qt.AlignBottom)
-				trip_chart.addAxis(axis_lon, Qt.AlignLeft)
+				trip_chart.addAxis(axis_lat, Qt.AlignmentFlag.AlignBottom)
+				trip_chart.addAxis(axis_lon, Qt.AlignmentFlag.AlignLeft)
 
 				# Attach series to axes
 				latlonscatter.attachAxis(axis_lat)
@@ -229,23 +272,26 @@ class MainApp(QMainWindow):
 				# Clear previous layout content
 				while self.ui.main_layout.count() > 0:
 					item = self.ui.main_layout.takeAt(0)
-					if item.widget():
-						item.widget().deleteLater()
+					if item is None:
+						continue
+
+					w = item.widget()
+					if w is not None:
+						w.deleteLater()
 
 				# Add chart view to layout
 				# self.ui.main_layout.addWidget(self.trip_plot_view)
-				self.ui.trip_chart_layout.addWidget(self.trip_plot_view)
+				# self.ui.trip_chart_layout.addWidget(self.trip_plot_view)
+				self.ui.main_layout.addWidget(self.trip_plot_view)
 				logger.info(f"Created trip map chart for file ID {fileid}")
 			else:
 				logger.warning(f"Invalid lat/lon ranges for file ID {fileid}")
-		else:
-			logger.warning(f"No valid lat/lon data points for file ID {fileid}")
 
 	def create_start_stops_plot(self):
 		# self.startstopmodel = QSqlQueryModel()
 		# x = latitude y = longitude !
 
-		data = np.array(session.execute(text('select latstart, lonstart from startpos')).all())
+		data = np.array(self.session.execute(text('select latstart, lonstart from startpos')).all())
 		scatter = QScatterSeries()
 		[scatter.append(k[0],k[1]) for k in data]
 		[scatter.append(k[2],k[3]) for k in data]
@@ -269,27 +315,35 @@ class MainApp(QMainWindow):
 		# self.ui.tableView.resizeColumnsToContents()
 
 	def create_speed_plot(self):
-		# Fetch data and ensure numeric columns are filled with zeros for NaN values
-		data = pd.DataFrame(session.execute(text('select * from speeds')).all())
-		data = data.fillna(0)  # Fill NaN values with zeros
-
+		speed_rows = self.session.query(
+			Speeds.fileid,
+			Speeds.gpsspeedkmh,
+			Speeds.speedgpskmh,
+			Speeds.speedobdkmh,
+			Speeds.gpstime,
+		).all()
+		data = pd.DataFrame(
+			speed_rows,
+			columns=["fileid", "gpsspeedkmh", "speedgpskmh", "speedobdkmh", "gpstime"],
+		).fillna(0)
+		logger.debug(f"Fetched {len(data)} speed records for speed plot. speed_rows: {len(speed_rows)}")
 		scatter = QScatterSeries()
 
-		# Check for valid data before plotting
 		for k in data.itertuples():
-			# Only add points with valid data
-			if pd.notna(k.fileid) and pd.notna(k.gpsspeedkmh):
-				scatter.append(float(k.fileid), float(k.gpsspeedkmh))
+			fileid = _to_float(getattr(k, "fileid", None))
+			gpsspeed = _to_float(getattr(k, "gpsspeedkmh", None))  # fixed name (no backtick)
 
-			# Handle timestamp conversion separately
-			if pd.notna(k.gpstime):
+			if fileid is not None and gpsspeed is not None:
+				scatter.append(fileid, gpsspeed)
+
+			gpstime_val = getattr(k, "gpstime", None)
+			if pd.notna(gpstime_val):
 				try:
-					kgpstime_ = str(k.gpstime)
-					kgpstime = QtCore.QDateTime.fromString(kgpstime_).toMSecsSinceEpoch()
-					if kgpstime > 0 and pd.notna(k.gpsspeedkmh):  # Ensure valid timestamp and speed
-						scatter.append(float(kgpstime), float(k.gpsspeedkmh))
-				except (TypeError, ValueError) as e:
-					logger.warning(f'Time conversion error: {e} for {k.gpstime}')
+					ms = QtCore.QDateTime.fromString(str(gpstime_val)).toMSecsSinceEpoch()
+					if ms > 0 and gpsspeed is not None:
+						scatter.append(float(ms), gpsspeed)
+				except (TypeError, ValueError):
+					pass
 
 		# Only create chart if we have valid data points
 		if scatter.count() > 0:
@@ -318,8 +372,8 @@ class MainApp(QMainWindow):
 				axis_y.setRange(0, max_y * 1.1)  # Assuming speed is always positive
 				axis_y.setLabelFormat("%d")
 
-				self.speed_plot.addAxis(axis_x, Qt.AlignBottom)
-				self.speed_plot.addAxis(axis_y, Qt.AlignLeft)
+				self.speed_plot.addAxis(axis_x, Qt.AlignmentFlag.AlignBottom)
+				self.speed_plot.addAxis(axis_y, Qt.AlignmentFlag.AlignLeft)
 				scatter.attachAxis(axis_x)
 				scatter.attachAxis(axis_y)
 
@@ -387,8 +441,8 @@ class MainApp(QMainWindow):
 			# Create chart and view
 			self.entries_chart = QChart()
 			self.entries_chart.addSeries(self.fileentries_series)
-			self.entries_chart.addAxis(axis_x, Qt.AlignBottom)
-			self.entries_chart.addAxis(axis_y, Qt.AlignLeft)
+			self.entries_chart.addAxis(axis_x, Qt.AlignmentFlag.AlignBottom)
+			self.entries_chart.addAxis(axis_y, Qt.AlignmentFlag.AlignLeft)
 
 			# Attach series to axes
 			self.fileentries_series.attachAxis(axis_x)
@@ -407,6 +461,7 @@ class MainApp(QMainWindow):
 			logger.warning("Invalid data range for entries plot")
 
 def create_connection(args):
+	con = None
 	if args.dbmode == 'sqlite':
 		con = QtSql.QSqlDatabase.addDatabase('QSQLITE')
 		con.setDatabaseName(args.dbfile)
@@ -422,7 +477,7 @@ def create_connection(args):
 		con.setHostName(args.dbhost)
 		con.setUserName(args.dbuser)
 		con.setPassword(args.dbpass)
-	if not con.open():
+	if con is None or not con.open():
 		# QMessageBox.critical(None, "Cannot open database",			con.lastError().text())
 		return False
 	return con
@@ -430,7 +485,7 @@ def create_connection(args):
 # df = pd.DataFrame([k.__dict__ for k in trips])
 if __name__ == '__main__':
 	args = get_args(appname='testgui')
-	engine, session = get_engine_session(args)
+	session = get_engine_session(args)
 	app = QApplication(sys.argv)
 	c = create_connection(args)
 	w = MainApp(args=args, dbconn=c)

@@ -32,20 +32,20 @@
    <widget class="QListView" name="listView">
     <property name="geometry">
      <rect>
-      <x>750</x>
-      <y>740</y>
+      <x>740</x>
+      <y>290</y>
       <width>341</width>
-      <height>61</height>
+      <height>161</height>
      </rect>
     </property>
    </widget>
    <widget class="QWidget" name="horizontalLayoutWidget">
     <property name="geometry">
      <rect>
-      <x>410</x>
-      <y>740</y>
-      <width>321</width>
-      <height>71</height>
+      <x>330</x>
+      <y>290</y>
+      <width>401</width>
+      <height>221</height>
      </rect>
     </property>
     <layout class="QHBoxLayout" name="main_layout"/>
@@ -90,7 +90,7 @@
      <x>0</x>
      <y>0</y>
      <width>1099</width>
-     <height>23</height>
+     <height>22</height>
     </rect>
    </property>
    <widget class="QMenu" name="menuFile">

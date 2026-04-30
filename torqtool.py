@@ -69,10 +69,10 @@ async def collect(async_iterable):
 
 async def main(args):
     # t0 = datetime.now()
-    engine = get_engine_session(args)
+    session = get_engine_session(args)
     if args.database_dropall:
         try:
-            database_dropall(engine)
+            database_dropall(session)
             sys.exit(0)
         except OperationalError as e:
             logger.error(f"[main] database_dropall {e}")
@@ -83,7 +83,7 @@ async def main(args):
     if args.dbinfo:
         # info = collect_info()
         tasks = [
-            asyncio.create_task(collect(collect_info(engine))),
+            asyncio.create_task(collect(collect_info(session.get_bind()))),
             # asyncio.create_task(collect(iterable())),
             # asyncio.create_task(collect(iterable()))
         ]
@@ -95,7 +95,7 @@ async def main(args):
         # logger.info(f'[main] {files=} {trips=} {logs=:,} {data=}')
         sys.exit(0)
     if args.create_trips:
-        sess = sessionmaker(bind=engine)
+        sess = sessionmaker(bind=session.get_bind())
         session = sess()
         # create trips data from database
         tf_ids = session.query(TorqFile.fileid).all()
@@ -103,7 +103,7 @@ async def main(args):
         for idx, tf in enumerate(tf_ids):
             # data = session.query(Torqlogs).filter(Torqlogs.fileid == tf.fileid).all()
             try:
-                data = pd.read_sql(session.query(Torqlogs).filter(Torqlogs.fileid == tf.fileid).statement, con=engine,)
+                data = pd.read_sql(session.query(Torqlogs).filter(Torqlogs.fileid == tf.fileid).statement, con=session.get_bind(),)
             except OperationalError as e:
                 logger.error(f"{idx} {e} {tf=}")
                 continue

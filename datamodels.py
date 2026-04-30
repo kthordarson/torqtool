@@ -141,10 +141,14 @@ class TorqFile(Base):
 	trip_distance = Column('trip_distance', Integer)
 	readtime = Column('readtime', Float)
 	sendtime = Column('sendtime', Float)
-	startlon = Column('startlon', Float)
-	startlat = Column('startlat', Float)
-	endlon = Column('endlon', Float)
-	endlat = Column('endlat', Float)
+	# startlon = Column('startlon', Float)
+	# startlat = Column('startlat', Float)
+	# endlon = Column('endlon', Float)
+	# endlat = Column('endlat', Float)
+	startlon: Mapped[float | None] = mapped_column(Float, nullable=True)
+	startlat: Mapped[float | None] = mapped_column(Float, nullable=True)
+	endlon: Mapped[float | None] = mapped_column(Float, nullable=True)
+	endlat: Mapped[float | None] = mapped_column(Float, nullable=True)
 	sent_rows = Column('sent_rows', Integer, default=0, unique=False)
 
 	def __init__(self, csvfile, csvhash):
@@ -168,7 +172,7 @@ class Torqtrips(Base):
 	time = Column('time', Integer)
 	triptime = Column('triptime', Integer)
 
-	def __init__(self, fileid=None, csvfile=None, csvhash=None, distance=None, fuelcost=None, fuelused=None, distancewhilstconnectedtoobd=None, tripdate=None, profile=None, triptime=None):
+	def __init__(self, fileid=0, csvfile=None, csvhash=None, distance=None, fuelcost=None, fuelused=None, distancewhilstconnectedtoobd=None, tripdate=None, profile=None, triptime=None):
 		self.fileid = fileid
 		self.csvfile = csvfile
 		self.csvhash = csvhash
@@ -188,6 +192,12 @@ class Torqlogs(Base):
 	__tablename__ = 'torqlogs'
 	id: Mapped[int] = mapped_column(primary_key=True)
 	fileid: Mapped[int] = mapped_column(ForeignKey('torqfiles.fileid'))
+
+	# if DB column is "Longitude", map it to python attr "longitude"
+	longitude: Mapped[float | None] = mapped_column("Longitude", Float, nullable=True)
+	latitude: Mapped[float | None] = mapped_column("Latitude", Float, nullable=True)
+	speedgpskmh: Mapped[float | None] = mapped_column("speedgpskmh", Float, nullable=True)
+	gpsspeedkmh: Mapped[float | None] = mapped_column("gpsspeedkmh", Float, nullable=True)
 
 	def __init__(self, fileid):
 		self.fileid = fileid
@@ -210,7 +220,7 @@ async def send_torqfiles(filelist, session, debug=False):  # returns list of new
 	returns list of TorqFile objects to be processed and sent to db
 	"""
 	torqdbfiles = session.query(TorqFile).all()  # get list of files from db
-	hlist = pd.DataFrame(session.query(TorqFile.csvhash).all())
+	hlist = pd.DataFrame(session.query(TorqFile.csvhash).all())  # type: ignore
 	if debug:
 		logger.debug(f'filelist: {len(filelist)} dbfiles: {len(torqdbfiles)}  hashes: {len(hlist)} fl: {len(filelist)}')
 	newfiles = []

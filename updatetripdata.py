@@ -13,7 +13,7 @@ from datamodels import TorqFile, Startpos, Endpos
 
 def collect_db_filestats(args, todatabase=True, droptable=True):
 	# todo fix this is very slow
-	engine, session = get_engine_session(args)
+	session = get_engine_session(args)
 	# if droptable:
 	# 	session.execute(text("drop table if exists filestats"))
 	if args.dbmode == "sqlite":
@@ -58,25 +58,10 @@ def collect_db_filestats(args, todatabase=True, droptable=True):
 			results.append(result)
 		logger.info(f"[{fileidx}/{len(file_ids)}] {file.fileid} ")
 
-def send_db_filestats(args, todatabase=True, droptable=True, results=None):
-	file = None
-	engine, session = get_engine_session(args)
-	df = pd.DataFrame([k for k in results])
-	try:
-		if todatabase:
-			df.to_sql(con=engine, name="replace", if_exists="append", method='multi', chunksize=args.sqlchunksize)
-			logger.debug(f"Sent filestats for {file.fileid} to db...")
-		else:
-			# logger.debug(f'returning {len(df)} filestats ...')
-			return df
-	except Exception as e:
-		logger.error(f"{type(e)} {e} for\n{df=}\n {results=}\n")
-		return None
-
 def get_sp_updates(args, latstart, lonstart, gpsoffset=0.00004):
 	latoffset = 0.0000510 + gpsoffset
 	lonoffset = 0.0001221 + gpsoffset
-	engine, session = get_engine_session(args)
+	session = get_engine_session(args)
 	sp_updates = session.query(Startpos).filter(
 		Startpos.latstart >= latstart-latoffset).filter(
 		Startpos.latstart <= latstart+latoffset).filter(
@@ -88,7 +73,7 @@ def get_sp_updates(args, latstart, lonstart, gpsoffset=0.00004):
 def get_ep_updates(args, latend, lonend, gpsoffset=0.00004):
 	latoffset = 0.0000510 + gpsoffset
 	lonoffset = 0.0001221 + gpsoffset
-	engine, session = get_engine_session(args)
+	session = get_engine_session(args)
 	ep_updates = session.query(Endpos).filter(
 		Endpos.latend >= latend-latoffset).filter(
 		Endpos.latend <= latend+latoffset).filter(
@@ -112,24 +97,25 @@ def get_start_end_info(args, fileinfo, gpsoffset=0.00002):
 
 async def update_torqfile(args: argparse.Namespace, fileinfo: dict):
 	# todo fix this is very slow
-	engine, session = get_engine_session(args)
+	session = get_engine_session(args)
 	fileid = fileinfo.get("fileid", None)
 	torqfile = session.query(TorqFile).filter(TorqFile.fileid == fileid).first()
 	trip_start = convert_string_to_datetime(fileinfo["dtripstart"])  # datetime.fromisoformat(str(datemin.values[0][0]))
 	trip_end = convert_string_to_datetime(fileinfo["dtripend"])  # datetime.fromisoformat(str(datemax.values[0][0]))
 	trip_duration = (trip_end - trip_start).total_seconds()
-	torqfile.startlat = float(fileinfo["dlatstart"])
-	torqfile.startlon = float(fileinfo["dlonstart"])
-	torqfile.endlat = float(fileinfo["dlatend"])
-	torqfile.endlon = float(fileinfo["dlonend"])
-	torqfile.sent_rows = fileinfo["sent_rows"]  # total_rows_db
-	torqfile.sendtime = fileinfo.get("sendtime", None)
-	torqfile.readtime = fileinfo.get("readtime", None)
-	torqfile.trip_start = trip_start
-	torqfile.trip_end = trip_end
-	torqfile.trip_duration = trip_duration
+	if isinstance(torqfile, TorqFile):
+		torqfile.startlat = float(fileinfo["dlatstart"])
+		torqfile.startlon = float(fileinfo["dlonstart"])
+		torqfile.endlat = float(fileinfo["dlatend"])
+		torqfile.endlon = float(fileinfo["dlonend"])
+		torqfile.sent_rows = fileinfo["sent_rows"]  # total_rows_db
+		torqfile.sendtime = fileinfo.get("sendtime", None)
+		torqfile.readtime = fileinfo.get("readtime", None)
+		torqfile.trip_start = trip_start
+		torqfile.trip_end = trip_end
+		torqfile.trip_duration = trip_duration
 	session.close()
-	engine, session = get_engine_session(args)
+	session = get_engine_session(args)
 	sp_updates, ep_updates = get_start_end_info(args, fileinfo)
 	if len(sp_updates) == 1:
 		# found startpos

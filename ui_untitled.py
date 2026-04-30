@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 
 ################################################################################
-## Form generated from reading UI file 'untitledUXXJMt.ui'
+## Form generated from reading UI file 'untitled.ui'
 ##
-## Created by: Qt User Interface Compiler version 6.7.1
+## Created by: Qt User Interface Compiler version 6.11.0
 ##
 ## WARNING! All changes made in this file will be lost when recompiling UI file!
 ################################################################################
@@ -20,8 +20,8 @@ from PySide6.QtWidgets import (QApplication, QHBoxLayout, QHeaderView, QListView
     QMainWindow, QMenu, QMenuBar, QSizePolicy,
     QStatusBar, QTableView, QWidget)
 
-class UiMainWindow(object):
-    def setup_ui(self, main_window):
+class Ui_main_window(object):
+    def setupUi(self, main_window):
         if not main_window.objectName():
             main_window.setObjectName(u"main_window")
         main_window.resize(1099, 859)
@@ -41,10 +41,10 @@ class UiMainWindow(object):
         self.tableView.setFont(font)
         self.listView = QListView(self.centralwidget)
         self.listView.setObjectName(u"listView")
-        self.listView.setGeometry(QRect(750, 740, 341, 61))
+        self.listView.setGeometry(QRect(740, 290, 341, 161))
         self.horizontalLayoutWidget = QWidget(self.centralwidget)
         self.horizontalLayoutWidget.setObjectName(u"horizontalLayoutWidget")
-        self.horizontalLayoutWidget.setGeometry(QRect(410, 740, 321, 71))
+        self.horizontalLayoutWidget.setGeometry(QRect(330, 290, 401, 221))
         self.main_layout = QHBoxLayout(self.horizontalLayoutWidget)
         self.main_layout.setObjectName(u"main_layout")
         self.main_layout.setContentsMargins(0, 0, 0, 0)
@@ -69,7 +69,7 @@ class UiMainWindow(object):
         main_window.setCentralWidget(self.centralwidget)
         self.menubar = QMenuBar(main_window)
         self.menubar.setObjectName(u"menubar")
-        self.menubar.setGeometry(QRect(0, 0, 1099, 23))
+        self.menubar.setGeometry(QRect(0, 0, 1099, 22))
         self.menuFile = QMenu(self.menubar)
         self.menuFile.setObjectName(u"menuFile")
         self.menuView = QMenu(self.menubar)
@@ -88,23 +88,24 @@ class UiMainWindow(object):
         self.menuFile.addAction(self.actionExit)
         self.menuView.addAction(self.actionOptions)
 
-        self.retranslate_ui(main_window)
+        self.retranslateUi(main_window)
 
         QMetaObject.connectSlotsByName(main_window)
-    # setup_ui
+    # setupUi
 
-    def retranslate_ui(self, main_window):
+    def retranslateUi(self, main_window):
         main_window.setWindowTitle(QCoreApplication.translate("main_window", u"main_window", None))
         self.actionOpen_db.setText(QCoreApplication.translate("main_window", u"&Open db", None))
-# if QT_CONFIG(shortcut)
+#if QT_CONFIG(shortcut)
         self.actionOpen_db.setShortcut(QCoreApplication.translate("main_window", u"Ctrl+O", None))
-# endif // QT_CONFIG(shortcut)
+#endif // QT_CONFIG(shortcut)
         self.actionExit.setText(QCoreApplication.translate("main_window", u"E&xit", None))
-# if QT_CONFIG(shortcut)
+#if QT_CONFIG(shortcut)
         self.actionExit.setShortcut(QCoreApplication.translate("main_window", u"Ctrl+Q", None))
-# endif // QT_CONFIG(shortcut)
+#endif // QT_CONFIG(shortcut)
         self.actionOptions.setText(QCoreApplication.translate("main_window", u"&Options", None))
         self.menuFile.setTitle(QCoreApplication.translate("main_window", u"&File", None))
         self.menuView.setTitle(QCoreApplication.translate("main_window", u"&View", None))
         self.menuAbout.setTitle(QCoreApplication.translate("main_window", u"&About", None))
-    # retranslate_ui
+    # retranslateUi
+

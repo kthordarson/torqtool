@@ -7,7 +7,6 @@ from pathlib import Path
 import pandas as pd
 import polars as pl
 from loguru import logger
-import sqlalchemy
 from sqlalchemy import text
 from sqlalchemy.exc import DataError, IntegrityError, OperationalError
 from sqlalchemy.orm import sessionmaker, Session
@@ -199,7 +198,7 @@ async def cli_main(args):
 		logcount = 0
 		try:
 			session = get_engine_session(args)  # , session
-			with session.get_bind().connect() as conn:
+			with session.get_bind().connect() as conn:  # type: ignore
 				logcount = conn.execute(text("select count(*) from torqlogs")).all()
 		except Exception as e:
 			logger.error(f'error {type(e)} {e}')
