@@ -1,4 +1,5 @@
 #!/usr/bin/python3
+from loguru import logger
 import contextily as ctx
 import geopandas as gpd
 from shapely.geometry import Point
@@ -47,6 +48,7 @@ class MapCanvas(FigureCanvas):
 		fig, self.ax = plt.subplots(figsize=(8, 6))
 		super().__init__(fig)
 		self.setParent(parent)
+		logger.debug("MapCanvas initialized")
 
 	def plot_trip(self, df):
 		self.ax.clear()
@@ -58,7 +60,7 @@ class MapCanvas(FigureCanvas):
 		else:
 			self.ax.set_title("No GPS data")
 		self.draw()
-
+		logger.debug(f"Trip plotted on map with {len(df)} points")
 
 class BasemapWorker(QObject):
 	finished = Signal(object, object, int)
@@ -69,6 +71,7 @@ class BasemapWorker(QObject):
 		self.bounds = bounds
 		self.zoom = zoom
 		self.request_id = request_id
+		logger.debug(f"BasemapWorker initialized with bounds={bounds}, zoom={zoom}, request_id={request_id}")
 
 	def run(self):
 		try:
@@ -81,6 +84,7 @@ class BasemapWorker(QObject):
 				zoom=cast(Any, self.zoom),
 			)
 			self.finished.emit(img, ext, self.request_id)
+			logger.debug(f"BasemapWorker finished fetching basemap for request_id={self.request_id}")
 		except Exception as e:
 			self.error.emit(f'{e} {type(e)}', self.request_id)
 
@@ -127,7 +131,7 @@ class MainWindow(QMainWindow):
 		splitter = QSplitter(Qt.Orientation.Horizontal)
 		self.table = QTableView()
 		self.map_canvas = MapCanvas()
-
+		logger.debug(f"Resolved torqlogs columns: {self._resolved_torqlogs_columns}")
 		zoom_layout = QHBoxLayout()
 		zoom_label = QLabel("Zoom:")
 		self.zoom_combo = QComboBox()
@@ -220,6 +224,7 @@ class MainWindow(QMainWindow):
 		self._set_table_model(empty_df)
 		QTimer.singleShot(0, self._load_initial_trips)
 		QTimer.singleShot(0, self._populate_metric_columns)
+		logger.debug("MainWindow initialized and UI set up")
 
 		# self.table_model = PandasModel(self.df_files)
 		# self.table.setModel(self.table_model)
@@ -228,6 +233,9 @@ class MainWindow(QMainWindow):
 		# self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
 		# self.table.selectionModel().selectionChanged.connect(self.on_row_selected)
 
+	def __repr__(self):
+		return f"<MainWindow with {len(self.df_trips)} trips loaded>"
+	
 	def on_colormap_changed(self, colormap_name):
 		"""Called when user changes the colormap selection"""
 		# Debounce to avoid repeated heavy redraws on rapid UI changes.
@@ -253,16 +261,19 @@ class MainWindow(QMainWindow):
 		self.table.setModel(self.table_model)
 		self.table.setSortingEnabled(True)
 		self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+		# Avoid expensive accidental multi-row plotting from range/extended selection.
+		self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
 		self.table.selectionModel().selectionChanged.connect(self.on_row_selected)
 		self.table.horizontalHeader().setStretchLastSection(True)
+		logger.debug(f"Table model set with {len(df)} rows and {len(df.columns)} columns")
 
 	def _load_initial_trips(self):
 		try:
 			df_trips = pd.read_sql("SELECT id,fileid,trip_distance,tripdate,time FROM torqtrips", self.engine)
 		except Exception as e:
-			print(f"Failed to load torqtrips: {e} ({type(e)})")
+			logger.error(f"Failed to load torqtrips: {e} ({type(e)})")
 			return
-
+		logger.debug(f"Loaded {len(df_trips)} trips from database")
 		df_trips['tripdate'] = pd.to_datetime(df_trips['tripdate'], errors='coerce')
 		df_trips['tripdate'] = df_trips['tripdate'].dt.strftime('%Y-%m-%d %H:%M')
 		df_trips['time'] = df_trips['time'].apply(format_duration)
@@ -284,6 +295,7 @@ class MainWindow(QMainWindow):
 		else:
 			self.metric_combo.setCurrentText(metric_columns[0])
 		self.metric_combo.blockSignals(False)
+		logger.debug(f"Populated metric columns: {len(metric_columns)}")
 
 	def _resolve_actual_torqlogs_column(self, requested_column: str) -> str | None:
 		return self._torqlogs_norm_to_actual.get(_normalize_col_name(requested_column))
@@ -325,6 +337,7 @@ class MainWindow(QMainWindow):
 		# Get currently selected rows and replot
 		rows = sorted(set(index.row() for index in self.table.selectionModel().selectedRows()))
 		if rows:
+			logger.debug(f"refresh_plot triggered with {len(rows)} selected row(s): {rows[:5]}{'...' if len(rows) > 5 else ''}")
 			self._plot_for_rows(rows)
 
 	def _get_selected_fileids(self, rows):
@@ -367,6 +380,7 @@ class MainWindow(QMainWindow):
 			"speed": speed_series.tolist(),
 		}
 		self._trip_plot_cache[cache_key] = payload
+		logger.debug(f"Loaded trip plot data for fileid={fileid}, metric_name={metric_name}, points={len(payload['x'])}")
 		return payload
 
 	def _selection_key(self, fileids: list[int], metric_name: str) -> str:
@@ -399,7 +413,12 @@ class MainWindow(QMainWindow):
 		selection_key = self._selection_key(fileids, metric_name)
 		fileid = self._cache_fileid(fileids)
 		buf = io.BytesIO()
-		self.map_canvas.figure.savefig(buf, format='png', dpi=100, bbox_inches='tight')
+		# Cache only the basemap raster; scatter/labels are redrawn dynamically.
+		self.map_canvas.ax.figure.canvas.draw_idle()
+		img_artists = self.map_canvas.ax.images
+		if not img_artists:
+			return
+		mpimg.imsave(buf, img_artists[0].get_array(), format='png')
 		image_bytes = buf.getvalue()
 		upsert_sql = text(
 			"""
@@ -420,6 +439,7 @@ class MainWindow(QMainWindow):
 				"colormap": colormap,
 				"image_png": image_bytes,
 			})
+		logger.debug(f"Saved cached map image for selection_key={selection_key}, zoom={zoom}, colormap={colormap}")
 
 	def _plot_for_rows(self, rows):
 		fileids = self._get_selected_fileids(rows)
@@ -430,20 +450,12 @@ class MainWindow(QMainWindow):
 		colormap_name = self.colormap_combo.currentText()
 		selected_metric = self.metric_combo.currentText()
 		cached_img = self._load_cached_map_image(fileids, zoom, colormap_name, selected_metric)
-		if cached_img:
-			self.map_canvas.ax.clear()
-			img = mpimg.imread(io.BytesIO(cached_img), format='png')
-			self.map_canvas.ax.imshow(img)
-			self.map_canvas.ax.set_title("Trip Map (cached)")
-			self.map_canvas.ax.set_xlabel("Longitude")
-			self.map_canvas.ax.set_ylabel("Latitude")
-			self.map_canvas.draw_idle()
-			return
 
 		self.map_canvas.ax.clear()
 
 		# Get selected colormap
 		cmap = plt.colormaps[colormap_name]
+		logger.debug(f"Using colormap: {colormap_name}")
 
 		# Calculate colormap cycle length based on colormap type
 		if colormap_name in ['tab10']:
@@ -482,7 +494,13 @@ class MainWindow(QMainWindow):
 			sc = self.map_canvas.ax.scatter(x_vals, y_vals, s=sizes, c=colors, label=f"fileid {fileid}", zorder=2)
 			plots.append(sc)
 
-		if plots:
+		logger.debug(f"Plotted {len(plots)} trips on map for fileids: {fileids}")
+		if plots and cached_img:
+			img = mpimg.imread(io.BytesIO(cached_img), format='png')
+			xmin, xmax = self.map_canvas.ax.get_xlim()
+			ymin, ymax = self.map_canvas.ax.get_ylim()
+			self.map_canvas.ax.imshow(img, extent=(xmin, xmax, ymin, ymax), interpolation='bilinear', zorder=0)
+		elif plots:
 			self._start_async_basemap(zoom, fileids, colormap_name, selected_metric)
 		self.map_canvas.ax.set_title(f"Trip Map - {selected_metric}")
 		self.map_canvas.ax.set_xlabel("Longitude")
@@ -518,6 +536,7 @@ class MainWindow(QMainWindow):
 
 		self._basemap_worker = worker
 		self._basemap_thread = thread
+		logger.debug(f"Starting basemap worker thread for request_id={request_id} with bounds=({xmin}, {ymin}, {xmax}, {ymax}) and zoom={zoom}")
 		thread.start()
 
 	def _on_basemap_loaded(self, img, ext, request_id: int):
@@ -545,6 +564,7 @@ class MainWindow(QMainWindow):
 	def on_row_selected(self, selected, deselected):
 		rows = sorted(set(index.row() for index in self.table.selectionModel().selectedRows()))
 		if rows:
+			logger.debug(f"on_row_selected with {len(rows)} selected row(s): {rows[:5]}{'...' if len(rows) > 5 else ''}")
 			self._plot_for_rows(rows)
 
 class PandasModel(QAbstractTableModel):
@@ -552,6 +572,7 @@ class PandasModel(QAbstractTableModel):
 	def __init__(self, data):
 		super().__init__()
 		self._data = data
+		logger.debug(f"PandasModel initialized with {self._data.shape[0]} rows and {self._data.shape[1]} columns")
 
 	def sort(self, column: int, order: Qt.SortOrder = Qt.SortOrder.AscendingOrder) -> None:
 		colname = self._data.columns[column]
@@ -583,6 +604,7 @@ class PandasModel(QAbstractTableModel):
 if __name__ == "__main__":
 	app = QApplication(sys.argv)
 	window = MainWindow()
+	logger.debug(f"Starting application event loop window: {window}")
 	window.showMaximized()
 	# window.resize(1000, 600)
 	# window.show()
