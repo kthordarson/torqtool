@@ -409,10 +409,6 @@ def main(args):
 	elif args.db_columnstats:
 		return collect_db_columnstats(args)
 	elif args.db_startends:
-		# s = collect_db_start_pos(args)
-		# logger.debug("all stats startpos done")
-		# e = collect_db_end_pos(args)
-		# logger.debug("all stats endpos done")
 		return collect_db_startends(args)
 	elif args.db_speed:
 		return collect_db_speeds(args)
