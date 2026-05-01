@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QAbstractItemView
 from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex, QPersistentModelIndex, QTimer, QObject, Signal, QThread
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, text, inspect
 from sqlalchemy.orm import sessionmaker
 import matplotlib
 matplotlib.use("QtAgg")
@@ -32,9 +32,8 @@ def _normalize_col_name(value: str) -> str:
 
 
 def _resolve_torqlogs_columns(engine, requested_columns: list[str]) -> dict[str, str]:
-	with engine.connect() as conn:
-		rows = conn.execute(text("PRAGMA table_info(torqlogs)")).all()
-	actual_columns = [row[1] for row in rows]
+	inspector = inspect(engine)
+	actual_columns = [str(col["name"]) for col in inspector.get_columns("torqlogs")]
 	normalized_actual = {_normalize_col_name(col): col for col in actual_columns}
 	resolved: dict[str, str] = {}
 	for requested in requested_columns:
@@ -108,10 +107,11 @@ class MainWindow(QMainWindow):
 		self.engine = create_engine(DB_PATH)
 		database_init(self.engine)
 		self._torqlogs_norm_to_actual = self._build_torqlogs_column_map()
-		self._resolved_torqlogs_columns = _resolve_torqlogs_columns(
-			self.engine,
-			['latitude', 'longitude', 'speedobdkmh']
-		)
+		self._resolved_torqlogs_columns = {
+			name: actual
+			for name in ['latitude', 'longitude', 'speedobdkmh']
+			if (actual := self._resolve_actual_torqlogs_column(name)) is not None
+		}
 		self._trip_plot_cache: dict[tuple[int, str], dict[str, list[float]]] = {}
 		self._plot_refresh_timer = QTimer(self)
 		self._plot_refresh_timer.setSingleShot(True)
@@ -161,12 +161,12 @@ class MainWindow(QMainWindow):
 		self.colormap_combo.setCurrentText('Set1')  # Set default
 		self.colormap_combo.currentTextChanged.connect(self.on_colormap_changed)
 
-		metric_columns = self._get_metric_columns_with_valid_data()
-		if not metric_columns:
-			metric_columns = ['speedobdkmh'] if 'speedobdkmh' in dataschema else []
+		metric_columns = []
+		if self._resolve_actual_torqlogs_column('speedobdkmh'):
+			metric_columns = ['speedobdkmh']
 		self.metric_combo.addItems(metric_columns)
-		if 'speedobdkmh' in metric_columns:
-			self.metric_combo.setCurrentText('speedobdkmh')
+		if metric_columns:
+			self.metric_combo.setCurrentText(metric_columns[0])
 		self.metric_combo.currentTextChanged.connect(self.on_metric_changed)
 
 		# Adjust size and appearance of the combo box
@@ -214,30 +214,12 @@ class MainWindow(QMainWindow):
 		layout.addWidget(splitter)
 		self.setCentralWidget(container)
 
-		# Load TorqFiles into a pandas DataFrame
-		# self.df_files = pd.read_sql(self.session.query(TorqFile).statement, self.engine)
-		# self.df_files = pd.read_sql(self.session.query(TorqFile).statement, self.engine, parse_dates=False)
-		self.df_files = pd.read_sql("SELECT fileid,trip_start,trip_duration FROM torqfiles", self.engine)
-		self.df_files['trip_start'] = pd.to_datetime(self.df_files['trip_start'], errors='coerce')
-		self.df_files['trip_start'] = self.df_files['trip_start'].dt.strftime('%Y-%m-%d %H:%M')
-		self.df_files['trip_duration'] = self.df_files['trip_duration'].apply(format_duration)
-		self.df_files.set_index('fileid', inplace=True)
-
-		self.df_trips = pd.read_sql("SELECT id,fileid,trip_distance,tripdate,time FROM torqtrips", self.engine)
-		self.df_trips['tripdate'] = pd.to_datetime(self.df_trips['tripdate'], errors='coerce')
-		self.df_trips['tripdate'] = self.df_trips['tripdate'].dt.strftime('%Y-%m-%d %H:%M')
-		self.df_trips['time'] = self.df_trips['time'].apply(format_duration)
-		self.df_trips['trip_distance'] = self.df_trips['trip_distance'].apply(lambda x: f"{x/1000:.1f} km" if pd.notna(x) else "")
-		self.df_trips.set_index('id', inplace=True)
-
-		# self.table_model = PandasModel(self.df_files)
-		self.table_model = PandasModel(self.df_trips)
-		self.table.setModel(self.table_model)
-		self.table.setSortingEnabled(True)
-		self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-		self.table.selectionModel().selectionChanged.connect(self.on_row_selected)
-		self.table.horizontalHeader().setStretchLastSection(True)
-		self.table.resizeColumnsToContents()
+		# Render immediately, then hydrate data/metrics after first paint.
+		empty_df = pd.DataFrame(columns=['fileid', 'trip_distance', 'tripdate', 'time'])
+		empty_df.index.name = 'id'
+		self._set_table_model(empty_df)
+		QTimer.singleShot(0, self._load_initial_trips)
+		QTimer.singleShot(0, self._populate_metric_columns)
 
 		# self.table_model = PandasModel(self.df_files)
 		# self.table.setModel(self.table_model)
@@ -261,10 +243,47 @@ class MainWindow(QMainWindow):
 		self._plot_refresh_timer.start(200)
 
 	def _build_torqlogs_column_map(self) -> dict[str, str]:
-		with self.engine.connect() as conn:
-			rows = conn.execute(text("PRAGMA table_info(torqlogs)")).all()
-		actual_columns = [row[1] for row in rows]
+		inspector = inspect(self.engine)
+		actual_columns = [str(col["name"]) for col in inspector.get_columns("torqlogs")]
 		return {_normalize_col_name(col): col for col in actual_columns}
+
+	def _set_table_model(self, df: pd.DataFrame):
+		self.df_trips = df
+		self.table_model = PandasModel(self.df_trips)
+		self.table.setModel(self.table_model)
+		self.table.setSortingEnabled(True)
+		self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+		self.table.selectionModel().selectionChanged.connect(self.on_row_selected)
+		self.table.horizontalHeader().setStretchLastSection(True)
+
+	def _load_initial_trips(self):
+		try:
+			df_trips = pd.read_sql("SELECT id,fileid,trip_distance,tripdate,time FROM torqtrips", self.engine)
+		except Exception as e:
+			print(f"Failed to load torqtrips: {e} ({type(e)})")
+			return
+
+		df_trips['tripdate'] = pd.to_datetime(df_trips['tripdate'], errors='coerce')
+		df_trips['tripdate'] = df_trips['tripdate'].dt.strftime('%Y-%m-%d %H:%M')
+		df_trips['time'] = df_trips['time'].apply(format_duration)
+		df_trips['trip_distance'] = df_trips['trip_distance'].apply(lambda x: f"{x/1000:.1f} km" if pd.notna(x) else "")
+		df_trips.set_index('id', inplace=True)
+		self._set_table_model(df_trips)
+
+	def _populate_metric_columns(self):
+		metric_columns = self._get_metric_columns_with_valid_data()
+		if not metric_columns:
+			return
+
+		current = self.metric_combo.currentText()
+		self.metric_combo.blockSignals(True)
+		self.metric_combo.clear()
+		self.metric_combo.addItems(metric_columns)
+		if current in metric_columns:
+			self.metric_combo.setCurrentText(current)
+		else:
+			self.metric_combo.setCurrentText(metric_columns[0])
+		self.metric_combo.blockSignals(False)
 
 	def _resolve_actual_torqlogs_column(self, requested_column: str) -> str | None:
 		return self._torqlogs_norm_to_actual.get(_normalize_col_name(requested_column))
@@ -312,7 +331,7 @@ class MainWindow(QMainWindow):
 		if not rows:
 			return []
 		if 'fileid' in self.df_trips.columns:
-			return [int(k) for k in self.df_trips.iloc[rows]['fileid'].tolist()]
+			return [int(k) for k in self.df_trips.iloc[rows]['fileid'].tolist() if pd.notna(k)]
 		return []
 
 	def _load_trip_plot_data(self, fileid: int, metric_name: str) -> dict[str, list[float]] | None:

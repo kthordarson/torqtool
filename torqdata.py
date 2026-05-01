@@ -1,8 +1,8 @@
 from loguru import logger
-from sqlalchemy import create_engine, text
+from sqlalchemy import text, inspect
 from sqlalchemy.exc import OperationalError
-from sqlalchemy.orm import sessionmaker
 from converter import get_args
+from utils import get_engine_session
 from torqcols import allcols
 
 
@@ -13,8 +13,8 @@ def _normalize_col_name(value: str) -> str:
 def _get_torqlogs_columns(session) -> list[str]:
 	cache_key = "torqlogs_columns"
 	if cache_key not in session.info:
-		rows = session.execute(text("PRAGMA table_info(torqlogs)")).all()
-		session.info[cache_key] = [row[1] for row in rows]
+		inspector = inspect(session.get_bind())
+		session.info[cache_key] = [str(col["name"]) for col in inspector.get_columns("torqlogs")]
 	return session.info[cache_key]
 
 
@@ -63,11 +63,8 @@ if __name__ == '__main__':
 
 	# dburl = f"mysql+pymysql://{TORQDBUSER}:{TORQDBPASS}@{TORQDBHOST}/torq?charset=utf8mb4"
 	args = get_args('torqdata')
-	dburl = f"sqlite:///{args.dbfile}"
-	engine = create_engine(dburl)
-	logger.info(f'[engine] {engine}')
-	Session = sessionmaker(bind=engine)
-	session = Session()
+	session = get_engine_session(args)
+	logger.info(f'[engine] {session.get_bind()}')
 
 	max_results = 3
 	toptrips = None

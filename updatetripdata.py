@@ -5,7 +5,7 @@ import argparse
 from datetime import datetime
 from loguru import logger
 import sys
-from sqlalchemy import (text)
+from sqlalchemy import (text, inspect)
 from utils import get_parser, get_engine_session, convert_string_to_datetime
 from schemas import dataschema  # schema_datatypes,
 from datamodels import TorqFile, Startpos, Endpos
@@ -17,8 +17,8 @@ def _normalize_col_name(value: str) -> str:
 
 
 def _get_torqlogs_columns(session) -> list[str]:
-	rows = session.execute(text("PRAGMA table_info(torqlogs)")).all()
-	return [row[1] for row in rows]
+	inspector = inspect(session.get_bind())
+	return [str(col["name"]) for col in inspector.get_columns("torqlogs")]
 
 
 def _resolve_schema_columns(session, requested_columns: list[str]) -> dict[str, str]:

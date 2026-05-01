@@ -245,6 +245,7 @@ async def cli_main(args):
 			logger.error(f'error {type(e)} {e}')
 			sys.exit(-1)
 	elif args.scanpath:
+		logger.debug(f'using {args.dbmode} database at {args.dbfile}')
 		try:
 			session = get_engine_session(args)  # , session
 			database_init(session.get_bind())

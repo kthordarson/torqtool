@@ -14,7 +14,7 @@ from loguru import logger
 from sqlalchemy import DateTime
 from sqlalchemy import create_engine, text, MetaData, Table, Column, Float, String, Integer
 from sqlalchemy.orm import sessionmaker, Session
-import sqlite3
+from sqlalchemy import inspect
 from commonformats import fmt_20, fmt_24, fmt_26, fmt_28, fmt_30, fmt_34, fmt_36
 from datamodels import database_init, COLUMN_TYPES
 from schemas import canonicalize_column_name, canonicalize_columns
@@ -54,20 +54,18 @@ def normalize_column_name(col):
 	col = re.sub(r'[^\w\s]', '', col)  # Remove special characters (keep alphanumeric and spaces)
 	return col.replace(' ', '_')
 
-def get_table_columns(engine, table_name):
+def get_table_columns(session, table_name):
 	"""
-	Get the current columns of the table from the SQLite database.
+	Get the current columns of a table in a database-agnostic way.
 	"""
-	result = []
-	with engine.connect() as conn:
-		try:
-			# your code here
-			result = conn.execute(text(f"PRAGMA table_info({table_name})")).fetchall()
-		except Exception as e:
-			logger.error(f"An error occurred: {e} {type(e)} while fetching columns for table {table_name}")
-		return [row[1].lower() for row in result]  # Extract column names
+	try:
+		inspector = inspect(session.get_bind())
+		return [str(col["name"]).lower() for col in inspector.get_columns(table_name)]
+	except Exception as e:
+		logger.error(f"An error occurred: {e} {type(e)} while fetching columns for table {table_name}")
+		return []
 
-def create_or_update_table(engine, table_name, columns, column_types):
+def create_or_update_table(session, table_name, columns, column_types):
 	"""
 	Create or update the table to include all provided columns.
 	Handles duplicate columns and maintains existing schema.
@@ -76,7 +74,7 @@ def create_or_update_table(engine, table_name, columns, column_types):
 
 	# Check existing table columns and normalize to lowercase
 	try:
-		existing_columns = [col.lower() for col in get_table_columns(engine, table_name)]
+		existing_columns = [col.lower() for col in get_table_columns(session, table_name)]
 		logger.debug(f"Existing columns: {len(existing_columns)}")
 	except Exception as e:
 		logger.error(f"Error checking existing columns: {e} {type(e)} table_name={table_name}")
@@ -89,10 +87,10 @@ def create_or_update_table(engine, table_name, columns, column_types):
 		# Create new table if it doesn't exist
 		logger.info(f"Creating new table {table_name} with {len(columns)} columns")
 		Table(table_name, metadata, *table_columns, extend_existing=True)
-		metadata.create_all(engine)
+		metadata.create_all(bind=session.get_bind())
 	else:
 		# Add only new columns to existing table
-		with engine.connect() as conn:
+		with session.get_bind().connect() as conn:
 			# Convert all column names to lowercase for comparison
 			new_columns = set(col.lower() for col in columns) - set(existing_columns)
 			orig_col = ''
@@ -102,12 +100,16 @@ def create_or_update_table(engine, table_name, columns, column_types):
 					try:
 						# Get original case version of column name
 						orig_col = next(c for c in columns if c.lower() == col)
-						sql_type = column_types.get(orig_col, String).__name__.lower()
+						sqlalchemy_type = column_types.get(orig_col, String)
+						if isinstance(sqlalchemy_type, type):
+							sql_type = sqlalchemy_type().compile(dialect=conn.dialect)
+						else:
+							sql_type = sqlalchemy_type.compile(dialect=conn.dialect)
 						alter_sql = text(f'ALTER TABLE {table_name} ADD COLUMN "{orig_col}" {sql_type}')
 						conn.execute(alter_sql)
 						logger.debug(f"Added column: {orig_col} ({sql_type})")
-					except sqlite3.OperationalError as e:
-						if "duplicate column name" in str(e).lower():
+					except Exception as e:
+						if "duplicate column" in str(e).lower() or "already exists" in str(e).lower():
 							logger.debug(f"Column {orig_col} already exists, skipping")
 							continue
 						else:
@@ -115,7 +117,7 @@ def create_or_update_table(engine, table_name, columns, column_types):
 			conn.commit()
 
 	# Verify final column structure
-	final_columns = [col.lower() for col in get_table_columns(engine, table_name)]
+	final_columns = [col.lower() for col in get_table_columns(session, table_name)]
 	logger.debug(f"Final table structure: {len(final_columns)} columns")
 
 	# Return list of columns that couldn't be added
@@ -143,9 +145,34 @@ def _normalize_col_name(value: str) -> str:
 	return "".join(ch.lower() for ch in str(value) if ch.isalnum())
 
 
+def _is_datetime_column_name(col_name: str) -> bool:
+	"""
+	Identify true timestamp/date columns and exclude duration/counter fields.
+	"""
+	normalized = _normalize_col_name(col_name)
+	if not any(token in normalized for token in ("time", "date", "timestamp")):
+		return False
+
+	# Duration-like fields are numeric counters, not absolute datetimes.
+	excluded_tokens = (
+		"timesince",
+		"duration",
+		"elapsed",
+		"stationary",
+		"moving",
+		"seconds",
+		"millis",
+		"milliseconds",
+	)
+	if any(token in normalized for token in excluded_tokens):
+		return False
+
+	return True
+
+
 def _resolve_torqlogs_columns(conn, requested_columns: list[str]) -> dict[str, str]:
-	rows = conn.execute(text("PRAGMA table_info(torqlogs)")).all()
-	actual_columns = [row[1] for row in rows]
+	inspector = inspect(conn)
+	actual_columns = [str(col["name"]) for col in inspector.get_columns("torqlogs")]
 	normalized_actual = {_normalize_col_name(col): col for col in actual_columns}
 	resolved: dict[str, str] = {}
 	for requested in requested_columns:
@@ -153,6 +180,46 @@ def _resolve_torqlogs_columns(conn, requested_columns: list[str]) -> dict[str, s
 		if actual:
 			resolved[requested] = actual
 	return resolved
+
+
+def _repair_postgres_column_type_mismatches(conn, table_name: str, column_types: dict):
+	"""
+	Repair known timestamp-vs-numeric schema mismatches in PostgreSQL.
+	"""
+	if conn.dialect.name != "postgresql":
+		return
+
+	inspector = inspect(conn)
+	for col in inspector.get_columns(table_name):
+		col_name = str(col["name"])
+		actual_type = str(col.get("type", "")).lower()
+		expected_type = column_types.get(col_name)
+		if expected_type is None:
+			expected_type = column_types.get(_normalize_col_name(col_name))
+
+		expected_cls = expected_type if isinstance(expected_type, type) else type(expected_type)
+		if expected_cls not in (Float, Integer):
+			continue
+		if "timestamp" not in actual_type:
+			continue
+
+		target_sql_type = "double precision" if expected_cls is Float else "bigint"
+		alter_sql = text(
+			f'''ALTER TABLE "{table_name}"
+			ALTER COLUMN "{col_name}" TYPE {target_sql_type}
+			USING CASE
+				WHEN "{col_name}" IS NULL THEN NULL
+				WHEN "{col_name}"::text ~ '^-?[0-9]+(\\.[0-9]+)?$' THEN "{col_name}"::text::{target_sql_type}
+				ELSE NULL
+			END'''
+		)
+		logger.warning(
+			f"Repairing PostgreSQL column type mismatch for {table_name}.{col_name}: "
+			f"{actual_type} -> {target_sql_type}"
+		)
+		conn.execute(alter_sql)
+	if conn.in_transaction():
+		conn.commit()
 
 def update_trip_and_file_for_fileid(conn, fileid):
 	"""
@@ -214,35 +281,70 @@ def update_trip_and_file_for_fileid(conn, fileid):
 		except Exception as e:
 			logger.error(f'{e} {type(e)} {trip_start=} {trip_end=}')
 			trip_duration = None
-	# Calculate trip distance (sum of all GPS point distances for this fileid)
+	# Calculate trip distance (sum of point-to-point GPS distances for this fileid)
 	trip_distance = 0.0
-	df_gps = pd.DataFrame()
-	distances = []
 	try:
-		df_gps = pd.read_sql(
-			f'SELECT "{lat_col}" AS latitude, "{lon_col}" AS longitude FROM torqlogs WHERE fileid = ? ORDER BY "{time_col}" ASC',
-			conn,
-			params=(fileid,)
-		)
-		if len(df_gps) > 1:
-			distances = [
-				haversine(
-					df_gps.iloc[i-1]['latitude'], df_gps.iloc[i-1]['longitude'],
-					df_gps.iloc[i]['latitude'], df_gps.iloc[i]['longitude']
+		if conn.dialect.name == "postgresql":
+			# Compute the full path distance in SQL to avoid pulling thousands of rows to Python.
+			distance_sql = text(f'''
+				WITH ordered AS (
+					SELECT
+						"{lat_col}"::double precision AS lat,
+						"{lon_col}"::double precision AS lon,
+						LAG("{lat_col}"::double precision) OVER (ORDER BY "{time_col}" ASC) AS prev_lat,
+						LAG("{lon_col}"::double precision) OVER (ORDER BY "{time_col}" ASC) AS prev_lon
+					FROM torqlogs
+					WHERE fileid = :fileid
 				)
-				for i in range(1, len(df_gps))
-			]
-			trip_distance = float(sum(distances))
+				SELECT COALESCE(SUM(
+					6371000.0 * 2.0 * atan2(
+						sqrt(
+							pow(sin(radians((lat - prev_lat) / 2.0)), 2)
+							+ cos(radians(prev_lat)) * cos(radians(lat))
+							* pow(sin(radians((lon - prev_lon) / 2.0)), 2)
+						),
+						sqrt(
+							GREATEST(
+								0.0,
+								1.0 - (
+									pow(sin(radians((lat - prev_lat) / 2.0)), 2)
+									+ cos(radians(prev_lat)) * cos(radians(lat))
+									* pow(sin(radians((lon - prev_lon) / 2.0)), 2)
+								)
+							)
+						)
+					)
+				), 0.0) AS trip_distance
+				FROM ordered
+				WHERE prev_lat IS NOT NULL AND prev_lon IS NOT NULL
+			''')
+			trip_distance = float(conn.execute(distance_sql, {"fileid": fileid}).scalar() or 0.0)
 		else:
-			trip_distance = 0.0
+			df_gps = pd.read_sql(
+				text(f'SELECT "{lat_col}" AS latitude, "{lon_col}" AS longitude FROM torqlogs WHERE fileid = :fileid ORDER BY "{time_col}" ASC'),
+				conn,
+				params={"fileid": fileid}
+			)
+			if len(df_gps) > 1:
+				distances = [
+					haversine(
+						df_gps.iloc[i-1]['latitude'], df_gps.iloc[i-1]['longitude'],
+						df_gps.iloc[i]['latitude'], df_gps.iloc[i]['longitude']
+					)
+					for i in range(1, len(df_gps))
+				]
+				trip_distance = float(sum(distances))
+			else:
+				trip_distance = 0.0
 	except Exception as e:
 		logger.error(f"Error calculating trip_distance for fileid {fileid}: {e} {type(e)}")
 		trip_distance = 0.0
 
 	# Insert or update Torqtrips
 	conn.execute(text("""
-		INSERT OR IGNORE INTO torqtrips (fileid, tripdate, time, trip_distance)
-		VALUES (:fileid, :trip_start, :trip_duration, :trip_distance)
+		INSERT INTO torqtrips (fileid, tripdate, time, trip_distance)
+		SELECT :fileid, :trip_start, :trip_duration, :trip_distance
+		WHERE NOT EXISTS (SELECT 1 FROM torqtrips WHERE fileid = :fileid)
 	"""), {
 		"fileid": fileid,
 		"trip_start": trip_start,
@@ -298,19 +400,11 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs'):
 	all_columns = set()
 	valid_files = []
 	csvhash = ''
-	# engine = get_engine_session(args)
-	engine = create_engine(
-		f'sqlite:///{args.dbfile}',
-		echo=False,
-		connect_args={
-			'timeout': 30,
-			'isolation_level': None,  # Disable SQLite's autocommit mode
-			'check_same_thread': False
-		}
-	)
+	session = get_engine_session(args)
+	# engine = create_engine(f'sqlite:///{args.dbfile}', echo=False, connect_args={'timeout': 30, 'isolation_level': None, 'check_same_thread': False})
 	# Initialize database schema first
 	try:
-		database_init(engine)
+		database_init(session.get_bind())
 	except Exception as e:
 		logger.error(f"Error initializing database: {e}")
 		return None, pd_columns
@@ -318,12 +412,15 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs'):
 	for file_idx, csvfile in enumerate(csv_files):
 		try:
 			if csvfile.stat().st_size < MIN_FILESIZE:
-				logger.warning(f"Skipping {csvfile} - file size too small {csvfile.stat().st_size} min {MIN_FILESIZE}")
+				with open(csvfile, 'rb') as f:
+					d = f.readlines()
+				linecount = len(d)
+				logger.warning(f"Skipping {csvfile} - file size too small {csvfile.stat().st_size} min {MIN_FILESIZE} lines {linecount}")
 				continue
 
 			# Check if file has already been processed
 			csvhash = md5(Path(csvfile).read_bytes()).hexdigest()
-			with engine.connect() as conn:
+			with session.get_bind().connect() as conn:
 				existing_file = conn.execute(text("SELECT fileid FROM torqfiles WHERE csvhash = :csvhash"),{"csvhash": csvhash}).first()
 
 			if existing_file:
@@ -363,35 +460,46 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs'):
 	logger.info(f"Found {len(valid_files)} valid CSV files with columns: {len(all_columns)}")
 	column_types = COLUMN_TYPES.copy()
 	for col in all_columns:
-		col_lower = col.lower()
-		if any(key in col_lower for key in ["time", "date"]):
+		if col in column_types:
+			continue
+		if _is_datetime_column_name(col):
 			column_types[col] = DateTime
 
 	# Update database schema if needed
 	try:
-		create_or_update_table(engine, table_name, all_columns, COLUMN_TYPES)
+		create_or_update_table(session, table_name, all_columns, column_types)
 	except Exception as e:
 		logger.error(f"Error updating table schema: {e} {type(e)}")
 		return None, pd_columns
 
 	# Second pass: Read and insert data from valid files
 	df = pd.DataFrame()
-	with engine.connect() as conn:
-		conn.execute(text("PRAGMA journal_mode = WAL"))  # Use Write-Ahead Logging
-		conn.execute(text("PRAGMA synchronous = NORMAL"))  # Reduce synchronization
-		conn.execute(text("BEGIN TRANSACTION"))  # Start transaction
+	with session.get_bind().connect() as conn:
+		if conn.dialect.name == "sqlite":
+			conn.execute(text("PRAGMA journal_mode = WAL"))  # Use Write-Ahead Logging
+			conn.execute(text("PRAGMA synchronous = NORMAL"))  # Reduce synchronization
+		else:
+			_repair_postgres_column_type_mismatches(conn, table_name, column_types)
+
+		inspector = inspect(conn)
+		actual_table_columns = [str(col["name"]) for col in inspector.get_columns(table_name)]
+		normalized_actual_columns = {
+			_normalize_col_name(col_name): col_name for col_name in actual_table_columns
+		}
 
 		try:
 			for csv_idx, (csvfile, normalized_columns, csvhash) in enumerate(valid_files):
+				# SQLAlchemy 2.x may start a transaction implicitly (autobegin).
+				# Ensure each file starts with a clean transaction boundary.
+				if conn.in_transaction():
+					conn.rollback()
 				try:
 
-					before_count = conn.execute(text("SELECT count(*) from torqlogs")).scalar()
 					# Read CSV file
 					df = pd.read_csv(csvfile, low_memory=False, on_bad_lines='skip', encoding='utf-8', encoding_errors='replace')
 
 					for col in df.columns:
-						col_lower = col.lower()
-						if any(key in col_lower for key in ["time", "date"]):
+						if _is_datetime_column_name(col):
 							try:
 								# df[col] = pd.to_datetime(df[col], errors='coerce')
 								# df[col] = df[col].apply(lambda x: convert_string_to_datetime(x) if pd.notnull(x) else pd.NaT)
@@ -411,6 +519,14 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs'):
 
 					# Process columns and data
 					df = df.rename(columns=canonicalize_columns(list(df.columns)))
+					# Align canonicalized DataFrame columns with actual DB column names (case-sensitive in PostgreSQL).
+					db_col_rename_map = {}
+					for c in df.columns:
+						actual_col = normalized_actual_columns.get(_normalize_col_name(c))
+						if actual_col and actual_col != c:
+							db_col_rename_map[c] = actual_col
+					if db_col_rename_map:
+						df = df.rename(columns=db_col_rename_map)
 					df = df.replace(['-', '∞', 'inf', '-inf'], pd.NA)
 
 					# Convert numeric columns
@@ -423,40 +539,44 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs'):
 					df = df[~df.apply(lambda row: list(row) == header_row, axis=1)]
 					df = df[~df.apply(lambda row: row.astype(str).str.contains(' Device Time').any(), axis=1)]
 
-					ordered_cols = ['fileid'] + [col for col in sorted(all_columns) if col != 'fileid' and col in df.columns]
+					allowed_cols = set(actual_table_columns)
+					ordered_cols = [col for col in ['fileid'] if col in df.columns and col in allowed_cols]
+					ordered_cols.extend(sorted([col for col in df.columns if col != 'fileid' and col in allowed_cols]))
 					df = df[ordered_cols]
 
 					# Insert data
 					logger.info(f"[{csv_idx}/{len(valid_files)}] Sending {len(df)} rows from {csvfile} with fileid {fileid}")
-
-					# Use smaller chunks for better memory management
-					chunk_size = min(1000, args.sqlchunksize)
-					for chunk_start in range(0, len(df), chunk_size):
-						chunk = df.iloc[chunk_start:chunk_start + chunk_size]
-						chunk.to_sql(table_name, conn, if_exists='append', index=False)
+					df.to_sql(
+						table_name,
+						conn,
+						if_exists='append',
+						index=False,
+						method='multi',
+						chunksize=max(1000, int(args.sqlchunksize)),
+					)
 
 					# Update trip and file info for this fileid
 					update_trip_and_file_for_fileid(conn, fileid)
 
 					# Update TorqFile row count
 					conn.execute(text("UPDATE torqfiles SET sent_rows = :rows WHERE fileid = :fileid"),{"rows": len(df), "fileid": fileid})
-					after_count = conn.execute(text("SELECT count(*) from torqlogs")).scalar()
-					logger.info(f"[{csv_idx}/{len(valid_files)}] Successfully inserted {len(df)} rows from {csvfile} before_count={before_count} after_count={after_count}")
+					logger.info(f"[{csv_idx}/{len(valid_files)}] Successfully inserted {len(df)} rows from {csvfile}")
+					if conn.in_transaction():
+						conn.commit()
 
 				except Exception as e:
+					if conn.in_transaction():
+						conn.rollback()
 					logger.error(f"Error processing {csvfile}: {e}")
 					if args.debug:
 						logger.debug(f"DataFrame columns: {df.columns.tolist()}")
 					continue
 
-			conn.execute(text("COMMIT"))  # Commit all changes
-
 		except Exception as e:
 			logger.error(f"Transaction failed: {e}")
-			conn.execute(text("ROLLBACK"))  # Rollback on error
 			raise
 
-	engine.dispose()
+	# engine.dispose()
 	return None, pd_columns
 
 def get_csv_files(searchpath: Path, args):
@@ -570,37 +690,40 @@ def generate_torqdata(df: pd.DataFrame, session: Session, args: argparse.Namespa
 
 	return stats
 
-def convert_string_to_datetime(s: str) -> datetime:
+def convert_string_to_datetime(s: str) -> datetime | None:
 	"""
-	try to convert string to datetime, based on string length apply fmt
-	param s string with datetime
-	returns datetime object
+	Convert string-like values to UTC datetime.
+	Returns None for invalid/unparseable values so inserts become SQL NULL.
 	"""
+	if s is None:
+		return None
 	if not isinstance(s, str):
-		logger.warning(f'{s} is not str but {type(s)}')
 		s = str(s)
-	fmt_selector = len(s)
-	datetimeobject = s
+	s = s.strip()
+	if not s:
+		return None
+
+	known_formats = {
+		20: fmt_20,
+		24: fmt_24,
+		26: fmt_26,
+		28: fmt_28,
+		30: fmt_30,
+		34: fmt_34,
+		36: fmt_36,
+	}
 	try:
-		match fmt_selector:
-			case 20:
-				datetimeobject = datetime.strptime(s, fmt_20).astimezone(pytz.timezone("UTC"))
-			case 24:
-				datetimeobject = datetime.strptime(s, fmt_24).astimezone(pytz.timezone("UTC"))
-			case 26:
-				datetimeobject = datetime.strptime(s, fmt_26).astimezone(pytz.timezone("UTC"))
-			case 28:
-				datetimeobject = datetime.strptime(s, fmt_28).astimezone(pytz.timezone("UTC"))
-			case 30:
-				datetimeobject = datetime.strptime(s, fmt_30).astimezone(pytz.timezone("UTC"))
-			case 34:
-				datetimeobject = datetime.strptime(s, fmt_34).astimezone(pytz.timezone("UTC"))
-			case 36:
-				datetimeobject = datetime.strptime(s, fmt_36).astimezone(pytz.timezone("UTC"))
-			case _:
-				pass
+		fmt = known_formats.get(len(s))
+		if fmt:
+			dt = datetime.strptime(s, fmt)
+			if dt.tzinfo is None:
+				return dt.replace(tzinfo=pytz.UTC)
+			return dt.astimezone(pytz.UTC)
+
+		parsed = pd.to_datetime(s, errors="coerce", utc=True)
+		if pd.isna(parsed):
+			return None
+		return parsed.to_pydatetime()
 	except (ValueError, TypeError, KeyError) as e:
-		logger.error(f"dateconverter {type(e)} {e} {s=}")
-	finally:
-		pass
-	return datetimeobject  # type: ignore
+		logger.debug(f"dateconverter {type(e)} {e} {s=}")
+		return None
