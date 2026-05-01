@@ -461,17 +461,6 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs'):
 	engine.dispose()
 	return None, pd_columns
 
-def check_split(logfile: Path, debug=False):
-	"""
-	check if file is damanaged, if so split it and save new log files
-	if the file contains multiple column headers, split into multiple files for each column header line
-	todo, check if time difference is small between headers, then ignore and assume its part of the same trip
-	"""
-	with open(logfile, "r") as f:
-		data = f.readlines()
-		splits = sum([k[0:4].lower().count("gps") for k in data])
-	return splits
-
 def get_csv_files(searchpath: Path, args):
 	# scan searchpath for csv files
 	torqcsvfiles = [({"csvfile": k, "csvhash": md5(open(k, "rb").read()).hexdigest(), "size": os.stat(k).st_size, "dbmode": args.dbmode, }) for k in searchpath.glob("**/*.csv") if k.stat().st_size >= MIN_FILESIZE]  # and not os.path.exists(f'{k}.fixed.csv')]
