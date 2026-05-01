@@ -9,12 +9,10 @@ from hashlib import md5
 from pathlib import Path
 import argparse
 import pandas as pd
-import pymysql
 import pytz
 from loguru import logger
 from sqlalchemy import DateTime
 from sqlalchemy import create_engine, text, MetaData, Table, Column, Float, String, Integer
-from sqlalchemy.exc import ArgumentError, DataError,IntegrityError, InternalError, OperationalError, ProgrammingError
 from sqlalchemy.orm import sessionmaker, Session
 import sqlite3
 from commonformats import fmt_20, fmt_24, fmt_26, fmt_28, fmt_30, fmt_34, fmt_36

@@ -6,13 +6,11 @@ from typing import Any
 from loguru import logger
 from PySide6 import QtCore, QtSql
 from PySide6.QtCharts import QChart, QChartView, QLineSeries, QScatterSeries
-from PySide6.QtCore import QAbstractTableModel, Qt, QObject, QEvent
+from PySide6.QtCore import Qt, QObject, QEvent
 from PySide6.QtGui import QFont, QPen
 from PySide6.QtWidgets import QApplication, QMainWindow
 from PySide6.QtCore import QModelIndex, QPersistentModelIndex
 import PySide6.QtCharts
-import numpy as np
-from sqlalchemy import text
 from datamodels import Torqlogs, TorqFile, Speeds
 from ui_untitled import Ui_main_window
 from utils import get_engine_session
