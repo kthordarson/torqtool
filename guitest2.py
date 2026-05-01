@@ -26,6 +26,7 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from datamodels import database_init
 from schemas import dataschema
 from converter import get_args
+from metric_analysis import categorize_metric, get_analysis_suggestion, group_metrics_by_category, MetricCategory
 
 def _normalize_col_name(value: str) -> str:
 	return "".join(ch.lower() for ch in str(value) if ch.isalnum())
@@ -233,8 +234,13 @@ class MainWindow(QMainWindow):
 		self.stats_label = QLabel("No trip selected")
 		self.stats_label.setWordWrap(True)
 		self.stats_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+		# Allow scrolling for long stats text
+		from PySide6.QtWidgets import QScrollArea
+		stats_scroll = QScrollArea()
+		stats_scroll.setWidget(self.stats_label)
+		stats_scroll.setWidgetResizable(True)
 		stats_layout.addWidget(stats_title)
-		stats_layout.addWidget(self.stats_label)
+		stats_layout.addWidget(stats_scroll)
 		stats_layout.addStretch()
 
 		# Add map canvas first (give it more space)
@@ -600,6 +606,83 @@ class MainWindow(QMainWindow):
 		self.map_canvas.draw_idle()
 		self._update_stats_panel(fileids, all_metric_values, all_x, all_y, selected_metric)
 
+	def _load_trip_metadata(self, fileids: list[int]) -> dict:
+		"""Load trip metadata from torqfiles table."""
+		if not fileids:
+			return {}
+		
+		try:
+			fileids_str = ",".join(str(fid) for fid in fileids[:10])
+			query = f"SELECT fileid, trip_start, trip_end, trip_duration, trip_distance FROM torqfiles WHERE fileid IN ({fileids_str})"
+			df = pd.read_sql(query, self.engine)
+			if df.empty:
+				return {}
+			return df.set_index('fileid').to_dict('index')
+		except Exception as e:
+			logger.warning(f"Could not load trip metadata: {e}")
+			return {}
+
+	def _format_trip_stats(self, fileids: list[int], trip_count: int, point_count: int, 
+		metric_name: str, metric_min: float, metric_avg: float, metric_max: float, 
+		all_x: list[float], all_y: list[float], trip_info: dict) -> str:
+		"""Format comprehensive trip stats with metrics and analysis suggestions."""
+		lines = []
+		
+		# Header
+		lines.append("═" * 60)
+		lines.append(f"📊 TRIP SUMMARY (Trips: {trip_count}, Points: {point_count})")
+		lines.append("═" * 60)
+		
+		# Trip metadata
+		if trip_info:
+			total_distance = sum(row.get('trip_distance', 0) or 0 for row in trip_info.values())
+			total_duration = sum(row.get('trip_duration', 0) or 0 for row in trip_info.values())
+			if total_distance:
+				lines.append(f"\n📍 Distance: {total_distance/1000:.1f} km")
+			if total_duration:
+				duration_str = format_duration(total_duration)
+				lines.append(f"⏱️  Duration: {duration_str}")
+			
+			if trip_info and total_distance and total_duration:
+				avg_speed = (total_distance / 1000) / (total_duration / 3600) if total_duration > 0 else 0
+				lines.append(f"💨 Avg Speed: {avg_speed:.1f} km/h")
+		
+		# Current metric display
+		category, display_name, unit = categorize_metric(metric_name)
+		unit_str = f" {unit}" if unit else ""
+		lines.append(f"\n{'─' * 60}")
+		lines.append(f"🎯 SELECTED METRIC: {display_name}{unit_str}")
+		lines.append(f"   Min: {metric_min:.2f}  |  Avg: {metric_avg:.2f}  |  Max: {metric_max:.2f}")
+		
+		# Analysis suggestion
+		suggestion = get_analysis_suggestion(category)
+		lines.append(f"\n💡 ANALYSIS TIP ({suggestion['analysis_type']}):") 
+		lines.append(f"   {suggestion['description'][:80]}...")
+		lines.append(f"   Visualization: {suggestion['visualization']}")
+		
+		# Map bounds
+		bounds = self._compute_plot_bounds(all_x, all_y)
+		if bounds:
+			xmin, xmax, ymin, ymax = bounds
+			lines.append(f"\n🗺️  Map Bounds:")
+			lines.append(f"   Longitude: [{xmin:.3f}, {xmax:.3f}]")
+			lines.append(f"   Latitude: [{ymin:.3f}, {ymax:.3f}]")
+		
+		# Available metrics by category (show top metrics)
+		metric_columns = self._get_metric_columns_with_valid_data()
+		if metric_columns:
+			lines.append(f"\n📈 AVAILABLE METRICS ({len(metric_columns)} total):")
+			grouped = group_metrics_by_category(metric_columns)
+			for cat in list(grouped.keys())[:5]:  # Show top 5 categories
+				metrics = grouped[cat][:3]  # Show top 3 metrics per category
+				metric_str = ", ".join(f"{name}" for name, unit, _ in metrics)
+				lines.append(f"   {cat.value}: {metric_str}")
+			if sum(len(v) for v in grouped.values()) > 15:
+				lines.append(f"   ... and {sum(len(v) for v in grouped.values()) - 15} more")
+		
+		lines.append("\n" + "═" * 60)
+		return "\n".join(lines)
+
 	def _update_stats_panel(self, fileids: list[int], metric_values: list[float], all_x: list[float], all_y: list[float], metric_name: str):
 		trip_count = len(fileids)
 		point_count = len(all_x)
@@ -607,25 +690,17 @@ class MainWindow(QMainWindow):
 		metric_min = float(metric_series.min()) if not metric_series.empty else 0.0
 		metric_avg = float(metric_series.mean()) if not metric_series.empty else 0.0
 		metric_max = float(metric_series.max()) if not metric_series.empty else 0.0
-		bounds = self._compute_plot_bounds(all_x, all_y)
-		if bounds:
-			xmin, xmax, ymin, ymax = bounds
-			bounds_line = f"Bounds: x[{xmin:.0f}, {xmax:.0f}] y[{ymin:.0f}, {ymax:.0f}]"
-		else:
-			bounds_line = "Bounds: n/a"
 
-		fileid_text = ", ".join(str(fid) for fid in fileids[:10])
-		if len(fileids) > 10:
-			fileid_text += ", ..."
-
-		self.stats_label.setText(
-			f"Trips selected: {trip_count}\n"
-			f"Fileids: {fileid_text}\n"
-			f"Plotted points: {point_count}\n"
-			f"Metric: {metric_name}\n"
-			f"Min / Avg / Max: {metric_min:.2f} / {metric_avg:.2f} / {metric_max:.2f}\n"
-			f"{bounds_line}"
+		# Load trip metadata from database
+		trip_info = self._load_trip_metadata(fileids)
+		
+		# Build stats text with trip info, metrics, and suggestions
+		stats_text = self._format_trip_stats(
+			fileids, trip_count, point_count, metric_name, 
+			metric_min, metric_avg, metric_max, all_x, all_y, trip_info
 		)
+
+		self.stats_label.setText(stats_text)
 
 	def _start_async_basemap(self, bounds: tuple[float, float, float, float], zoom: int, fileids: list[int], colormap_name: str, metric_name: str):
 		xmin, xmax, ymin, ymax = bounds
