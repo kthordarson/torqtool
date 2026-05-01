@@ -334,7 +334,7 @@ def collect_db_speeds(args):
 		session.rollback()
 	return 0
 
-def collect_db_startends(args):
+def collect_db_startends(args, update_start=True, update_end=True):
 	session = get_engine_session(args)
 	resolved = _resolve_schema_columns(session, ['gpstime', 'latitude', 'longitude'])
 	time_col = resolved.get('gpstime')
@@ -370,32 +370,57 @@ GROUP BY fileid;
 	for pos in rows:
 		latmin = to_float(pos.get("latmin"))
 		lonmin = to_float(pos.get("lonmin"))
-		if latmin is None or lonmin is None:
-			continue
+		latmax = to_float(pos.get("latmax"))
+		lonmax = to_float(pos.get("lonmax"))
 
-		min_lat, max_lat = latmin - gpsoffset, latmin + gpsoffset
-		min_lon, max_lon = lonmin - gpsoffset, lonmin + gpsoffset
+		if update_start and latmin is not None and lonmin is not None:
+			min_lat, max_lat = latmin - gpsoffset, latmin + gpsoffset
+			min_lon, max_lon = lonmin - gpsoffset, lonmin + gpsoffset
 
-		sp_updates = (
-			session.query(Startpos)
-			.filter(
-				Startpos.latstart.between(min_lat, max_lat),
-				Startpos.lonstart.between(min_lon, max_lon),
+			sp_updates = (
+				session.query(Startpos)
+				.filter(
+					Startpos.latstart.between(min_lat, max_lat),
+					Startpos.lonstart.between(min_lon, max_lon),
+				)
+				.all()
 			)
-			.all()
-		)
 
-		if sp_updates:
-			for sp in sp_updates:
-				sp.count = int(sp.count or 0) + 1
-			logger.warning(f"startpos already exists for fileid={pos.get('fileid')} count={len(sp_updates)}")
-		else:
-			sp = Startpos(latstart=latmin, lonstart=lonmin)
-			sp.count = 1
-			logger.info(f"newstartpos {pos.fileid} {pos.latmin} {pos.lonmin} {sp.count}")
-			session.add(sp)
+			if sp_updates:
+				for sp in sp_updates:
+					sp.count = int(sp.count or 0) + 1
+				logger.warning(f"startpos already exists for fileid={pos.get('fileid')} count={len(sp_updates)}")
+			else:
+				sp = Startpos(latstart=latmin, lonstart=lonmin)
+				sp.count = 1
+				logger.info(f"newstartpos {pos.fileid} {pos.latmin} {pos.lonmin} {sp.count}")
+				session.add(sp)
+
+		if update_end and latmax is not None and lonmax is not None:
+			min_lat, max_lat = latmax - gpsoffset, latmax + gpsoffset
+			min_lon, max_lon = lonmax - gpsoffset, lonmax + gpsoffset
+
+			ep_updates = (
+				session.query(Endpos)
+				.filter(
+					Endpos.latend.between(min_lat, max_lat),
+					Endpos.lonend.between(min_lon, max_lon),
+				)
+				.all()
+			)
+
+			if ep_updates:
+				for ep in ep_updates:
+					ep.count = int(ep.count or 0) + 1
+				logger.warning(f"endpos already exists for fileid={pos.get('fileid')} count={len(ep_updates)}")
+			else:
+				ep = Endpos(latend=latmax, lonend=lonmax)
+				ep.count = 1
+				logger.info(f"newendpos {pos.fileid} {pos.latmax} {pos.lonmax} {ep.count}")
+				session.add(ep)
 
 	session.commit()
+	return 0
 
 def main(args):
 	session = get_engine_session(args)
@@ -408,6 +433,10 @@ def main(args):
 		return collect_db_filestats(args)
 	elif args.db_columnstats:
 		return collect_db_columnstats(args)
+	elif args.db_startpos:
+		return collect_db_startends(args, update_start=True, update_end=False)
+	elif args.db_endpos:
+		return collect_db_startends(args, update_start=False, update_end=True)
 	elif args.db_startends:
 		return collect_db_startends(args)
 	elif args.db_speed:
