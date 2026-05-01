@@ -6,7 +6,7 @@ from datetime import datetime
 from loguru import logger
 import sys
 from sqlalchemy import (text, inspect)
-from utils import get_parser, get_engine_session, convert_string_to_datetime
+from utils import get_parser, get_engine_session, convert_string_to_datetime, haversine
 from schemas import dataschema  # schema_datatypes,
 from datamodels import TorqFile, Startpos, Endpos
 from numbers import Real
@@ -183,58 +183,37 @@ async def update_torqfile(args: argparse.Namespace, fileinfo: dict):
 	session.close()
 	session = get_engine_session(args)
 	sp_updates, ep_updates = get_start_end_info(args, fileinfo)
-	if len(sp_updates) == 1:
-		# found startpos
-		sp = session.query(Startpos).filter(Startpos.startid == sp_updates[0].startid).one()
+	if len(sp_updates) >= 1:
+		# pick the closest existing startpos
+		closest_sp = min(sp_updates, key=lambda s: haversine(fileinfo["dlatstart"], fileinfo["dlonstart"], s.latstart, s.lonstart))
+		sp = session.query(Startpos).filter(Startpos.startid == closest_sp.startid).one()
+		sp.count = int(sp.count or 0) + 1
+		session.add(sp)
 		if isinstance(torqfile, TorqFile):
 			torqfile.startid = sp.startid
-		if isinstance(sp, Startpos):
-			sp.count += 1
-		session.add(sp)
-		# if sp.label is None:
-		# 	logger.warning(f'found startpos id: {sp.startid} label: {sp.label} count: {sp.count} missing label')
-		# else:
-		# 	logger.info(f'found startpos id: {sp.startid} label: {sp.label} count: {sp.count} ')
-	elif len(sp_updates) > 1:
-		# multiple startpos
-		# logger.warning(f'multiple startpos sp: {len(sp_updates)} {torqfile.csvfile} ')
-		# _ = [logger.warning(f'{k.startid} {k.label} {k.latstart} {k.lonstart}') for k in sp_updates]
-		if len(set([k.label for k in sp_updates])) == 1:
-			# todo create new merged startpos set by bounding box
-			pass
 	elif len(sp_updates) == 0:
 		# new startpos
-		# logger.debug(f'new startpos {fileinfo["dlatstart"]} {fileinfo["dlonstart"]} ')
-		sp = Startpos(latstart=fileinfo["dlatstart"], lonstart=fileinfo["dlonstart"])
-		sp.count = 1
+		sp = Startpos(latstart=fileinfo["dlatstart"], lonstart=fileinfo["dlonstart"], count=1)
 		session.add(sp)
-		# session.commit()
+		session.flush()
+		if isinstance(torqfile, TorqFile):
+			torqfile.startid = sp.startid
 
-	if len(ep_updates) == 1:
-		# found endpos
-		ep = ep_updates[0]
+	if len(ep_updates) >= 1:
+		# pick the closest existing endpos
+		closest_ep = min(ep_updates, key=lambda e: haversine(fileinfo["dlatend"], fileinfo["dlonend"], e.latend, e.lonend))
+		ep = session.query(Endpos).filter(Endpos.endid == closest_ep.endid).one()
+		ep.count = int(ep.count or 0) + 1
+		session.add(ep)
 		if isinstance(torqfile, TorqFile):
 			torqfile.endid = ep.endid
-		ep.count += 1
-		session.add(ep)
-		# if ep.label is None:
-		# 	logger.warning(f'found endpos id: {ep.endid} label: {ep.label} count: {ep.count} missing label')
-		# else:
-		# 	logger.info(f'found endpos id: {ep.endid} label: {ep.label} count: {ep.count} ')
-	elif len(ep_updates) > 1:
-		# multiple endpos
-		# logger.warning(f'# multiple endpos ep: {len(ep_updates)}')
-		# _ = [logger.warning(f'{k.endid} {k.label} {k.latend} {k.lonend}') for k in ep_updates]
-		if len(set([k.label for k in ep_updates])) == 1:
-			# todo create new merged endpos set by bounding box
-			pass
 	elif len(ep_updates) == 0:
 		# new endpos
-		# logger.debug(f'new endpos {fileinfo["dlatend"]} {fileinfo["dlonend"]} ')
-		ep = Endpos(latend=fileinfo["dlatend"], lonend=fileinfo["dlonend"])
-		ep.count = 1
+		ep = Endpos(latend=fileinfo["dlatend"], lonend=fileinfo["dlonend"], count=1)
 		session.add(ep)
-		# session.commit()
+		session.flush()
+		if isinstance(torqfile, TorqFile):
+			torqfile.endid = ep.endid
 
 	session.add(torqfile)
 	session.commit()
@@ -357,79 +336,75 @@ def collect_db_startends(args, update_start=True, update_end=True):
 		return -1
 
 	getstartendquery = f"""
-SELECT
-    fileid,
-	MIN("{lat_col}") FILTER (WHERE "{time_col}" = first_gpstime) AS latmin,
-	MIN("{lon_col}") FILTER (WHERE "{time_col}" = first_gpstime) AS lonmin,
-	MIN("{lat_col}") FILTER (WHERE "{time_col}" = last_gpstime) AS latmax,
-	MIN("{lon_col}") FILTER (WHERE "{time_col}" = last_gpstime) AS lonmax
+SELECT fileid,
+	MAX(CASE WHEN rn_asc = 1 THEN "{lat_col}" END) AS latstart,
+	MAX(CASE WHEN rn_asc = 1 THEN "{lon_col}" END) AS lonstart,
+	MAX(CASE WHEN rn_desc = 1 THEN "{lat_col}" END) AS latend,
+	MAX(CASE WHEN rn_desc = 1 THEN "{lon_col}" END) AS lonend
 FROM (
-    SELECT
-        fileid,
-		"{lat_col}",
-		"{lon_col}",
-		"{time_col}",
-		FIRST_VALUE("{time_col}") OVER (PARTITION BY fileid ORDER BY "{time_col}" ASC) AS first_gpstime,
-		FIRST_VALUE("{time_col}") OVER (PARTITION BY fileid ORDER BY "{time_col}" DESC) AS last_gpstime
-    FROM torqlogs
-) subquery
-WHERE "{time_col}" = first_gpstime OR "{time_col}" = last_gpstime
+	SELECT fileid, "{lat_col}", "{lon_col}",
+		ROW_NUMBER() OVER (PARTITION BY fileid ORDER BY "{time_col}" ASC) AS rn_asc,
+		ROW_NUMBER() OVER (PARTITION BY fileid ORDER BY "{time_col}" DESC) AS rn_desc
+	FROM torqlogs
+	WHERE "{lat_col}" IS NOT NULL AND "{lon_col}" IS NOT NULL
+) sub
+WHERE rn_asc = 1 OR rn_desc = 1
 GROUP BY fileid;
 """
-	gpsoffset = 0.05
+	gpsoffset = 0.001  # ~111 m clustering radius
 
 	rows = session.execute(text(getstartendquery)).mappings().all()
 	for pos in rows:
-		latmin = to_float(pos.get("latmin"))
-		lonmin = to_float(pos.get("lonmin"))
-		latmax = to_float(pos.get("latmax"))
-		lonmax = to_float(pos.get("lonmax"))
+		fileid = pos.get("fileid")
+		latstart = to_float(pos.get("latstart"))
+		lonstart = to_float(pos.get("lonstart"))
+		latend = to_float(pos.get("latend"))
+		lonend = to_float(pos.get("lonend"))
 
-		if update_start and latmin is not None and lonmin is not None:
-			min_lat, max_lat = latmin - gpsoffset, latmin + gpsoffset
-			min_lon, max_lon = lonmin - gpsoffset, lonmin + gpsoffset
+		torqfile = session.query(TorqFile).filter(TorqFile.fileid == fileid).first()
+		if not isinstance(torqfile, TorqFile):
+			logger.warning(f"no TorqFile for fileid={fileid}")
+			continue
 
-			sp_updates = (
+		if update_start and latstart is not None and lonstart is not None:
+			sp_matches = (
 				session.query(Startpos)
 				.filter(
-					Startpos.latstart.between(min_lat, max_lat),
-					Startpos.lonstart.between(min_lon, max_lon),
+					Startpos.latstart.between(latstart - gpsoffset, latstart + gpsoffset),
+					Startpos.lonstart.between(lonstart - gpsoffset, lonstart + gpsoffset),
 				)
 				.all()
 			)
-
-			if sp_updates:
-				for sp in sp_updates:
-					sp.count = int(sp.count or 0) + 1
-				logger.warning(f"startpos already exists for fileid={pos.get('fileid')} count={len(sp_updates)}")
+			if sp_matches:
+				sp = min(sp_matches, key=lambda s: haversine(latstart, lonstart, s.latstart, s.lonstart))
+				sp.count = int(sp.count or 0) + 1
+				logger.info(f"startpos match fileid={fileid} startid={sp.startid} count={sp.count}")
 			else:
-				sp = Startpos(latstart=latmin, lonstart=lonmin)
-				sp.count = 1
-				logger.info(f"newstartpos {pos.fileid} {pos.latmin} {pos.lonmin} {sp.count}")
+				sp = Startpos(latstart=latstart, lonstart=lonstart, count=1)
 				session.add(sp)
+				session.flush()
+				logger.info(f"new startpos fileid={fileid} startid={sp.startid} lat={latstart} lon={lonstart}")
+			torqfile.startid = sp.startid
 
-		if update_end and latmax is not None and lonmax is not None:
-			min_lat, max_lat = latmax - gpsoffset, latmax + gpsoffset
-			min_lon, max_lon = lonmax - gpsoffset, lonmax + gpsoffset
-
-			ep_updates = (
+		if update_end and latend is not None and lonend is not None:
+			ep_matches = (
 				session.query(Endpos)
 				.filter(
-					Endpos.latend.between(min_lat, max_lat),
-					Endpos.lonend.between(min_lon, max_lon),
+					Endpos.latend.between(latend - gpsoffset, latend + gpsoffset),
+					Endpos.lonend.between(lonend - gpsoffset, lonend + gpsoffset),
 				)
 				.all()
 			)
-
-			if ep_updates:
-				for ep in ep_updates:
-					ep.count = int(ep.count or 0) + 1
-				logger.warning(f"endpos already exists for fileid={pos.get('fileid')} count={len(ep_updates)}")
+			if ep_matches:
+				ep = min(ep_matches, key=lambda e: haversine(latend, lonend, e.latend, e.lonend))
+				ep.count = int(ep.count or 0) + 1
+				logger.info(f"endpos match fileid={fileid} endid={ep.endid} count={ep.count}")
 			else:
-				ep = Endpos(latend=latmax, lonend=lonmax)
-				ep.count = 1
-				logger.info(f"newendpos {pos.fileid} {pos.latmax} {pos.lonmax} {ep.count}")
+				ep = Endpos(latend=latend, lonend=lonend, count=1)
 				session.add(ep)
+				session.flush()
+				logger.info(f"new endpos fileid={fileid} endid={ep.endid} lat={latend} lon={lonend}")
+			torqfile.endid = ep.endid
 
 	session.commit()
 	return 0
