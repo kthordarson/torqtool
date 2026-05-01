@@ -243,6 +243,7 @@ def collect_db_columnstats(args):
 
 	try:
 		session.execute(text("drop table if exists columnstats;"))
+		session.commit()
 	except Exception as e:
 		logger.error(f'{type(e)} {e}')
 		session.rollback()
@@ -286,8 +287,16 @@ def collect_db_columnstats(args):
 	results = pd.DataFrame([tempres[k] for k in tempres])
 	try:
 		logger.info(f"sending {len(results)}")
-		# results.to_sql(con=engine, name="columnstats", if_exists="replace", index=True)
-		results.to_sql(con=session.get_bind(), name="columnstats", if_exists="replace", index=True, method='multi', chunksize=args.sqlchunksize)
+		# Use the session-bound connection to avoid waiting on locks from a separate engine connection.
+		results.to_sql(
+			con=session.connection(),
+			name="columnstats",
+			if_exists="append",
+			index=False,
+			method='multi',
+			chunksize=args.sqlchunksize,
+		)
+		session.commit()
 		logger.info(f"done sending {len(results)}")
 	except Exception as e:
 		logger.error(f"{type(e)} {e} for {results=} {results=}")
