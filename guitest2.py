@@ -161,7 +161,9 @@ class MainWindow(QMainWindow):
 		self.colormap_combo.setCurrentText('Set1')  # Set default
 		self.colormap_combo.currentTextChanged.connect(self.on_colormap_changed)
 
-		metric_columns = sorted(dataschema.keys())
+		metric_columns = self._get_metric_columns_with_valid_data()
+		if not metric_columns:
+			metric_columns = ['speedobdkmh'] if 'speedobdkmh' in dataschema else []
 		self.metric_combo.addItems(metric_columns)
 		if 'speedobdkmh' in metric_columns:
 			self.metric_combo.setCurrentText('speedobdkmh')
@@ -266,6 +268,38 @@ class MainWindow(QMainWindow):
 
 	def _resolve_actual_torqlogs_column(self, requested_column: str) -> str | None:
 		return self._torqlogs_norm_to_actual.get(_normalize_col_name(requested_column))
+
+	def _get_metric_columns_with_valid_data(self) -> list[str]:
+		# Keep only dataschema fields that exist in torqlogs and have at least one valid value.
+		requested = sorted(dataschema.keys())
+		pairs: list[tuple[str, str]] = []
+		for req in requested:
+			actual = self._resolve_actual_torqlogs_column(req)
+			if actual:
+				pairs.append((req, actual))
+
+		if not pairs:
+			return []
+
+		select_parts = []
+		for req, actual in pairs:
+			alias = f"valid_{req}"
+			select_parts.append(
+				f'SUM(CASE WHEN "{actual}" IS NOT NULL AND TRIM(CAST("{actual}" AS TEXT)) != "" THEN 1 ELSE 0 END) AS "{alias}"'
+			)
+
+		q = text(f'SELECT {", ".join(select_parts)} FROM torqlogs')
+		with self.engine.connect() as conn:
+			row = conn.execute(q).mappings().first()
+
+		if not row:
+			return []
+
+		valid_metrics: list[str] = []
+		for req, _ in pairs:
+			if int(row.get(f"valid_{req}", 0) or 0) > 0:
+				valid_metrics.append(req)
+		return valid_metrics
 
 	def refresh_plot(self):
 		"""Refresh the current plot with selected rows"""
