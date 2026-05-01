@@ -10,11 +10,11 @@ from typing import Any, cast
 from PySide6.QtWidgets import (
 	QApplication, QMainWindow, QTableView, QVBoxLayout, QWidget, QSplitter,
 	QHBoxLayout, QLabel, QComboBox, QFrame, QListWidget, QListWidgetItem,
-	QScrollArea, QFileDialog, QMessageBox, QSlider
+	QScrollArea, QFileDialog, QMessageBox, QSlider, QLineEdit, QPushButton
 )
 from PySide6.QtGui import QFont, QAction
 from PySide6.QtWidgets import QAbstractItemView
-from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex, QPersistentModelIndex, QTimer, QObject, Signal, QThread
+from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex, QPersistentModelIndex, QTimer, QObject, Signal, QThread, QItemSelectionModel
 from PySide6.QtGui import QCloseEvent
 from sqlalchemy import create_engine, text, inspect
 from sqlalchemy.orm import sessionmaker
@@ -24,6 +24,7 @@ import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
 # from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.backends.backend_qt import NavigationToolbar2QT as NavigationToolbar
 from datamodels import database_init
 from schemas import dataschema
 from converter import get_args
@@ -111,6 +112,315 @@ class TripListWorker(QObject):
 			if engine is not None:
 				engine.dispose()
 
+
+class PositionManagerWindow(QMainWindow):
+	def __init__(self, engine, parent=None):
+		super().__init__(parent)
+		self.engine = engine
+		self.setWindowTitle("Position Manager")
+		self.resize(1200, 760)
+
+		self._selected_row_index: int | None = None
+		self._scatter_index_map: dict[Any, list[int]] = {}
+		self._table_model: PandasModel | None = None
+		self.df_positions = pd.DataFrame(
+			columns=["pos_type", "pos_id", "latitude", "longitude", "count", "label", "x", "y"]
+		)
+
+		central = QWidget()
+		main_layout = QVBoxLayout(central)
+
+		splitter = QSplitter(Qt.Orientation.Horizontal)
+
+		# Left: interactive map
+		left_panel = QWidget()
+		left_layout = QVBoxLayout(left_panel)
+		self.map_fig, self.map_ax = plt.subplots(figsize=(8, 6))
+		self.map_canvas = FigureCanvas(self.map_fig)
+		self.map_toolbar = NavigationToolbar(self.map_canvas, self)
+		left_layout.addWidget(self.map_toolbar)
+		left_layout.addWidget(self.map_canvas)
+
+		# Right: table + editor
+		right_panel = QWidget()
+		right_layout = QVBoxLayout(right_panel)
+
+		self.positions_table = QTableView()
+		self.positions_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+		self.positions_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+		right_layout.addWidget(self.positions_table, stretch=6)
+
+		editor = QFrame()
+		editor_layout = QVBoxLayout(editor)
+		editor_layout.setContentsMargins(8, 8, 8, 8)
+
+		self.selected_info = QLabel("Select a start/end point from the map or table")
+		self.selected_info.setWordWrap(True)
+		editor_layout.addWidget(self.selected_info)
+
+		label_row = QHBoxLayout()
+		label_row.addWidget(QLabel("Label:"))
+		self.label_edit = QLineEdit()
+		self.label_edit.setPlaceholderText("Enter label for selected position")
+		label_row.addWidget(self.label_edit)
+		editor_layout.addLayout(label_row)
+
+		button_row = QHBoxLayout()
+		self.refresh_btn = QPushButton("Refresh")
+		self.save_btn = QPushButton("Save Label")
+		button_row.addWidget(self.refresh_btn)
+		button_row.addWidget(self.save_btn)
+		button_row.addStretch()
+		editor_layout.addLayout(button_row)
+
+		right_layout.addWidget(editor, stretch=2)
+
+		splitter.addWidget(left_panel)
+		splitter.addWidget(right_panel)
+		splitter.setSizes([740, 460])
+		main_layout.addWidget(splitter)
+		self.setCentralWidget(central)
+
+		self._pick_cid = self.map_canvas.mpl_connect("pick_event", self._on_pick_point)
+		self._selected_marker = None
+
+		self.refresh_btn.clicked.connect(self.load_positions)
+		self.save_btn.clicked.connect(self.save_label)
+
+		self.load_positions()
+
+	def _set_table_model(self):
+		df_display = self.df_positions[["pos_type", "pos_id", "latitude", "longitude", "count", "label"]].copy()
+		self._table_model = PandasModel(df_display)
+		self.positions_table.setModel(self._table_model)
+		self.positions_table.horizontalHeader().setStretchLastSection(True)
+		self.positions_table.setSortingEnabled(False)
+		if self.positions_table.selectionModel() is not None:
+			self.positions_table.selectionModel().selectionChanged.connect(self._on_table_selection_changed)
+
+	def load_positions(self):
+		query = """
+		SELECT 'start' AS pos_type,
+			startid AS pos_id,
+			latstart AS latitude,
+			lonstart AS longitude,
+			count,
+			label
+		FROM startpos
+		UNION ALL
+		SELECT 'end' AS pos_type,
+			endid AS pos_id,
+			latend AS latitude,
+			lonend AS longitude,
+			count,
+			label
+		FROM endpos
+		ORDER BY pos_type, pos_id
+		"""
+		try:
+			df = pd.read_sql(query, self.engine)
+		except Exception as e:
+			logger.error(f"Failed to load position data: {e} ({type(e)})")
+			QMessageBox.warning(self, "Load Failed", f"Could not load start/end position data:\n{e}")
+			return
+
+		if df.empty:
+			self.df_positions = pd.DataFrame(
+				columns=["pos_type", "pos_id", "latitude", "longitude", "count", "label", "x", "y"]
+			)
+		else:
+			df = df.copy()
+			df["latitude"] = pd.to_numeric(df["latitude"], errors="coerce")
+			df["longitude"] = pd.to_numeric(df["longitude"], errors="coerce")
+			df["count"] = pd.to_numeric(df["count"], errors="coerce").fillna(0).astype(int)
+			df["label"] = df["label"].fillna("")
+
+			# Keep only rows that can be rendered on map.
+			df = df.dropna(subset=["latitude", "longitude"]).reset_index(drop=True)
+			if not df.empty:
+				gdf = gpd.GeoDataFrame(
+					df,
+					geometry=[Point(xy) for xy in zip(df["longitude"], df["latitude"])],
+					crs="EPSG:4326",
+				).to_crs(epsg=3857)
+				df["x"] = gdf.geometry.x
+				df["y"] = gdf.geometry.y
+			else:
+				df["x"] = []
+				df["y"] = []
+			self.df_positions = df
+
+		self._selected_row_index = None
+		self.selected_info.setText("Select a start/end point from the map or table")
+		self.label_edit.clear()
+		self._set_table_model()
+		self._plot_positions()
+
+	def _plot_positions(self):
+		self.map_ax.clear()
+		self._scatter_index_map.clear()
+
+		if self.df_positions.empty:
+			self.map_ax.set_title("No start/end points available")
+			self.map_canvas.draw_idle()
+			return
+
+		try:
+			start_df = self.df_positions[self.df_positions["pos_type"] == "start"]
+			end_df = self.df_positions[self.df_positions["pos_type"] == "end"]
+
+			if not start_df.empty:
+				sizes = start_df["count"].clip(lower=1).astype(float) * 4.0 + 20.0
+				sc_start = self.map_ax.scatter(
+					start_df["x"],
+					start_df["y"],
+					s=sizes,
+					c="tab:blue",
+					alpha=0.85,
+					label="startpos",
+					picker=6,
+					zorder=2,
+				)
+				self._scatter_index_map[sc_start] = start_df.index.tolist()
+
+			if not end_df.empty:
+				sizes = end_df["count"].clip(lower=1).astype(float) * 4.0 + 20.0
+				sc_end = self.map_ax.scatter(
+					end_df["x"],
+					end_df["y"],
+					s=sizes,
+					c="tab:red",
+					alpha=0.85,
+					label="endpos",
+					picker=6,
+					zorder=2,
+				)
+				self._scatter_index_map[sc_end] = end_df.index.tolist()
+
+			xmin = float(self.df_positions["x"].min())
+			xmax = float(self.df_positions["x"].max())
+			ymin = float(self.df_positions["y"].min())
+			ymax = float(self.df_positions["y"].max())
+			dx = max(1.0, xmax - xmin)
+			dy = max(1.0, ymax - ymin)
+			pad_x = dx * 0.05
+			pad_y = dy * 0.05
+			self.map_ax.set_xlim(xmin - pad_x, xmax + pad_x)
+			self.map_ax.set_ylim(ymin - pad_y, ymax + pad_y)
+
+			try:
+				ctx.add_basemap(self.map_ax, crs="EPSG:3857")
+			except Exception as e:
+				logger.warning(f"Basemap load failed in Position Manager: {e} ({type(e)})")
+
+			self.map_ax.set_title("Position Manager: Start/End points")
+			self.map_ax.legend(loc="upper right")
+			self.map_ax.set_axis_off()
+			self.map_canvas.draw_idle()
+		except Exception as e:
+			logger.error(f"Error plotting positions: {e} ({type(e)})")
+			self.map_ax.set_title("Failed to render position map")
+			self.map_canvas.draw_idle()
+
+	def _on_pick_point(self, event):
+		artist = event.artist
+		if artist not in self._scatter_index_map:
+			return
+		picked = list(event.ind)
+		if not picked:
+			return
+		local_idx = picked[0]
+		mapped_rows = self._scatter_index_map.get(artist, [])
+		if local_idx >= len(mapped_rows):
+			return
+		row_index = mapped_rows[local_idx]
+		self._select_row_by_index(row_index, select_table=True)
+
+	def _on_table_selection_changed(self, selected, deselected):
+		rows = self.positions_table.selectionModel().selectedRows() if self.positions_table.selectionModel() else []
+		if not rows:
+			return
+		row_pos = rows[0].row()
+		if row_pos < 0 or row_pos >= len(self.df_positions):
+			return
+		row_index = int(self.df_positions.index[row_pos])
+		self._select_row_by_index(row_index, select_table=False)
+
+	def _select_row_by_index(self, row_index: int, select_table: bool):
+		if row_index not in self.df_positions.index:
+			return
+		self._selected_row_index = row_index
+		row = self.df_positions.loc[row_index]
+		if isinstance(row, pd.DataFrame):
+			row = row.iloc[0]
+		row_data = cast(dict[str, Any], row.to_dict())
+
+		if select_table and self.positions_table.selectionModel() is not None:
+			row_loc = self.df_positions.index.get_loc(row_index)
+			row_pos = row_loc if isinstance(row_loc, int) else self.df_positions.index.tolist().index(row_index)
+			model_index = self.positions_table.model().index(int(row_pos), 0)
+			self.positions_table.selectionModel().select(
+				model_index,
+				QItemSelectionModel.SelectionFlag.ClearAndSelect | QItemSelectionModel.SelectionFlag.Rows,
+			)
+			self.positions_table.scrollTo(model_index)
+
+		self.selected_info.setText(
+			f"Selected {str(row_data.get('pos_type', ''))} point #{int(row_data.get('pos_id', 0))}  |  "
+			f"lat={float(row_data.get('latitude', 0.0)):.6f}, lon={float(row_data.get('longitude', 0.0)):.6f}, count={int(row_data.get('count', 0))}"
+		)
+		self.label_edit.setText(str(row_data.get("label", "")))
+		self._draw_selection_marker(float(row_data.get("x", 0.0)), float(row_data.get("y", 0.0)))
+
+	def _draw_selection_marker(self, x: float, y: float):
+		if self._selected_marker is not None:
+			try:
+				self._selected_marker.remove()
+			except Exception:
+				pass
+		self._selected_marker = self.map_ax.scatter(
+			[x], [y], s=180, facecolors="none", edgecolors="yellow", linewidths=2.0, zorder=4
+		)
+		self.map_canvas.draw_idle()
+
+	def save_label(self):
+		if self._selected_row_index is None:
+			QMessageBox.information(self, "No Selection", "Select a point on the map or table first.")
+			return
+
+		if self._selected_row_index not in self.df_positions.index:
+			QMessageBox.warning(self, "Invalid Selection", "The selected point is no longer available.")
+			return
+
+		row = self.df_positions.loc[self._selected_row_index]
+		if isinstance(row, pd.DataFrame):
+			row = row.iloc[0]
+		row_data = cast(dict[str, Any], row.to_dict())
+		new_label = self.label_edit.text().strip()
+		label_value = new_label if new_label else None
+
+		try:
+			with self.engine.begin() as conn:
+				if str(row_data.get("pos_type", "")) == "start":
+					conn.execute(
+						text("UPDATE startpos SET label = :label WHERE startid = :pos_id"),
+						{"label": label_value, "pos_id": int(row_data.get("pos_id", 0))}
+					)
+				else:
+					conn.execute(
+						text("UPDATE endpos SET label = :label WHERE endid = :pos_id"),
+						{"label": label_value, "pos_id": int(row_data.get("pos_id", 0))}
+					)
+		except Exception as e:
+			logger.error(f"Failed to save position label: {e} ({type(e)})")
+			QMessageBox.warning(self, "Save Failed", f"Could not update label:\n{e}")
+			return
+
+		self.df_positions.at[self._selected_row_index, "label"] = new_label
+		self._set_table_model()
+		self._select_row_by_index(self._selected_row_index, select_table=True)
+		QMessageBox.information(self, "Saved", "Label updated successfully.")
+
 def format_duration(seconds):
 	if pd.isna(seconds):
 		return ""
@@ -165,6 +475,7 @@ class MainWindow(QMainWindow):
 		self._initial_trips_thread: QThread | None = None
 		self._initial_trips_worker: TripListWorker | None = None
 		self._active_threads: set[QThread] = set()
+		self._position_manager_window: PositionManagerWindow | None = None
 		self.Session = sessionmaker(bind=self.engine)
 		self.session = self.Session()
 		self._ensure_map_cache_schema()
@@ -336,6 +647,19 @@ class MainWindow(QMainWindow):
 		clear_map_cache_action = QAction("Clear &Map Image Cache", self)
 		clear_map_cache_action.triggered.connect(self._clear_map_image_cache)
 		cache_menu.addAction(clear_map_cache_action)
+
+		# Tools menu
+		tools_menu = menu_bar.addMenu("&Tools")
+		position_manager_action = QAction("&Position manager", self)
+		position_manager_action.triggered.connect(self._open_position_manager)
+		tools_menu.addAction(position_manager_action)
+
+	def _open_position_manager(self):
+		if self._position_manager_window is None:
+			self._position_manager_window = PositionManagerWindow(self.engine, self)
+		self._position_manager_window.show()
+		self._position_manager_window.raise_()
+		self._position_manager_window.activateWindow()
 
 	def _open_database(self):
 		path, _ = QFileDialog.getOpenFileName(self, "Open Database", "", "SQLite Database (*.db);;All Files (*)")
