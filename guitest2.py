@@ -88,6 +88,27 @@ class BasemapWorker(QObject):
 		except Exception as e:
 			self.error.emit(f'{e} {type(e)}', self.request_id)
 
+
+class TripListWorker(QObject):
+	finished = Signal(object)
+	error = Signal(str)
+
+	def __init__(self, db_url: str):
+		super().__init__()
+		self.db_url = db_url
+
+	def run(self):
+		engine = None
+		try:
+			engine = create_engine(self.db_url)
+			df_trips = pd.read_sql("SELECT id,fileid,trip_distance,tripdate,time FROM torqtrips", engine)
+			self.finished.emit(df_trips)
+		except Exception as e:
+			self.error.emit(f"Failed to load torqtrips: {e} ({type(e)})")
+		finally:
+			if engine is not None:
+				engine.dispose()
+
 def format_duration(seconds):
 	if pd.isna(seconds):
 		return ""
@@ -124,6 +145,8 @@ class MainWindow(QMainWindow):
 		self._basemap_request_context: dict[int, dict[str, object]] = {}
 		self._basemap_thread: QThread | None = None
 		self._basemap_worker: BasemapWorker | None = None
+		self._initial_trips_thread: QThread | None = None
+		self._initial_trips_worker: TripListWorker | None = None
 		self.Session = sessionmaker(bind=self.engine)
 		self.session = self.Session()
 
@@ -222,7 +245,7 @@ class MainWindow(QMainWindow):
 		empty_df = pd.DataFrame(columns=['fileid', 'trip_distance', 'tripdate', 'time'])
 		empty_df.index.name = 'id'
 		self._set_table_model(empty_df)
-		QTimer.singleShot(0, self._load_initial_trips)
+		QTimer.singleShot(0, self._start_async_initial_trips_load)
 		QTimer.singleShot(0, self._populate_metric_columns)
 		logger.debug("MainWindow initialized and UI set up")
 
@@ -267,12 +290,24 @@ class MainWindow(QMainWindow):
 		self.table.horizontalHeader().setStretchLastSection(True)
 		logger.debug(f"Table model set with {len(df)} rows and {len(df.columns)} columns")
 
-	def _load_initial_trips(self):
-		try:
-			df_trips = pd.read_sql("SELECT id,fileid,trip_distance,tripdate,time FROM torqtrips", self.engine)
-		except Exception as e:
-			logger.error(f"Failed to load torqtrips: {e} ({type(e)})")
-			return
+	def _start_async_initial_trips_load(self):
+		thread = QThread(self)
+		worker = TripListWorker(str(self.engine.url))
+		worker.moveToThread(thread)
+
+		thread.started.connect(worker.run)
+		worker.finished.connect(self._on_initial_trips_loaded)
+		worker.error.connect(self._on_initial_trips_error)
+		worker.finished.connect(thread.quit)
+		worker.error.connect(thread.quit)
+		thread.finished.connect(worker.deleteLater)
+		thread.finished.connect(thread.deleteLater)
+
+		self._initial_trips_worker = worker
+		self._initial_trips_thread = thread
+		thread.start()
+
+	def _on_initial_trips_loaded(self, df_trips: pd.DataFrame):
 		logger.debug(f"Loaded {len(df_trips)} trips from database")
 		df_trips['tripdate'] = pd.to_datetime(df_trips['tripdate'], errors='coerce')
 		df_trips['tripdate'] = df_trips['tripdate'].dt.strftime('%Y-%m-%d %H:%M')
@@ -280,6 +315,9 @@ class MainWindow(QMainWindow):
 		df_trips['trip_distance'] = df_trips['trip_distance'].apply(lambda x: f"{x/1000:.1f} km" if pd.notna(x) else "")
 		df_trips.set_index('id', inplace=True)
 		self._set_table_model(df_trips)
+
+	def _on_initial_trips_error(self, error_message: str):
+		logger.error(error_message)
 
 	def _populate_metric_columns(self):
 		metric_columns = self._get_metric_columns_with_valid_data()
@@ -301,34 +339,12 @@ class MainWindow(QMainWindow):
 		return self._torqlogs_norm_to_actual.get(_normalize_col_name(requested_column))
 
 	def _get_metric_columns_with_valid_data(self) -> list[str]:
-		# Keep only dataschema fields that exist in torqlogs and have at least one valid value.
+		# Fast startup path: list metrics that exist in torqlogs without full-table scans.
 		requested = sorted(dataschema.keys())
-		pairs: list[tuple[str, str]] = []
+		valid_metrics: list[str] = []
 		for req in requested:
 			actual = self._resolve_actual_torqlogs_column(req)
 			if actual:
-				pairs.append((req, actual))
-
-		if not pairs:
-			return []
-
-		select_parts = []
-		for req, actual in pairs:
-			alias = f"valid_{req}"
-			select_parts.append(
-				f'SUM(CASE WHEN "{actual}" IS NOT NULL AND TRIM(CAST("{actual}" AS TEXT)) != "" THEN 1 ELSE 0 END) AS "{alias}"'
-			)
-
-		q = text(f'SELECT {", ".join(select_parts)} FROM torqlogs')
-		with self.engine.connect() as conn:
-			row = conn.execute(q).mappings().first()
-
-		if not row:
-			return []
-
-		valid_metrics: list[str] = []
-		for req, _ in pairs:
-			if int(row.get(f"valid_{req}", 0) or 0) > 0:
 				valid_metrics.append(req)
 		return valid_metrics
 
