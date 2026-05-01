@@ -165,7 +165,10 @@ async def update_torqfile(args: argparse.Namespace, fileinfo: dict):
 	torqfile = session.query(TorqFile).filter(TorqFile.fileid == fileid).first()
 	trip_start = convert_string_to_datetime(fileinfo["dtripstart"])  # datetime.fromisoformat(str(datemin.values[0][0]))
 	trip_end = convert_string_to_datetime(fileinfo["dtripend"])  # datetime.fromisoformat(str(datemax.values[0][0]))
-	trip_duration = (trip_end - trip_start).total_seconds()
+	if trip_start and trip_end:
+		trip_duration = (trip_end - trip_start).total_seconds()
+	else:
+		trip_duration = 0.0
 	if isinstance(torqfile, TorqFile):
 		torqfile.startlat = float(fileinfo["dlatstart"])
 		torqfile.startlon = float(fileinfo["dlonstart"])

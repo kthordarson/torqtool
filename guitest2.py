@@ -26,7 +26,6 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from datamodels import database_init
 from schemas import dataschema
 from converter import get_args
-from utils import get_engine_session
 
 def _normalize_col_name(value: str) -> str:
 	return "".join(ch.lower() for ch in str(value) if ch.isalnum())
@@ -76,13 +75,7 @@ class BasemapWorker(QObject):
 	def run(self):
 		try:
 			west, east, south, north = self.bounds
-			img, ext = ctx.bounds2img(  # type: ignore[call-arg]
-				west,
-				south,
-				east,
-				north,
-				zoom=cast(Any, self.zoom),
-			)
+			img, ext = ctx.bounds2img(west, south, east, north, zoom=cast(Any, self.zoom),)
 			self.finished.emit(img, ext, self.request_id)
 			logger.debug(f"BasemapWorker finished fetching basemap for request_id={self.request_id}")
 		except Exception as e:
@@ -136,6 +129,8 @@ class MainWindow(QMainWindow):
 			dburl = f"postgresql://{args.dbuser}:{args.dbpass}@{args.dbhost}/{args.dbname}"
 		elif self.args.dbmode == 'sqlite':
 			dburl = f"sqlite:///{args.dbfile}"
+		else:
+			dburl = ''
 		# engine = create_engine(dburl)
 		self.engine = create_engine(dburl)
 		database_init(self.engine)
@@ -477,7 +472,10 @@ class MainWindow(QMainWindow):
 		img_artists = self.map_canvas.ax.images
 		if not img_artists:
 			return
-		mpimg.imsave(buf, img_artists[0].get_array(), format='png')
+		arr = img_artists[0].get_array()
+		if arr is None:
+			return
+		mpimg.imsave(buf, arr, format='png')
 		image_bytes = buf.getvalue()
 		upsert_sql = text(
 			"""
@@ -673,12 +671,14 @@ class MainWindow(QMainWindow):
 		self.map_canvas.draw_idle()
 		ctx = self._basemap_request_context.get(request_id)
 		if ctx:
+			a, b, c, d = ext
+			ext_typed: tuple[float, float, float, float] = (float(a), float(b), float(c), float(d))
 			self._save_cached_map_image(
 				cast(list[int], ctx["fileids"]),
 				cast(int, ctx["zoom"]),
 				cast(str, ctx["colormap"]),
 				cast(str, ctx["metric"]),
-				tuple(float(v) for v in ext),
+				ext_typed,
 			)
 			self._basemap_request_context.pop(request_id, None)
 

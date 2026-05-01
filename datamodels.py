@@ -1,5 +1,6 @@
 import sys
 import re
+import hashlib
 from datetime import datetime
 import pandas as pd
 from loguru import logger
@@ -96,6 +97,15 @@ for _col_name, _col_type in list(COLUMN_TYPES.items()):
 class Base(DeclarativeBase):
 	pass
 
+
+def stable_fileid_from_csvhash(csvhash: str) -> int:
+	"""
+	Generate a deterministic signed 31-bit integer id from file hash.
+	Using 31-bit keeps compatibility with existing INTEGER columns.
+	"""
+	digest = hashlib.sha256(csvhash.encode("utf-8")).digest()
+	return int.from_bytes(digest[:4], "big") & 0x7FFFFFFF
+
 class Filestats(Base):
 	__tablename__ = 'filestats'
 	index: Mapped[int] = mapped_column(primary_key=True)
@@ -135,7 +145,8 @@ class TorqFile(Base):
 	startid: Mapped[int | None] = mapped_column(Integer, nullable=True)
 	endid: Mapped[int | None] = mapped_column(Integer, nullable=True)
 	csvfile = Column('csvfile', Text)
-	csvhash = Column('csvhash', Text)
+	# csvhash = Column('csvhash', Text, unique=True, nullable=False)
+	csvhash: Mapped[str] = mapped_column(String, unique=True, nullable=True)
 	import_date: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 	trip_start: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 	trip_end: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -149,7 +160,8 @@ class TorqFile(Base):
 	endlat: Mapped[float | None] = mapped_column(Float, nullable=True)
 	sent_rows = Column('sent_rows', Integer, default=0, unique=False)
 
-	def __init__(self, csvfile, csvhash):
+	def __init__(self, csvfile, csvhash, fileid=None):
+		self.fileid = fileid if fileid is not None else stable_fileid_from_csvhash(str(csvhash))
 		self.csvfile = csvfile
 		self.csvhash = csvhash
 		self.import_date = datetime.now()
@@ -223,6 +235,9 @@ def database_dropall(engine):  # drop all tables
 def database_init(engine):  # create tables
 	try:
 		Base.metadata.create_all(bind=engine)
+		with engine.begin() as conn:
+			# Keep legacy databases aligned: enforce stable identity by hash.
+			conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_torqfiles_csvhash ON torqfiles(csvhash)"))
 	except (OperationalError, AssertionError) as e:
 		logger.error(f'[dbinit] {type(e)} {e}')
 		sys.exit(-1)
@@ -240,6 +255,7 @@ async def send_torqfiles(filelist, session, debug=False):  # returns list of new
 	for idx,tf in enumerate(filelist):
 		csvfile = str(tf['csvfile'])
 		csvhash = tf['csvhash']
+		stable_fileid = stable_fileid_from_csvhash(csvhash)
 		if csvhash in hlist.values:  # [k.csvhash for k in torqdbfiles]:
 			# check existing entry
 			fid = session.execute(text(f'select fileid from torqfiles where csvhash="{csvhash}"')).one()[0]
@@ -247,7 +263,14 @@ async def send_torqfiles(filelist, session, debug=False):  # returns list of new
 			if debug:
 				logger.warning(f'[st {idx}/{len(filelist)}] {csvfile} {fid=} already in db with {check}')  # {tf}')
 		else:
-			torqfile = TorqFile(csvfile=csvfile, csvhash=csvhash)
+			existing_by_id = session.query(TorqFile).filter(TorqFile.fileid == stable_fileid).first()
+			if existing_by_id and existing_by_id.csvhash != csvhash:
+				logger.error(
+					f"stable fileid collision for {csvfile}: fileid={stable_fileid} "
+					f"existing_hash={existing_by_id.csvhash} new_hash={csvhash}"
+				)
+				continue
+			torqfile = TorqFile(csvfile=csvfile, csvhash=csvhash, fileid=stable_fileid)
 			session.add(torqfile)
 			if debug:
 				pass   # logger.info(f'[st {idx}/{len(filelist)}] {csvfile} not in db tf: {tf} torqfile: {torqfile}')

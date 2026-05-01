@@ -420,7 +420,7 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs'):
 
 			# Check if file has already been processed
 			csvhash = md5(Path(csvfile).read_bytes()).hexdigest()
-			with session.get_bind().connect() as conn:
+			with session.get_bind().connect() as conn:  # type: ignore[union-attr]
 				existing_file = conn.execute(text("SELECT fileid FROM torqfiles WHERE csvhash = :csvhash"),{"csvhash": csvhash}).first()
 
 			if existing_file:
@@ -474,7 +474,7 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs'):
 
 	# Second pass: Read and insert data from valid files
 	df = pd.DataFrame()
-	with session.get_bind().connect() as conn:
+	with session.get_bind().connect() as conn:  # type: ignore[union-attr]
 		if conn.dialect.name == "sqlite":
 			conn.execute(text("PRAGMA journal_mode = WAL"))  # Use Write-Ahead Logging
 			conn.execute(text("PRAGMA synchronous = NORMAL"))  # Reduce synchronization
@@ -545,6 +545,12 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs'):
 					df = df[ordered_cols]
 
 					# Insert data
+					# SQLite limits bind variables to 999 (or 32766 on newer builds).
+					# Use the conservative limit so chunksize * num_columns stays within it.
+					SQLITE_MAX_VARS = 999
+					safe_chunksize = max(1, SQLITE_MAX_VARS // len(df.columns))
+					requested_chunksize = max(1, int(args.sqlchunksize))
+					effective_chunksize = min(requested_chunksize, safe_chunksize)
 					logger.info(f"[{csv_idx}/{len(valid_files)}] Sending {len(df)} rows from {csvfile} with fileid {fileid}")
 					df.to_sql(
 						table_name,
@@ -552,7 +558,7 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs'):
 						if_exists='append',
 						index=False,
 						method='multi',
-						chunksize=max(1000, int(args.sqlchunksize)),
+						chunksize=effective_chunksize,
 					)
 
 					# Update trip and file info for this fileid

@@ -11,7 +11,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import DataError, IntegrityError, OperationalError
 from sqlalchemy.orm import sessionmaker, Session
 import sqlite3
-from datamodels import TorqFile, database_init
+from datamodels import TorqFile, database_init, stable_fileid_from_csvhash
 from utils import get_parser, get_engine_session, MIN_FILESIZE, convert_string_to_datetime, read_csvs_to_dataframe_and_insert
 from schemas import canonicalize_columns
 
@@ -86,7 +86,10 @@ async def read_csv_file(logfile:str, args:argparse.Namespace):
 		# Check trip duration more efficiently
 		first_time = convert_string_to_datetime(data[time_col][0])
 		last_time = convert_string_to_datetime(data[time_col][-1])
-		tripdur = (last_time - first_time).total_seconds()
+		if first_time and last_time:
+			tripdur = (last_time - first_time).total_seconds()
+		else:
+			tripdur = 0
 
 		if tripdur > 86400:
 			logger.warning(f'Not Skipping {logfile} - trip duration too long: {tripdur}s')
@@ -124,6 +127,7 @@ async def send_data_to_db(args: argparse.Namespace, data: pd.DataFrame, csvfilen
 	"""
 	session = get_engine_session(args)
 	csvhash = md5(open(csvfilename, "rb").read()).hexdigest()
+	stable_fileid = stable_fileid_from_csvhash(csvhash)
 	# fileinfo = {
 	# 	'dtripstart': data['gpstime'][0],
 	# 	'dtripend': data['gpstime'][len(data)-1],
@@ -133,9 +137,18 @@ async def send_data_to_db(args: argparse.Namespace, data: pd.DataFrame, csvfilen
 	# 	'dlonend': float(data['longitude'][len(data)-1]),}
 	# user only stem part of filename in db
 	try:
-		t = TorqFile(csvfile=Path(csvfilename).parts[-1], csvhash=csvhash)
-		session.add(t)
-		session.commit()
+		t = session.query(TorqFile).filter(TorqFile.csvhash == csvhash).first()
+		if t is None:
+			existing_by_id = session.query(TorqFile).filter(TorqFile.fileid == stable_fileid).first()
+			if existing_by_id and existing_by_id.csvhash != csvhash:
+				logger.error(
+					f"stable fileid collision for {csvfilename}: fileid={stable_fileid} "
+					f"existing_hash={existing_by_id.csvhash} new_hash={csvhash}"
+				)
+				return None
+			t = TorqFile(csvfile=Path(csvfilename).parts[-1], csvhash=csvhash, fileid=stable_fileid)
+			session.add(t)
+			session.commit()
 	except IntegrityError as e:
 		# session.close()
 		logger.error(f"{type(e)} {e} from {csvfilename}")
