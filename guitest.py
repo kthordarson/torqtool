@@ -41,24 +41,6 @@ class KeyPressFilter(QObject):
 			# widget.label1.setText(text)
 		return False
 
-
-class TripplotModel(QtSql.QSqlQueryModel):
-    def __init__(self, fileid):
-        super().__init__()
-        self.fileid = fileid
-        self.setQuery(f'select latitude, longitude from torqlogs where fileid={self.fileid}')
-        self.setHeaderData(1, QtCore.Qt.Orientation.Horizontal, "latitude")
-        self.setHeaderData(2, QtCore.Qt.Orientation.Horizontal, "longitude")
-
-
-class Torqfilemodel(QtSql.QSqlQueryModel):
-    def __init__(self):
-        super().__init__()
-        self.setQuery('select fileid,trip_start,sent_rows from torqfiles ')
-        self.setHeaderData(0, QtCore.Qt.Orientation.Horizontal, "fileid")
-        self.setHeaderData(1, QtCore.Qt.Orientation.Horizontal, "trip_start")
-        self.setHeaderData(2, QtCore.Qt.Orientation.Horizontal, "entries")
-
 class CustomSqlModel(QtSql.QSqlQueryModel):
 	def __init__(self) -> None:
 		super().__init__()
