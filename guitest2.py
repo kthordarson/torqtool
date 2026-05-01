@@ -542,12 +542,6 @@ class PandasModel(QAbstractTableModel):
 		self._data.set_index(self._data.columns[0], inplace=True)
 		self.layoutChanged.emit()
 
-	def old_sort(self, column, order):
-		colname = self._data.columns[column]
-		self.layoutAboutToBeChanged.emit()
-		self._data.sort_values(by=colname, ascending=(order == Qt.SortOrder.AscendingOrder), inplace=True, ignore_index=True)
-		self.layoutChanged.emit()
-
 	def rowCount(self, parent: QModelIndex | QPersistentModelIndex = QModelIndex()) -> int:
 		return self._data.shape[0]
 
