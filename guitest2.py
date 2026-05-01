@@ -10,7 +10,7 @@ from typing import Any, cast
 from PySide6.QtWidgets import (
 	QApplication, QMainWindow, QTableView, QVBoxLayout, QWidget, QSplitter,
 	QHBoxLayout, QLabel, QComboBox, QFrame, QListWidget, QListWidgetItem,
-	QScrollArea, QFileDialog, QMessageBox
+	QScrollArea, QFileDialog, QMessageBox, QSlider
 )
 from PySide6.QtGui import QFont, QAction
 from PySide6.QtWidgets import QAbstractItemView
@@ -154,6 +154,7 @@ class MainWindow(QMainWindow):
 		self._selection_stats_cache: dict[tuple[int, ...], tuple[dict, dict[str, dict[str, float]]]] = {}
 		self._map_cache_version = "v2"
 		self._current_colormap = 'Set1'
+		self._dot_size_scale = 1.0
 		self._plot_refresh_timer = QTimer(self)
 		self._plot_refresh_timer.setSingleShot(True)
 		self._plot_refresh_timer.timeout.connect(self.refresh_plot)
@@ -186,8 +187,22 @@ class MainWindow(QMainWindow):
 		self.zoom_combo.setFixedWidth(60)
 		self.zoom_combo.setMaximumHeight(25)
 		self.zoom_combo.currentTextChanged.connect(self.on_zoom_changed)
+		dot_size_label = QLabel("Dot size:")
+		self.dot_size_slider = QSlider(Qt.Orientation.Horizontal)
+		self.dot_size_slider.setMinimum(25)
+		self.dot_size_slider.setMaximum(300)
+		self.dot_size_slider.setValue(100)
+		self.dot_size_slider.setSingleStep(5)
+		self.dot_size_slider.setPageStep(25)
+		self.dot_size_slider.setFixedWidth(140)
+		self.dot_size_slider.valueChanged.connect(self.on_dot_size_changed)
+		self.dot_size_value_label = QLabel("1.00x")
+		self.dot_size_value_label.setFixedWidth(44)
 		zoom_layout.addWidget(zoom_label)
 		zoom_layout.addWidget(self.zoom_combo)
+		zoom_layout.addWidget(dot_size_label)
+		zoom_layout.addWidget(self.dot_size_slider)
+		zoom_layout.addWidget(self.dot_size_value_label)
 		zoom_layout.addStretch()
 		zoom_layout.setSpacing(10)
 		zoom_layout.setContentsMargins(10, 3, 10, 3)
@@ -372,6 +387,12 @@ class MainWindow(QMainWindow):
 		"""Called when user changes map zoom"""
 		# Debounce zoom updates to avoid blocking UI with repeated basemap fetches.
 		self._plot_refresh_timer.start(300)
+
+	def on_dot_size_changed(self, value: int):
+		"""Called when user adjusts map dot size multiplier."""
+		self._dot_size_scale = float(value) / 100.0
+		self.dot_size_value_label.setText(f"{self._dot_size_scale:.2f}x")
+		self._plot_refresh_timer.start(120)
 
 	def on_metric_selection_changed(self):
 		"""Called when user changes the metric selection in the list."""
@@ -831,7 +852,7 @@ class MainWindow(QMainWindow):
 			if len(x_vals) == 0:
 				continue
 
-			sizes = speed_vals.clip(lower=1, upper=50)
+			sizes = (speed_vals.clip(lower=1, upper=50) * self._dot_size_scale).clip(lower=1, upper=200)
 			base_color = cmap(idx % cycle_length)
 			speed_abs_max = float(speed_vals.abs().max())
 			colors = [(
