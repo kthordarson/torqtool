@@ -248,12 +248,6 @@ async def cli_main(args):
 			logger.info(f'{logcount=}')
 			s.close()
 			read_csvs_to_dataframe_and_insert(args)
-			# sess = sessionmaker(bind=engine)
-			# s = sess()
-			# populate_trips_and_update_files(s)
-			# s.close()
-			# _ = combined_df.to_sql("torqlogs", con=engine, if_exists="append", index=False, method='multi', chunksize=args.sqlchunksize)
-			# send_result = await send_data_to_db(args, data, csvfilename)
 		except Exception as e:
 			logger.error(f'error {type(e)} {e}')
 			sys.exit(-1)
