@@ -519,17 +519,6 @@ schema_datatypes = {
     'o2sensor1widerangevoltagev': pl.Float64,
 }
 
-def get_csv_headers(args):
-    csvfiles = [str(k) for k in Path(args.logpath).glob("*.csv.colfixbak")]
-    headers = []
-    for file in csvfiles:
-        df = pl.read_csv(file, ignore_errors=True, n_rows=1, truncate_ragged_lines=True)
-        # headers.extend(df.columns)
-        headers.extend(list(set([k for k in df.columns])))
-    allheaders = list(set([k for k in headers]))
-    logger.info(f'found {len(allheaders)} / {len(headers)}  headers')
-    return allheaders
-
 def merge_colum_data(new_ncc: list, ncc: dict):
     import re
 
