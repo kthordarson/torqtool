@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QAbstractItemView
 from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex, QPersistentModelIndex, QTimer, QObject, Signal, QThread
+from PySide6.QtGui import QCloseEvent
 from sqlalchemy import create_engine, text, inspect
 from sqlalchemy.orm import sessionmaker
 import matplotlib
@@ -284,8 +285,8 @@ class MainWindow(QMainWindow):
 		self.table.setModel(self.table_model)
 		self.table.setSortingEnabled(True)
 		self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-		# Avoid expensive accidental multi-row plotting from range/extended selection.
-		self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+		# Allow Ctrl/Shift multi-select so multiple trips can be plotted together.
+		self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
 		self.table.selectionModel().selectionChanged.connect(self.on_row_selected)
 		self.table.horizontalHeader().setStretchLastSection(True)
 		logger.debug(f"Table model set with {len(df)} rows and {len(df.columns)} columns")
@@ -577,11 +578,30 @@ class MainWindow(QMainWindow):
 		# Tile/network failures should not break UI interaction.
 		print(f"{self} Basemap load failed: {err} (request_id={request_id}) current_id={self._basemap_request_id}")
 
+	def _shutdown_thread(self, thread: QThread | None, name: str):
+		if thread is None:
+			return
+		if not thread.isRunning():
+			return
+		logger.debug(f"Stopping thread '{name}'")
+		thread.requestInterruption()
+		thread.quit()
+		if not thread.wait(3000):
+			logger.warning(f"Thread '{name}' did not stop in time; terminating")
+			thread.terminate()
+			thread.wait(1000)
+
+	def closeEvent(self, event: QCloseEvent):
+		self._shutdown_thread(self._basemap_thread, "basemap")
+		self._shutdown_thread(self._initial_trips_thread, "initial_trips")
+		super().closeEvent(event)
+
 	def on_row_selected(self, selected, deselected):
 		rows = sorted(set(index.row() for index in self.table.selectionModel().selectedRows()))
 		if rows:
 			logger.debug(f"on_row_selected with {len(rows)} selected row(s): {rows[:5]}{'...' if len(rows) > 5 else ''}")
-			self._plot_for_rows(rows)
+			# Debounce bursty selection events while user is building a multi-row selection.
+			self._plot_refresh_timer.start(250)
 
 class PandasModel(QAbstractTableModel):
 	"""Minimal Qt model for pandas DataFrame for QTableView."""
