@@ -87,7 +87,15 @@ class BasemapWorker(QObject):
 	def run(self):
 		try:
 			west, east, south, north = self.bounds
-			img, ext = ctx.bounds2img(west, south, east, north, zoom=cast(Any, self.zoom),)
+			source = None
+			try:
+				source = cast(Any, ctx.providers).OpenStreetMap.Mapnik
+			except Exception:
+				source = None
+			kwargs: dict[str, Any] = {"zoom": cast(Any, self.zoom)}
+			if source is not None:
+				kwargs["source"] = source
+			img, ext = ctx.bounds2img(west, south, east, north, **kwargs)
 			self.finished.emit(img, ext, self.request_id)
 			logger.debug(f"BasemapWorker finished fetching basemap for request_id={self.request_id}")
 		except Exception as e:
@@ -239,11 +247,12 @@ class PositionManagerWindow(QMainWindow):
 		self.resize(1240, 780)
 
 		self._selected_row_index: int | None = None
+		self._selected_row_indices: list[int] = []
 		self._scatter_index_map: dict[Any, list[int]] = {}
 		self._table_model: PositionTableModel | None = None
 		self._full_bounds: tuple[float, float, float, float] | None = None
 		self._basemap_artist = None
-		self._selected_marker = None
+		self._selected_markers: list[Any] = []
 		self._basemap_mem_cache: dict[str, tuple[bytes, tuple[float, float, float, float]]] = {}
 		self._load_thread: QThread | None = None
 		self._load_worker: PositionLoadWorker | None = None
@@ -251,6 +260,12 @@ class PositionManagerWindow(QMainWindow):
 		self._basemap_worker: BasemapWorker | None = None
 		self._basemap_request_id = 0
 		self._pending_basemap_key: str | None = None
+		self._queued_basemap_request: tuple[tuple[float, float, float, float], int] | None = None
+		self._pending_close = False
+		self._restore_after_reload: dict[str, Any] | None = None
+		self._min_zoom_span_m = 25.0
+		self._current_basemap_zoom = 8
+		self._min_count_filter = 0
 		self.df_positions = pd.DataFrame(
 			columns=["pos_type", "pos_id", "latitude", "longitude", "count", "label", "x", "y"]
 		)
@@ -272,7 +287,7 @@ class PositionManagerWindow(QMainWindow):
 
 		self.positions_table = QTableView()
 		self.positions_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-		self.positions_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+		self.positions_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
 		right_layout.addWidget(self.positions_table, stretch=6)
 
 		editor = QFrame()
@@ -296,6 +311,10 @@ class PositionManagerWindow(QMainWindow):
 		self.lon_spin.setRange(-180.0, 180.0)
 		self.count_spin = QSpinBox()
 		self.count_spin.setRange(0, 10_000_000)
+		self.min_count_filter_spin = QSpinBox()
+		self.min_count_filter_spin.setRange(0, 10_000_000)
+		self.min_count_filter_spin.setValue(0)
+		self.min_count_filter_spin.setToolTip("Only show rows with count >= this value")
 		self.label_edit = QLineEdit()
 		self.label_edit.setPlaceholderText("Location label")
 		form.addRow("Type", self.pos_type_combo)
@@ -303,6 +322,7 @@ class PositionManagerWindow(QMainWindow):
 		form.addRow("Latitude", self.lat_spin)
 		form.addRow("Longitude", self.lon_spin)
 		form.addRow("Count", self.count_spin)
+		form.addRow("Min count (table)", self.min_count_filter_spin)
 		form.addRow("Label", self.label_edit)
 		editor_layout.addLayout(form)
 
@@ -310,12 +330,16 @@ class PositionManagerWindow(QMainWindow):
 		self.refresh_btn = QPushButton("Refresh")
 		self.new_btn = QPushButton("New")
 		self.save_btn = QPushButton("Save")
+		self.apply_label_btn = QPushButton("Apply label to selected")
 		self.delete_btn = QPushButton("Delete")
+		self.zoom_in_btn = QPushButton("Zoom in")
 		self.zoom_out_btn = QPushButton("Full zoom out")
 		button_row.addWidget(self.refresh_btn)
 		button_row.addWidget(self.new_btn)
 		button_row.addWidget(self.save_btn)
+		button_row.addWidget(self.apply_label_btn)
 		button_row.addWidget(self.delete_btn)
+		button_row.addWidget(self.zoom_in_btn)
 		button_row.addWidget(self.zoom_out_btn)
 		button_row.addStretch()
 		editor_layout.addLayout(button_row)
@@ -332,7 +356,10 @@ class PositionManagerWindow(QMainWindow):
 		self.refresh_btn.clicked.connect(self.load_positions)
 		self.new_btn.clicked.connect(self._start_new_entry)
 		self.save_btn.clicked.connect(self.save_entry)
+		self.apply_label_btn.clicked.connect(self.apply_label_to_selected)
 		self.delete_btn.clicked.connect(self.delete_entry)
+		self.min_count_filter_spin.valueChanged.connect(self._on_min_count_filter_changed)
+		self.zoom_in_btn.clicked.connect(self._zoom_in)
 		self.zoom_out_btn.clicked.connect(self._zoom_full)
 
 		self.load_positions()
@@ -346,7 +373,94 @@ class PositionManagerWindow(QMainWindow):
 	@staticmethod
 	def _bounds_key(bounds: tuple[float, float, float, float], zoom: int) -> str:
 		xmin, xmax, ymin, ymax = bounds
-		return f"posmgr|{zoom}|{round(xmin,1)}|{round(xmax,1)}|{round(ymin,1)}|{round(ymax,1)}"
+		# Quantize to improve cache hit ratio across tiny pan/zoom jitter.
+		q = 5.0
+		xmin_q = round(xmin / q) * q
+		xmax_q = round(xmax / q) * q
+		ymin_q = round(ymin / q) * q
+		ymax_q = round(ymax / q) * q
+		return f"posmgr|{zoom}|{xmin_q:.1f}|{xmax_q:.1f}|{ymin_q:.1f}|{ymax_q:.1f}"
+
+	@staticmethod
+	def _normalize_bounds(bounds: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
+		x0, x1, y0, y1 = bounds
+		xmin, xmax = (x0, x1) if x0 <= x1 else (x1, x0)
+		ymin, ymax = (y0, y1) if y0 <= y1 else (y1, y0)
+		return xmin, xmax, ymin, ymax
+
+	def _current_view_bounds(self) -> tuple[float, float, float, float]:
+		x0, x1 = self.map_ax.get_xlim()
+		y0, y1 = self.map_ax.get_ylim()
+		return self._normalize_bounds((float(x0), float(x1), float(y0), float(y1)))
+
+	def _recommended_zoom_for_bounds(self, bounds: tuple[float, float, float, float]) -> int:
+		xmin, xmax, ymin, ymax = bounds
+		span = max(xmax - xmin, ymax - ymin)
+		if span > 20_000_000:
+			return 3
+		if span > 10_000_000:
+			return 4
+		if span > 5_000_000:
+			return 5
+		if span > 2_500_000:
+			return 6
+		if span > 1_000_000:
+			return 7
+		if span > 300_000:
+			return 8
+		if span > 120_000:
+			return 9
+		if span > 50_000:
+			return 10
+		if span > 20_000:
+			return 11
+		if span > 8_000:
+			return 12
+		if span > 3_000:
+			return 13
+		if span > 1_200:
+			return 14
+		if span > 500:
+			return 15
+		if span > 250:
+			return 16
+		return 17
+
+	def _refresh_basemap_for_current_view(self, target_zoom: int | None = None):
+		bounds = self._current_view_bounds()
+		zoom = target_zoom if target_zoom is not None else self._recommended_zoom_for_bounds(bounds)
+		zoom = max(3, min(18, int(zoom)))
+		self._current_basemap_zoom = zoom
+		self._start_async_basemap(bounds, zoom)
+
+	@staticmethod
+	def _thread_is_running(thread: QThread | None) -> bool:
+		if thread is None:
+			return False
+		try:
+			return thread.isRunning()
+		except RuntimeError:
+			return False
+
+	def _stop_thread(self, attr_name: str, wait_ms: int = 1200) -> bool:
+		thread = cast(QThread | None, getattr(self, attr_name, None))
+		if thread is None:
+			return True
+		try:
+			if not thread.isRunning():
+				setattr(self, attr_name, None)
+				return True
+			thread.requestInterruption()
+			thread.quit()
+			stopped = thread.wait(wait_ms)
+			if stopped:
+				setattr(self, attr_name, None)
+				return True
+			logger.warning(f"Thread {attr_name} still running after {wait_ms}ms; waiting for natural completion")
+			return False
+		except RuntimeError:
+			setattr(self, attr_name, None)
+			return True
 
 	def _load_cached_basemap(self, cache_key: str) -> tuple[bytes, tuple[float, float, float, float]] | None:
 		if cache_key in self._basemap_mem_cache:
@@ -402,10 +516,7 @@ class PositionManagerWindow(QMainWindow):
 			})
 
 	def _start_async_basemap(self, bounds: tuple[float, float, float, float], zoom: int):
-		self._basemap_request_id += 1
-		request_id = self._basemap_request_id
 		cache_key = self._bounds_key(bounds, zoom)
-		self._pending_basemap_key = cache_key
 
 		cached = self._load_cached_basemap(cache_key)
 		if cached:
@@ -413,10 +524,14 @@ class PositionManagerWindow(QMainWindow):
 			self._draw_basemap_from_bytes(img, ext)
 			return
 
-		if self._basemap_thread is not None and self._basemap_thread.isRunning():
-			self._basemap_thread.requestInterruption()
-			self._basemap_thread.quit()
-			self._basemap_thread.wait(800)
+		if self._thread_is_running(self._basemap_thread):
+			# Keep latest viewport request and execute it after current worker finishes.
+			self._queued_basemap_request = (bounds, zoom)
+			return
+
+		self._basemap_request_id += 1
+		request_id = self._basemap_request_id
+		self._pending_basemap_key = cache_key
 
 		thread = QThread()
 		worker = BasemapWorker(bounds, zoom, request_id)
@@ -428,9 +543,22 @@ class PositionManagerWindow(QMainWindow):
 		worker.error.connect(thread.quit)
 		thread.finished.connect(worker.deleteLater)
 		thread.finished.connect(thread.deleteLater)
+		thread.finished.connect(self._on_basemap_thread_finished)
 		self._basemap_thread = thread
 		self._basemap_worker = worker
 		thread.start()
+
+	def _on_basemap_thread_finished(self):
+		self._basemap_thread = None
+		self._basemap_worker = None
+		if self._queued_basemap_request is not None:
+			bounds, zoom = self._queued_basemap_request
+			self._queued_basemap_request = None
+			self._start_async_basemap(bounds, zoom)
+			return
+		if self._pending_close and not self._thread_is_running(self._load_thread):
+			self._pending_close = False
+			self.close()
 
 	def _on_basemap_loaded(self, img, ext, request_id: int):
 		if request_id != self._basemap_request_id:
@@ -439,12 +567,20 @@ class PositionManagerWindow(QMainWindow):
 		ext_typed: tuple[float, float, float, float] = (float(a), float(b), float(c), float(d))
 		if self._pending_basemap_key is not None:
 			self._save_cached_basemap(self._pending_basemap_key, img, ext_typed)
+		self._current_basemap_zoom = max(3, min(18, self._current_basemap_zoom))
 		self._draw_basemap_array(img, ext_typed)
 
 	def _on_basemap_error(self, error: str, request_id: int):
 		if request_id != self._basemap_request_id:
 			return
 		logger.warning(f"PositionManager basemap load failed: {error}")
+		# Fallback path: try a synchronous paint if async worker/provider failed.
+		if self._full_bounds is not None:
+			try:
+				ctx.add_basemap(self.map_ax, crs="EPSG:3857")
+				self.map_canvas.draw()
+			except Exception as sync_err:
+				logger.warning(f"PositionManager sync basemap fallback failed: {sync_err} ({type(sync_err)})")
 
 	def _draw_basemap_array(self, img, ext: tuple[float, float, float, float]):
 		if self._basemap_artist is not None:
@@ -453,26 +589,36 @@ class PositionManagerWindow(QMainWindow):
 			except Exception:
 				pass
 		self._basemap_artist = self.map_ax.imshow(img, extent=ext, interpolation="bilinear", zorder=0)
-		self.map_canvas.draw_idle()
+		self.map_canvas.draw()
 
 	def _draw_basemap_from_bytes(self, image_bytes: bytes, ext: tuple[float, float, float, float]):
 		img = mpimg.imread(io.BytesIO(image_bytes), format="png")
 		self._draw_basemap_array(img, ext)
 
 	def _set_table_model(self):
-		self._table_model = PositionTableModel(self.df_positions)
+		filtered_df = self.df_positions
+		if self._min_count_filter > 0 and not self.df_positions.empty:
+			filtered_df = self.df_positions[self.df_positions["count"] >= self._min_count_filter]
+		self._table_model = PositionTableModel(filtered_df)
 		self.positions_table.setModel(self._table_model)
 		self.positions_table.horizontalHeader().setStretchLastSection(True)
 		self.positions_table.setSortingEnabled(True)
+		self.positions_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+		self.positions_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
 		if self.positions_table.selectionModel() is not None:
 			self.positions_table.selectionModel().selectionChanged.connect(self._on_table_selection_changed)
 
+	def _on_min_count_filter_changed(self, value: int):
+		self._min_count_filter = int(value)
+		self._set_table_model()
+		if self._selected_row_indices:
+			self._select_rows_by_indices(self._selected_row_indices, select_table=True, zoom_to_points=False)
+
 	def load_positions(self):
 		self.selected_info.setText("Loading position data...")
-		if self._load_thread is not None and self._load_thread.isRunning():
-			self._load_thread.requestInterruption()
-			self._load_thread.quit()
-			self._load_thread.wait(800)
+		if self._thread_is_running(self._load_thread):
+			self.selected_info.setText("Load already in progress")
+			return
 
 		thread = QThread()
 		worker = PositionLoadWorker(self.engine.url.render_as_string(hide_password=False))
@@ -484,15 +630,55 @@ class PositionManagerWindow(QMainWindow):
 		worker.error.connect(thread.quit)
 		thread.finished.connect(worker.deleteLater)
 		thread.finished.connect(thread.deleteLater)
+		thread.finished.connect(self._on_load_thread_finished)
 		self._load_thread = thread
 		self._load_worker = worker
 		thread.start()
 
+	def _on_load_thread_finished(self):
+		self._load_thread = None
+		self._load_worker = None
+		if self._pending_close and not self._thread_is_running(self._basemap_thread):
+			self._pending_close = False
+			self.close()
+
 	def _on_positions_loaded(self, df: pd.DataFrame):
 		self.df_positions = df.reset_index(drop=True)
 		self._selected_row_index = None
+		self._selected_row_indices = []
 		self._set_table_model()
 		self._plot_positions()
+
+		restore_state = self._restore_after_reload
+		self._restore_after_reload = None
+		if restore_state:
+			bounds = cast(tuple[float, float, float, float] | None, restore_state.get("bounds"))
+			saved_zoom = int(restore_state.get("zoom", self._current_basemap_zoom))
+			selected_keys = cast(list[dict[str, Any]] | None, restore_state.get("selected_keys"))
+
+			if bounds:
+				self.map_ax.set_xlim(bounds[0], bounds[1])
+				self.map_ax.set_ylim(bounds[2], bounds[3])
+				self.map_canvas.draw_idle()
+				self._refresh_basemap_for_current_view(target_zoom=saved_zoom)
+
+			if selected_keys and not self.df_positions.empty:
+				matched_indices: list[int] = []
+				for key in selected_keys:
+					k_type = str(key.get("pos_type", ""))
+					k_id = int(key.get("pos_id", 0))
+					if not k_type or k_id <= 0:
+						continue
+					matched = self.df_positions[
+						(self.df_positions["pos_type"] == k_type) &
+						(self.df_positions["pos_id"] == k_id)
+					]
+					if not matched.empty:
+						matched_indices.append(int(matched.index[0]))
+				if matched_indices:
+					self._select_rows_by_indices(matched_indices, select_table=True, zoom_to_points=False)
+					return
+
 		self._start_new_entry()
 
 	def _on_positions_error(self, error_message: str):
@@ -540,14 +726,8 @@ class PositionManagerWindow(QMainWindow):
 		self.map_ax.legend(loc="upper right")
 		self.map_ax.set_axis_off()
 
-		span = max(self._full_bounds[1] - self._full_bounds[0], self._full_bounds[3] - self._full_bounds[2])
-		zoom = 12
-		if span < 3000:
-			zoom = 15
-		elif span < 7000:
-			zoom = 14
-		elif span < 15000:
-			zoom = 13
+		zoom = self._recommended_zoom_for_bounds(self._full_bounds)
+		self._current_basemap_zoom = zoom
 		self._start_async_basemap(self._full_bounds, zoom)
 		self.map_canvas.draw_idle()
 
@@ -562,70 +742,144 @@ class PositionManagerWindow(QMainWindow):
 		mapped_rows = self._scatter_index_map.get(artist, [])
 		if local_idx >= len(mapped_rows):
 			return
-		self._select_row_by_index(mapped_rows[local_idx], select_table=True, zoom_to_point=True)
+		row_index = mapped_rows[local_idx]
+		additive = bool(getattr(getattr(event, "mouseevent", None), "key", None) in ("control", "ctrl", "shift"))
+		if additive and self._selected_row_indices:
+			rows = list(dict.fromkeys(self._selected_row_indices + [row_index]))
+			self._select_rows_by_indices(rows, select_table=True, zoom_to_points=False)
+		else:
+			self._select_rows_by_indices([row_index], select_table=True, zoom_to_points=True)
 
 	def _on_table_selection_changed(self, selected, deselected):
 		if self.positions_table.selectionModel() is None or self._table_model is None:
 			return
 		rows = self.positions_table.selectionModel().selectedRows()
 		if not rows:
+			self._selected_row_indices = []
+			self._clear_selection_markers()
+			self.selected_info.setText("Select a start/end point from the map or table")
 			return
-		source_row = self._table_model.source_row_for_view_row(rows[0].row())
-		if source_row is None:
+
+		source_rows: list[int] = []
+		for row in rows:
+			source_row = self._table_model.source_row_for_view_row(row.row())
+			if source_row is not None:
+				source_rows.append(source_row)
+		if not source_rows:
 			return
-		self._select_row_by_index(source_row, select_table=False, zoom_to_point=True)
+		self._select_rows_by_indices(source_rows, select_table=False, zoom_to_points=(len(source_rows) == 1))
 
-	def _select_row_by_index(self, row_index: int, select_table: bool, zoom_to_point: bool):
-		if row_index not in self.df_positions.index:
+	def _clear_selection_markers(self):
+		if not self._selected_markers:
 			return
-		self._selected_row_index = row_index
-		row = self.df_positions.loc[row_index]
-		if isinstance(row, pd.DataFrame):
-			row = row.iloc[0]
-		row_data = cast(dict[str, Any], row.to_dict())
-
-		if select_table and self.positions_table.selectionModel() is not None and self._table_model is not None:
-			view_row = self._table_model.view_row_for_source_row(row_index)
-			if view_row is not None:
-				model_index = self.positions_table.model().index(view_row, 0)
-				self.positions_table.selectionModel().select(
-					model_index,
-					QItemSelectionModel.SelectionFlag.ClearAndSelect | QItemSelectionModel.SelectionFlag.Rows,
-				)
-				self.positions_table.scrollTo(model_index)
-
-		self.pos_type_combo.setCurrentText(str(row_data.get("pos_type", "start")))
-		self.pos_id_spin.setValue(int(row_data.get("pos_id", 1)))
-		self.lat_spin.setValue(float(row_data.get("latitude", 0.0)))
-		self.lon_spin.setValue(float(row_data.get("longitude", 0.0)))
-		self.count_spin.setValue(int(row_data.get("count", 0)))
-		self.label_edit.setText(str(row_data.get("label", "")))
-
-		self.selected_info.setText(
-			f"Selected {str(row_data.get('pos_type', ''))} point #{int(row_data.get('pos_id', 0))}  |  "
-			f"lat={float(row_data.get('latitude', 0.0)):.6f}, lon={float(row_data.get('longitude', 0.0)):.6f}, count={int(row_data.get('count', 0))}"
-		)
-		self._draw_selection_marker(float(row_data.get("x", 0.0)), float(row_data.get("y", 0.0)))
-		if zoom_to_point:
-			self._zoom_to_point(float(row_data.get("x", 0.0)), float(row_data.get("y", 0.0)))
-
-	def _draw_selection_marker(self, x: float, y: float):
-		if self._selected_marker is not None:
+		for marker in self._selected_markers:
 			try:
-				self._selected_marker.remove()
+				marker.remove()
 			except Exception:
 				pass
-		self._selected_marker = self.map_ax.scatter([x], [y], s=180, facecolors="none", edgecolors="yellow", linewidths=2.0, zorder=4)
+		self._selected_markers = []
+
+	def _draw_selection_markers(self, row_indices: list[int]):
+		self._clear_selection_markers()
+		for idx in row_indices:
+			if idx not in self.df_positions.index:
+				continue
+			row = self.df_positions.loc[idx]
+			if isinstance(row, pd.DataFrame):
+				row = row.iloc[0]
+			row_data = cast(dict[str, Any], row.to_dict())
+			x = float(row_data.get("x", 0.0))
+			y = float(row_data.get("y", 0.0))
+			marker = self.map_ax.scatter([x], [y], s=170, facecolors="none", edgecolors="yellow", linewidths=2.0, zorder=4)
+			self._selected_markers.append(marker)
 		self.map_canvas.draw_idle()
+
+	def _select_rows_by_indices(self, row_indices: list[int], select_table: bool, zoom_to_points: bool):
+		clean_rows = [int(i) for i in row_indices if i in self.df_positions.index]
+		if not clean_rows:
+			return
+		clean_rows = list(dict.fromkeys(clean_rows))
+		self._selected_row_indices = clean_rows
+		self._selected_row_index = clean_rows[0]
+
+		if select_table and self.positions_table.selectionModel() is not None and self._table_model is not None:
+			selection_model = self.positions_table.selectionModel()
+			selection_model.clearSelection()
+			for idx, source_row in enumerate(clean_rows):
+				view_row = self._table_model.view_row_for_source_row(source_row)
+				if view_row is None:
+					continue
+				model_index = self.positions_table.model().index(view_row, 0)
+				flags = QItemSelectionModel.SelectionFlag.Select | QItemSelectionModel.SelectionFlag.Rows
+				selection_model.select(model_index, flags)
+				if idx == 0:
+					self.positions_table.scrollTo(model_index)
+
+		rows_data = []
+		for ridx in clean_rows:
+			row = self.df_positions.loc[ridx]
+			if isinstance(row, pd.DataFrame):
+				row = row.iloc[0]
+			rows_data.append(cast(dict[str, Any], row.to_dict()))
+
+		if len(rows_data) == 1:
+			row_data = rows_data[0]
+			self.pos_type_combo.setCurrentText(str(row_data.get("pos_type", "start")))
+			self.pos_id_spin.setValue(int(row_data.get("pos_id", 1)))
+			self.lat_spin.setValue(float(row_data.get("latitude", 0.0)))
+			self.lon_spin.setValue(float(row_data.get("longitude", 0.0)))
+			self.count_spin.setValue(int(row_data.get("count", 0)))
+			self.label_edit.setText(str(row_data.get("label", "")))
+			self.selected_info.setText(
+				f"Selected {str(row_data.get('pos_type', ''))} point #{int(row_data.get('pos_id', 0))}  |  "
+				f"lat={float(row_data.get('latitude', 0.0)):.6f}, lon={float(row_data.get('longitude', 0.0)):.6f}, count={int(row_data.get('count', 0))}"
+			)
+			if zoom_to_points:
+				self._zoom_to_point(float(row_data.get("x", 0.0)), float(row_data.get("y", 0.0)))
+		else:
+			labels = [str(row_entry.get("label", "")) for row_entry in rows_data]
+			common_label = labels[0] if labels and all(label_value == labels[0] for label_value in labels) else ""
+			self.label_edit.setText(common_label)
+			self.selected_info.setText(f"Selected {len(rows_data)} points. Edit label and click 'Apply label to selected'.")
+
+		self._draw_selection_markers(clean_rows)
+
+	def _select_row_by_index(self, row_index: int, select_table: bool, zoom_to_point: bool):
+		self._select_rows_by_indices([row_index], select_table=select_table, zoom_to_points=zoom_to_point)
+
+	def _draw_selection_marker(self, x: float, y: float):
+		# Backward compatible wrapper.
+		self._draw_selection_markers(self._selected_row_indices or [self._selected_row_index] if self._selected_row_index is not None else [])
 
 	def _zoom_to_point(self, x: float, y: float):
 		if self._full_bounds is None:
 			return
 		xmin, xmax, ymin, ymax = self._full_bounds
-		span = max(200.0, max(xmax - xmin, ymax - ymin) * 0.15)
-		self.map_ax.set_xlim(x - span, x + span)
-		self.map_ax.set_ylim(y - span, y + span)
+		target_span = max(self._min_zoom_span_m, max(xmax - xmin, ymax - ymin) * 0.06)
+		cx0, cx1 = self.map_ax.get_xlim()
+		cy0, cy1 = self.map_ax.get_ylim()
+		current_span = max(abs(cx1 - cx0), abs(cy1 - cy0))
+
+		# If user is already zoomed in further than the auto target,
+		# keep their current zoom level and only recenter to selected point.
+		span = current_span if current_span <= target_span else target_span
+		span = max(self._min_zoom_span_m, span)
+		self.map_ax.set_xlim(x - span / 2.0, x + span / 2.0)
+		self.map_ax.set_ylim(y - span / 2.0, y + span / 2.0)
 		self.map_canvas.draw_idle()
+		self._refresh_basemap_for_current_view()
+
+	def _zoom_in(self):
+		x0, x1 = self.map_ax.get_xlim()
+		y0, y1 = self.map_ax.get_ylim()
+		cx = (x0 + x1) / 2.0
+		cy = (y0 + y1) / 2.0
+		span = max(abs(x1 - x0), abs(y1 - y0)) * 0.5
+		span = max(self._min_zoom_span_m, span * 0.65)
+		self.map_ax.set_xlim(cx - span / 2.0, cx + span / 2.0)
+		self.map_ax.set_ylim(cy - span / 2.0, cy + span / 2.0)
+		self.map_canvas.draw_idle()
+		self._refresh_basemap_for_current_view(target_zoom=self._current_basemap_zoom + 1)
 
 	def _zoom_full(self):
 		if self._full_bounds is None:
@@ -633,16 +887,70 @@ class PositionManagerWindow(QMainWindow):
 		self.map_ax.set_xlim(self._full_bounds[0], self._full_bounds[1])
 		self.map_ax.set_ylim(self._full_bounds[2], self._full_bounds[3])
 		self.map_canvas.draw_idle()
+		self._refresh_basemap_for_current_view(target_zoom=self._recommended_zoom_for_bounds(self._full_bounds))
 
 	def _start_new_entry(self):
 		self._selected_row_index = None
+		self._selected_row_indices = []
 		self.pos_type_combo.setCurrentText("start")
 		self.pos_id_spin.setValue(1)
 		self.lat_spin.setValue(0.0)
 		self.lon_spin.setValue(0.0)
 		self.count_spin.setValue(0)
 		self.label_edit.clear()
+		self._clear_selection_markers()
 		self.selected_info.setText("Create new start/end position entry")
+
+	def apply_label_to_selected(self):
+		selected_rows = self._selected_row_indices[:]
+		if not selected_rows and self._selected_row_index is not None:
+			selected_rows = [self._selected_row_index]
+		if not selected_rows:
+			QMessageBox.information(self, "No Selection", "Select one or more entries first.")
+			return
+
+		label = self.label_edit.text().strip()
+		label_value = label if label else None
+		rows_data: list[dict[str, Any]] = []
+		for ridx in selected_rows:
+			if ridx not in self.df_positions.index:
+				continue
+			row = self.df_positions.loc[ridx]
+			if isinstance(row, pd.DataFrame):
+				row = row.iloc[0]
+			rows_data.append(cast(dict[str, Any], row.to_dict()))
+
+		if not rows_data:
+			QMessageBox.information(self, "No Selection", "No valid rows selected.")
+			return
+
+		try:
+			with self.engine.begin() as conn:
+				for row_data in rows_data:
+					pos_type = str(row_data.get("pos_type", ""))
+					pos_id = int(row_data.get("pos_id", 0))
+					if pos_id <= 0 or pos_type not in ("start", "end"):
+						continue
+					table, id_col, _, _ = self._table_info(pos_type)
+					conn.execute(
+						text(f'UPDATE {table} SET label = :label WHERE {id_col} = :pos_id'),
+						{"label": label_value, "pos_id": pos_id},
+					)
+		except Exception as e:
+			logger.error(f"Failed to apply label to selected points: {e} ({type(e)})")
+			QMessageBox.warning(self, "Update Failed", f"Could not apply label:\n{e}")
+			return
+
+		self._restore_after_reload = {
+			"bounds": self._current_view_bounds(),
+			"zoom": self._current_basemap_zoom,
+			"selected_keys": [
+				{"pos_type": str(r.get("pos_type", "")), "pos_id": int(r.get("pos_id", 0))}
+				for r in rows_data
+			],
+		}
+		QMessageBox.information(self, "Updated", f"Applied label to {len(rows_data)} selected points.")
+		self.load_positions()
 
 	def save_entry(self):
 		pos_type = self.pos_type_combo.currentText()
@@ -685,6 +993,12 @@ class PositionManagerWindow(QMainWindow):
 			QMessageBox.warning(self, "Save Failed", f"Could not save entry:\n{e}")
 			return
 
+		# Preserve current viewport/zoom and the saved row identity through reload.
+		self._restore_after_reload = {
+			"bounds": self._current_view_bounds(),
+			"zoom": self._current_basemap_zoom,
+			"selected_keys": [{"pos_type": pos_type, "pos_id": pos_id}],
+		}
 		QMessageBox.information(self, "Saved", "Position entry saved.")
 		self.load_positions()
 
@@ -722,14 +1036,13 @@ class PositionManagerWindow(QMainWindow):
 		self.load_positions()
 
 	def closeEvent(self, event: QCloseEvent):
-		if self._load_thread is not None and self._load_thread.isRunning():
-			self._load_thread.requestInterruption()
-			self._load_thread.quit()
-			self._load_thread.wait(1000)
-		if self._basemap_thread is not None and self._basemap_thread.isRunning():
-			self._basemap_thread.requestInterruption()
-			self._basemap_thread.quit()
-			self._basemap_thread.wait(1000)
+		load_running = self._thread_is_running(self._load_thread)
+		basemap_running = self._thread_is_running(self._basemap_thread)
+		if load_running or basemap_running:
+			self._pending_close = True
+			self.hide()
+			event.ignore()
+			return
 		super().closeEvent(event)
 
 def format_duration(seconds):
