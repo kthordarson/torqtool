@@ -287,33 +287,6 @@ class MainApp(QMainWindow):
 			else:
 				logger.warning(f"Invalid lat/lon ranges for file ID {fileid}")
 
-	def create_start_stops_plot(self):
-		# self.startstopmodel = QSqlQueryModel()
-		# x = latitude y = longitude !
-
-		data = np.array(self.session.execute(text('select latstart, lonstart from startpos')).all())
-		scatter = QScatterSeries()
-		[scatter.append(k[0],k[1]) for k in data]
-		[scatter.append(k[2],k[3]) for k in data]
-		self.speed_plot = QChart()
-		self.speed_plot_view = QChartView(self.speed_plot)
-		self.ui.main_layout.addWidget(self.speed_plot_view)
-		# self.setLayout(self.ui.main_layout)
-
-		self.speed_plot.addSeries(scatter)
-		# scatter.setName('start/end')
-		scatter.setMarkerSize(5)
-		# self.start_stop_plot.createDefaultAxes()
-		# self.start_stop_plot.setTitleFont(QFont('Arial', 10))
-		self.speed_plot.setTitle('trip start/end')
-		self.speed_plot.legend().hide()
-		# self.start_stop_plot.axes()[0].setMax(self.start_stop_plot.axes()[0].max()+1)
-		# self.start_stop_plot.axes()[1].setMax(self.start_stop_plot.axes()[1].max()+1)
-		# self.start_stop_plot.axes()[0].setMin(self.start_stop_plot.axes()[0].min()-1)
-		# self.start_stop_plot.axes()[1].setMin(self.start_stop_plot.axes()[1].min()-1)
-		# self.ui.tableView.setModel(self.tripdist_series_model)
-		# self.ui.tableView.resizeColumnsToContents()
-
 	def create_speed_plot(self):
 		speed_rows = self.session.query(
 			Speeds.fileid,
