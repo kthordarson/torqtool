@@ -519,16 +519,5 @@ schema_datatypes = {
     'o2sensor1widerangevoltagev': pl.Float64,
 }
 
-def merge_colum_data(new_ncc: list, ncc: dict):
-    import re
-
-    # Convert new_ncc to a dictionary with sanitized keys
-    new_ncc_dict = {s: re.sub(r"\W+", "", s.lower().replace(" ", "_")) for s in new_ncc}
-
-    # Merge ncc and new_ncc_dict
-    merged_ncc = {**ncc, **new_ncc_dict}
-    return merged_ncc
-
-
 if __name__ == "__main__":
     pass
