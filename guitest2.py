@@ -9,7 +9,7 @@ import pandas as pd
 from typing import Any, cast
 from PySide6.QtWidgets import (
 	QApplication, QMainWindow, QTableView, QVBoxLayout, QWidget, QSplitter,
-	QHBoxLayout, QLabel, QComboBox
+	QHBoxLayout, QLabel, QComboBox, QFrame
 )
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QAbstractItemView
@@ -25,9 +25,8 @@ import matplotlib.image as mpimg
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from datamodels import database_init
 from schemas import dataschema
-
-DB_PATH = "sqlite:///torqdata.db"
-
+from converter import get_args
+from utils import get_engine_session
 
 def _normalize_col_name(value: str) -> str:
 	return "".join(ch.lower() for ch in str(value) if ch.isalnum())
@@ -126,11 +125,19 @@ def format_duration(seconds):
 		return f"{hours}h {minutes}m"
 
 class MainWindow(QMainWindow):
-	def __init__(self):
+	def __init__(self, args):
 		super().__init__()
+		self.args = args
 		self.setWindowTitle("TorqFiles Viewer")
 		# Set up SQLAlchemy session
-		self.engine = create_engine(DB_PATH)
+		# session = get_engine_session(args)
+		# self.engine = create_engine(args.dburl)
+		if self.args.dbmode == 'psql':
+			dburl = f"postgresql://{args.dbuser}:{args.dbpass}@{args.dbhost}/{args.dbname}"
+		elif self.args.dbmode == 'sqlite':
+			dburl = f"sqlite:///{args.dbfile}"
+		# engine = create_engine(dburl)
+		self.engine = create_engine(dburl)
 		database_init(self.engine)
 		self._torqlogs_norm_to_actual = self._build_torqlogs_column_map()
 		self._resolved_torqlogs_columns = {
@@ -148,8 +155,10 @@ class MainWindow(QMainWindow):
 		self._basemap_worker: BasemapWorker | None = None
 		self._initial_trips_thread: QThread | None = None
 		self._initial_trips_worker: TripListWorker | None = None
+		self._active_threads: set[QThread] = set()
 		self.Session = sessionmaker(bind=self.engine)
 		self.session = self.Session()
+		self._ensure_map_cache_schema()
 
 		# Set up UI
 		splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -218,9 +227,26 @@ class MainWindow(QMainWindow):
 		# Create right panel with map and controls
 		right_panel = QWidget()
 		right_layout = QVBoxLayout(right_panel)
+		plot_and_stats = QSplitter(Qt.Orientation.Horizontal)
+		stats_panel = QFrame()
+		stats_layout = QVBoxLayout(stats_panel)
+		stats_title = QLabel("Selected Trip Stats")
+		stats_title_font = QFont()
+		stats_title_font.setPointSize(10)
+		stats_title_font.setBold(True)
+		stats_title.setFont(stats_title_font)
+		self.stats_label = QLabel("No trip selected")
+		self.stats_label.setWordWrap(True)
+		self.stats_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+		stats_layout.addWidget(stats_title)
+		stats_layout.addWidget(self.stats_label)
+		stats_layout.addStretch()
 
 		# Add map canvas first (give it more space)
-		right_layout.addWidget(self.map_canvas, stretch=10)  # Give map 10 parts of space
+		plot_and_stats.addWidget(self.map_canvas)
+		plot_and_stats.addWidget(stats_panel)
+		plot_and_stats.setSizes([700, 260])
+		right_layout.addWidget(plot_and_stats, stretch=10)  # Give map area most of the space
 
 		# Add colormap controls at the bottom (minimal space)
 		colormap_widget = QWidget()
@@ -291,9 +317,23 @@ class MainWindow(QMainWindow):
 		self.table.horizontalHeader().setStretchLastSection(True)
 		logger.debug(f"Table model set with {len(df)} rows and {len(df.columns)} columns")
 
+	def _ensure_map_cache_schema(self):
+		inspector = inspect(self.engine)
+		existing_columns = {str(col["name"]).lower() for col in inspector.get_columns("mapimagecache")}
+		alter_statements = {
+			"ext_west": 'ALTER TABLE mapimagecache ADD COLUMN ext_west DOUBLE PRECISION',
+			"ext_east": 'ALTER TABLE mapimagecache ADD COLUMN ext_east DOUBLE PRECISION',
+			"ext_south": 'ALTER TABLE mapimagecache ADD COLUMN ext_south DOUBLE PRECISION',
+			"ext_north": 'ALTER TABLE mapimagecache ADD COLUMN ext_north DOUBLE PRECISION',
+		}
+		with self.engine.begin() as conn:
+			for col_name, sql_stmt in alter_statements.items():
+				if col_name not in existing_columns:
+					conn.execute(text(sql_stmt))
+
 	def _start_async_initial_trips_load(self):
-		thread = QThread(self)
-		worker = TripListWorker(str(self.engine.url))
+		thread = QThread()
+		worker = TripListWorker(self.engine.url.render_as_string(hide_password=False))
 		worker.moveToThread(thread)
 
 		thread.started.connect(worker.run)
@@ -303,9 +343,11 @@ class MainWindow(QMainWindow):
 		worker.error.connect(thread.quit)
 		thread.finished.connect(worker.deleteLater)
 		thread.finished.connect(thread.deleteLater)
+		thread.finished.connect(lambda t=thread: self._active_threads.discard(t))
 
 		self._initial_trips_worker = worker
 		self._initial_trips_thread = thread
+		self._active_threads.add(thread)
 		thread.start()
 
 	def _on_initial_trips_loaded(self, df_trips: pd.DataFrame):
@@ -376,20 +418,19 @@ class MainWindow(QMainWindow):
 			return None
 
 		q = (
-			f'SELECT "{lon_col}" AS Longitude, "{lat_col}" AS Latitude, '
-			f'"{speed_col_name}" AS SelectedMetric FROM torqlogs WHERE fileid = {int(fileid)}'
+			f'SELECT "{lon_col}" AS longitude, "{lat_col}" AS latitude, '
+			f'"{speed_col_name}" AS selectedmetric FROM torqlogs WHERE fileid = {int(fileid)}'
 		)
 		df_part = pd.read_sql(q, self.engine)
 		if df_part.empty:
 			self._trip_plot_cache[cache_key] = {"x": [], "y": [], "speed": []}
 			return self._trip_plot_cache[cache_key]
-
-		gdf = gpd.GeoDataFrame(
-			df_part,
-			geometry=[Point(xy) for xy in zip(df_part['Longitude'], df_part['Latitude'])],
-			crs="EPSG:4326",
-		).to_crs(epsg=3857)
-		speed_series = pd.to_numeric(df_part['SelectedMetric'], errors='coerce').fillna(0)
+		try:
+			gdf = gpd.GeoDataFrame(df_part, geometry=[Point(xy) for xy in zip(df_part['longitude'], df_part['latitude'])], crs="EPSG:4326",).to_crs(epsg=3857)
+		except KeyError as e:
+			logger.error(f"Missing expected columns in trip data: {e} fileid={fileid} metric_name={metric_name}")
+			return None
+		speed_series = pd.to_numeric(df_part['selectedmetric'], errors='coerce').fillna(0)
 
 		payload: dict[str, list[float]] = {
 			"x": gdf.geometry.x.tolist(),
@@ -406,11 +447,11 @@ class MainWindow(QMainWindow):
 	def _cache_fileid(self, fileids: list[int]) -> int | None:
 		return int(fileids[0]) if len(fileids) == 1 else None
 
-	def _load_cached_map_image(self, fileids: list[int], zoom: int, colormap: str, metric_name: str) -> bytes | None:
+	def _load_cached_map_image(self, fileids: list[int], zoom: int, colormap: str, metric_name: str) -> tuple[bytes, tuple[float, float, float, float]] | None:
 		selection_key = self._selection_key(fileids, metric_name)
 		q = text(
 			"""
-			SELECT image_png
+			SELECT image_png, ext_west, ext_east, ext_south, ext_north
 			FROM mapimagecache
 			WHERE selection_key = :selection_key AND zoom = :zoom AND colormap = :colormap
 			LIMIT 1
@@ -422,13 +463,14 @@ class MainWindow(QMainWindow):
 				"zoom": zoom,
 				"colormap": colormap,
 			}).first()
-		if row:
-			return row[0]
+		if row and all(v is not None for v in row[1:5]):
+			return row[0], (float(row[1]), float(row[2]), float(row[3]), float(row[4]))
 		return None
 
-	def _save_cached_map_image(self, fileids: list[int], zoom: int, colormap: str, metric_name: str):
+	def _save_cached_map_image(self, fileids: list[int], zoom: int, colormap: str, metric_name: str, ext: tuple[float, float, float, float]):
 		selection_key = self._selection_key(fileids, metric_name)
 		fileid = self._cache_fileid(fileids)
+		ext_west, ext_east, ext_south, ext_north = ext
 		buf = io.BytesIO()
 		# Cache only the basemap raster; scatter/labels are redrawn dynamically.
 		self.map_canvas.ax.figure.canvas.draw_idle()
@@ -439,12 +481,16 @@ class MainWindow(QMainWindow):
 		image_bytes = buf.getvalue()
 		upsert_sql = text(
 			"""
-			INSERT INTO mapimagecache (fileid, selection_key, zoom, colormap, image_png, created_at, updated_at)
-			VALUES (:fileid, :selection_key, :zoom, :colormap, :image_png, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+			INSERT INTO mapimagecache (fileid, selection_key, zoom, colormap, image_png, ext_west, ext_east, ext_south, ext_north, created_at, updated_at)
+			VALUES (:fileid, :selection_key, :zoom, :colormap, :image_png, :ext_west, :ext_east, :ext_south, :ext_north, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
 			ON CONFLICT(selection_key, zoom, colormap)
 			DO UPDATE SET
 				fileid = excluded.fileid,
 				image_png = excluded.image_png,
+				ext_west = excluded.ext_west,
+				ext_east = excluded.ext_east,
+				ext_south = excluded.ext_south,
+				ext_north = excluded.ext_north,
 				updated_at = CURRENT_TIMESTAMP
 			"""
 		)
@@ -455,18 +501,37 @@ class MainWindow(QMainWindow):
 				"zoom": zoom,
 				"colormap": colormap,
 				"image_png": image_bytes,
+				"ext_west": ext_west,
+				"ext_east": ext_east,
+				"ext_south": ext_south,
+				"ext_north": ext_north,
 			})
 		logger.debug(f"Saved cached map image for selection_key={selection_key}, zoom={zoom}, colormap={colormap}")
+
+	def _compute_plot_bounds(self, all_x: list[float], all_y: list[float]) -> tuple[float, float, float, float] | None:
+		if not all_x or not all_y:
+			return None
+		xmin = min(all_x)
+		xmax = max(all_x)
+		ymin = min(all_y)
+		ymax = max(all_y)
+
+		dx = max(1.0, xmax - xmin)
+		dy = max(1.0, ymax - ymin)
+		pad_x = dx * 0.03
+		pad_y = dy * 0.03
+		return (xmin - pad_x, xmax + pad_x, ymin - pad_y, ymax + pad_y)
 
 	def _plot_for_rows(self, rows):
 		fileids = self._get_selected_fileids(rows)
 		if not fileids:
+			self.stats_label.setText("No trip selected")
 			return
 
 		zoom = int(self.zoom_combo.currentText())
 		colormap_name = self.colormap_combo.currentText()
 		selected_metric = self.metric_combo.currentText()
-		cached_img = self._load_cached_map_image(fileids, zoom, colormap_name, selected_metric)
+		cached_payload = self._load_cached_map_image(fileids, zoom, colormap_name, selected_metric)
 
 		self.map_canvas.ax.clear()
 
@@ -489,6 +554,9 @@ class MainWindow(QMainWindow):
 			cycle_length = 10
 
 		plots = []
+		all_x: list[float] = []
+		all_y: list[float] = []
+		all_metric_values: list[float] = []
 		for idx, fileid in enumerate(fileids):
 			plot_data = self._load_trip_plot_data(fileid, selected_metric)
 			if not plot_data:
@@ -496,7 +564,10 @@ class MainWindow(QMainWindow):
 
 			x_vals = plot_data["x"]
 			y_vals = plot_data["y"]
+			all_x.extend(x_vals)
+			all_y.extend(y_vals)
 			speed_vals = pd.to_numeric(pd.Series(plot_data["speed"]), errors='coerce').fillna(0)
+			all_metric_values.extend(speed_vals.tolist())
 			if len(x_vals) == 0:
 				continue
 
@@ -512,21 +583,54 @@ class MainWindow(QMainWindow):
 			plots.append(sc)
 
 		logger.debug(f"Plotted {len(plots)} trips on map for fileids: {fileids}")
-		if plots and cached_img:
+		bounds = self._compute_plot_bounds(all_x, all_y)
+		if bounds:
+			xmin, xmax, ymin, ymax = bounds
+			self.map_canvas.ax.set_xlim(xmin, xmax)
+			self.map_canvas.ax.set_ylim(ymin, ymax)
+
+		if plots and cached_payload:
+			cached_img, cached_ext = cached_payload
 			img = mpimg.imread(io.BytesIO(cached_img), format='png')
-			xmin, xmax = self.map_canvas.ax.get_xlim()
-			ymin, ymax = self.map_canvas.ax.get_ylim()
-			self.map_canvas.ax.imshow(img, extent=(xmin, xmax, ymin, ymax), interpolation='bilinear', zorder=0)
+			self.map_canvas.ax.imshow(img, extent=cached_ext, interpolation='bilinear', zorder=0)
 		elif plots:
-			self._start_async_basemap(zoom, fileids, colormap_name, selected_metric)
+			if bounds:
+				self._start_async_basemap(bounds, zoom, fileids, colormap_name, selected_metric)
 		self.map_canvas.ax.set_title(f"Trip Map - {selected_metric}")
 		self.map_canvas.ax.set_xlabel("Longitude")
 		self.map_canvas.ax.set_ylabel("Latitude")
 		self.map_canvas.draw_idle()
+		self._update_stats_panel(fileids, all_metric_values, all_x, all_y, selected_metric)
 
-	def _start_async_basemap(self, zoom: int, fileids: list[int], colormap_name: str, metric_name: str):
-		xmin, xmax = self.map_canvas.ax.get_xlim()
-		ymin, ymax = self.map_canvas.ax.get_ylim()
+	def _update_stats_panel(self, fileids: list[int], metric_values: list[float], all_x: list[float], all_y: list[float], metric_name: str):
+		trip_count = len(fileids)
+		point_count = len(all_x)
+		metric_series = pd.Series(metric_values, dtype="float64") if metric_values else pd.Series(dtype="float64")
+		metric_min = float(metric_series.min()) if not metric_series.empty else 0.0
+		metric_avg = float(metric_series.mean()) if not metric_series.empty else 0.0
+		metric_max = float(metric_series.max()) if not metric_series.empty else 0.0
+		bounds = self._compute_plot_bounds(all_x, all_y)
+		if bounds:
+			xmin, xmax, ymin, ymax = bounds
+			bounds_line = f"Bounds: x[{xmin:.0f}, {xmax:.0f}] y[{ymin:.0f}, {ymax:.0f}]"
+		else:
+			bounds_line = "Bounds: n/a"
+
+		fileid_text = ", ".join(str(fid) for fid in fileids[:10])
+		if len(fileids) > 10:
+			fileid_text += ", ..."
+
+		self.stats_label.setText(
+			f"Trips selected: {trip_count}\n"
+			f"Fileids: {fileid_text}\n"
+			f"Plotted points: {point_count}\n"
+			f"Metric: {metric_name}\n"
+			f"Min / Avg / Max: {metric_min:.2f} / {metric_avg:.2f} / {metric_max:.2f}\n"
+			f"{bounds_line}"
+		)
+
+	def _start_async_basemap(self, bounds: tuple[float, float, float, float], zoom: int, fileids: list[int], colormap_name: str, metric_name: str):
+		xmin, xmax, ymin, ymax = bounds
 		if xmax <= xmin or ymax <= ymin:
 			return
 
@@ -539,7 +643,7 @@ class MainWindow(QMainWindow):
 			"metric": metric_name,
 		}
 
-		thread = QThread(self)
+		thread = QThread()
 		worker = BasemapWorker((xmin, xmax, ymin, ymax), zoom, request_id)
 		worker.moveToThread(thread)
 
@@ -550,14 +654,20 @@ class MainWindow(QMainWindow):
 		worker.error.connect(thread.quit)
 		thread.finished.connect(worker.deleteLater)
 		thread.finished.connect(thread.deleteLater)
+		thread.finished.connect(lambda t=thread: self._active_threads.discard(t))
 
 		self._basemap_worker = worker
 		self._basemap_thread = thread
+		self._active_threads.add(thread)
 		logger.debug(f"Starting basemap worker thread for request_id={request_id} with bounds=({xmin}, {ymin}, {xmax}, {ymax}) and zoom={zoom}")
 		thread.start()
 
 	def _on_basemap_loaded(self, img, ext, request_id: int):
-		if request_id != self._basemap_request_id:
+		try:
+			if request_id != self._basemap_request_id:
+				return
+		except Exception as e:
+			logger.error(f"Error in basemap loaded handler: {e} ({type(e)})")
 			return
 		self.map_canvas.ax.imshow(img, extent=ext, interpolation='bilinear', zorder=0)
 		self.map_canvas.draw_idle()
@@ -568,11 +678,16 @@ class MainWindow(QMainWindow):
 				cast(int, ctx["zoom"]),
 				cast(str, ctx["colormap"]),
 				cast(str, ctx["metric"]),
+				tuple(float(v) for v in ext),
 			)
 			self._basemap_request_context.pop(request_id, None)
 
 	def _on_basemap_error(self, err: str, request_id: int):
-		if request_id != self._basemap_request_id:
+		try:
+			if request_id != self._basemap_request_id:
+				return
+		except Exception as e:
+			logger.error(f"Error in basemap error handler: {e} ({type(e)}) error: {err} request_id: {request_id}")
 			return
 		self._basemap_request_context.pop(request_id, None)
 		# Tile/network failures should not break UI interaction.
@@ -581,7 +696,13 @@ class MainWindow(QMainWindow):
 	def _shutdown_thread(self, thread: QThread | None, name: str):
 		if thread is None:
 			return
-		if not thread.isRunning():
+		try:
+			if not thread.isRunning():
+				return
+		except RuntimeError:
+			# QThread QObject can already be deleted by Qt during shutdown.
+			return
+		if thread.currentThread() is thread:
 			return
 		logger.debug(f"Stopping thread '{name}'")
 		thread.requestInterruption()
@@ -594,6 +715,8 @@ class MainWindow(QMainWindow):
 	def closeEvent(self, event: QCloseEvent):
 		self._shutdown_thread(self._basemap_thread, "basemap")
 		self._shutdown_thread(self._initial_trips_thread, "initial_trips")
+		for idx, t in enumerate(list(self._active_threads)):
+			self._shutdown_thread(t, f"active_{idx}")
 		super().closeEvent(event)
 
 	def on_row_selected(self, selected, deselected):
@@ -602,6 +725,8 @@ class MainWindow(QMainWindow):
 			logger.debug(f"on_row_selected with {len(rows)} selected row(s): {rows[:5]}{'...' if len(rows) > 5 else ''}")
 			# Debounce bursty selection events while user is building a multi-row selection.
 			self._plot_refresh_timer.start(250)
+		else:
+			self.stats_label.setText("No trip selected")
 
 class PandasModel(QAbstractTableModel):
 	"""Minimal Qt model for pandas DataFrame for QTableView."""
@@ -637,9 +762,12 @@ class PandasModel(QAbstractTableModel):
 				return str(section)
 		return None
 
+
+
 if __name__ == "__main__":
+	args = get_args('guitest2')
 	app = QApplication(sys.argv)
-	window = MainWindow()
+	window = MainWindow(args)
 	logger.debug(f"Starting application event loop window: {window}")
 	window.showMaximized()
 	# window.resize(1000, 600)

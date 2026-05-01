@@ -64,7 +64,7 @@ if __name__ == '__main__':
 	# dburl = f"mysql+pymysql://{TORQDBUSER}:{TORQDBPASS}@{TORQDBHOST}/torq?charset=utf8mb4"
 	args = get_args('torqdata')
 	session = get_engine_session(args)
-	logger.info(f'[engine] {session.get_bind()}')
+	logger.info(f'[s] {session.get_bind()}')
 
 	max_results = 3
 	toptrips = None
