@@ -30,12 +30,6 @@ def _to_float(value: object) -> float | None:
         except (TypeError, ValueError):
             return None
     return None
-
-class Mymodel(QAbstractTableModel):
-	pass
-
-mymodel = Mymodel()
-
 class KeyPressFilter(QObject):
 	def event_filter(self, widget, event):
 		if event.type() == QEvent.Type.KeyPress:
