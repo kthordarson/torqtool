@@ -9,9 +9,10 @@ import pandas as pd
 from typing import Any, cast
 from PySide6.QtWidgets import (
 	QApplication, QMainWindow, QTableView, QVBoxLayout, QWidget, QSplitter,
-	QHBoxLayout, QLabel, QComboBox, QFrame
+	QHBoxLayout, QLabel, QComboBox, QFrame, QListWidget, QListWidgetItem,
+	QScrollArea, QFileDialog, QMessageBox
 )
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QAction
 from PySide6.QtWidgets import QAbstractItemView
 from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex, QPersistentModelIndex, QTimer, QObject, Signal, QThread
 from PySide6.QtGui import QCloseEvent
@@ -26,7 +27,7 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from datamodels import database_init
 from schemas import dataschema
 from converter import get_args
-from metric_analysis import categorize_metric, get_analysis_suggestion, group_metrics_by_category, MetricCategory
+from metric_analysis import categorize_metric, get_analysis_suggestion, group_metrics_by_category  #, MetricCategory
 
 def _normalize_col_name(value: str) -> str:
 	return "".join(ch.lower() for ch in str(value) if ch.isalnum())
@@ -61,6 +62,13 @@ class MapCanvas(FigureCanvas):
 			self.ax.set_title("No GPS data")
 		self.draw()
 		logger.debug(f"Trip plotted on map with {len(df)} points")
+
+class TimeSeriesCanvas(FigureCanvas):
+	def __init__(self, parent=None):
+		fig, self.ax = plt.subplots(figsize=(6, 4))
+		fig.subplots_adjust(bottom=0.22, top=0.90, left=0.13, right=0.97)
+		super().__init__(fig)
+		self.setParent(parent)
 
 class BasemapWorker(QObject):
 	finished = Signal(object, object, int)
@@ -141,7 +149,8 @@ class MainWindow(QMainWindow):
 			for name in ['latitude', 'longitude', 'speedobdkmh']
 			if (actual := self._resolve_actual_torqlogs_column(name)) is not None
 		}
-		self._trip_plot_cache: dict[tuple[int, str], dict[str, list[float]]] = {}
+		self._trip_plot_cache: dict[tuple[int, str], dict[str, list]] = {}
+		self._current_colormap = 'Set1'
 		self._plot_refresh_timer = QTimer(self)
 		self._plot_refresh_timer.setSingleShot(True)
 		self._plot_refresh_timer.timeout.connect(self.refresh_plot)
@@ -160,72 +169,50 @@ class MainWindow(QMainWindow):
 		splitter = QSplitter(Qt.Orientation.Horizontal)
 		self.table = QTableView()
 		self.map_canvas = MapCanvas()
+		self.timeseries_canvas = TimeSeriesCanvas()
 		logger.debug(f"Resolved torqlogs columns: {self._resolved_torqlogs_columns}")
-		zoom_layout = QHBoxLayout()
+
+		# Zoom control
+		zoom_widget = QWidget()
+		zoom_layout = QHBoxLayout(zoom_widget)
 		zoom_label = QLabel("Zoom:")
 		self.zoom_combo = QComboBox()
-		zoom_levels = [str(z) for z in range(10, 19)]  # Typical OSM zoom levels
+		zoom_levels = [str(z) for z in range(10, 19)]
 		self.zoom_combo.addItems(zoom_levels)
-		self.zoom_combo.setCurrentText('10')  # Default zoom
+		self.zoom_combo.setCurrentText('10')
 		self.zoom_combo.setFixedWidth(60)
 		self.zoom_combo.setMaximumHeight(25)
 		self.zoom_combo.currentTextChanged.connect(self.on_zoom_changed)
-
 		zoom_layout.addWidget(zoom_label)
 		zoom_layout.addWidget(self.zoom_combo)
 		zoom_layout.addStretch()
 		zoom_layout.setSpacing(10)
-		zoom_layout.setContentsMargins(10, 5, 10, 5)
+		zoom_layout.setContentsMargins(10, 3, 10, 3)
+		zoom_widget.setMaximumHeight(35)
 
-		# Create colormap selection controls
-		colormap_layout = QHBoxLayout()
-		colormap_label = QLabel("Colormap:")
-		self.colormap_combo = QComboBox()
-		metric_label = QLabel("Metric:")
-		self.metric_combo = QComboBox()
-
-		# Add popular qualitative colormaps
-		qualitative_maps = ['Set1', 'tab10', 'tab20', 'Dark2', 'Pastel1', 'Pastel2', 'Set2', 'Set3', 'Accent']
-		# Add some sequential colormaps
-		sequential_maps = ['viridis', 'plasma', 'inferno', 'magma', 'Blues', 'Greens', 'Reds', 'YlOrRd']
-
-		all_maps = qualitative_maps + sequential_maps
-		self.colormap_combo.addItems(all_maps)
-		self.colormap_combo.setCurrentText('Set1')  # Set default
-		self.colormap_combo.currentTextChanged.connect(self.on_colormap_changed)
-
-		metric_columns = []
+		# Metric list (replaces QComboBox)
+		metric_panel = QWidget()
+		metric_panel_layout = QVBoxLayout(metric_panel)
+		metric_panel_layout.setContentsMargins(2, 2, 2, 2)
+		metric_title = QLabel("Metrics")
+		metric_title_font = QFont()
+		metric_title_font.setPointSize(9)
+		metric_title_font.setBold(True)
+		metric_title.setFont(metric_title_font)
+		self.metric_list = QListWidget()
+		self.metric_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
+		mono_font = QFont("Monospace", 8)
+		self.metric_list.setFont(mono_font)
 		if self._resolve_actual_torqlogs_column('speedobdkmh'):
-			metric_columns = ['speedobdkmh']
-		self.metric_combo.addItems(metric_columns)
-		if metric_columns:
-			self.metric_combo.setCurrentText(metric_columns[0])
-		self.metric_combo.currentTextChanged.connect(self.on_metric_changed)
+			self.metric_list.addItem(QListWidgetItem('speedobdkmh'))
+		self.metric_list.itemSelectionChanged.connect(self.on_metric_selection_changed)
+		metric_panel_layout.addWidget(metric_title)
+		metric_panel_layout.addWidget(self.metric_list)
 
-		# Adjust size and appearance of the combo box
-		self.colormap_combo.setFixedWidth(120)  # Set fixed width
-		self.colormap_combo.setMaximumHeight(25)  # Limit height
-		self.metric_combo.setFixedWidth(200)
-		self.metric_combo.setMaximumHeight(25)
-
-		colormap_layout.addLayout(zoom_layout)
-		colormap_layout.addWidget(metric_label)
-		colormap_layout.addWidget(self.metric_combo)
-		colormap_layout.addWidget(colormap_label)
-		colormap_layout.addWidget(self.colormap_combo)
-		# colormap_layout.addSpacing(20)
-		colormap_layout.addStretch()  # Push controls to the left
-
-		# Adjust layout spacing and margins
-		colormap_layout.setSpacing(10)  # Space between widgets
-		colormap_layout.setContentsMargins(10, 5, 10, 5)  # left, top, right, bottom margins
-
-		# Create right panel with map and controls
-		right_panel = QWidget()
-		right_layout = QVBoxLayout(right_panel)
-		plot_and_stats = QSplitter(Qt.Orientation.Horizontal)
+		# Stats panel (scrollable)
 		stats_panel = QFrame()
 		stats_layout = QVBoxLayout(stats_panel)
+		stats_layout.setContentsMargins(4, 4, 4, 4)
 		stats_title = QLabel("Selected Trip Stats")
 		stats_title_font = QFont()
 		stats_title_font.setPointSize(10)
@@ -234,26 +221,31 @@ class MainWindow(QMainWindow):
 		self.stats_label = QLabel("No trip selected")
 		self.stats_label.setWordWrap(True)
 		self.stats_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
-		# Allow scrolling for long stats text
-		from PySide6.QtWidgets import QScrollArea
 		stats_scroll = QScrollArea()
 		stats_scroll.setWidget(self.stats_label)
 		stats_scroll.setWidgetResizable(True)
 		stats_layout.addWidget(stats_title)
 		stats_layout.addWidget(stats_scroll)
-		stats_layout.addStretch()
 
-		# Add map canvas first (give it more space)
-		plot_and_stats.addWidget(self.map_canvas)
-		plot_and_stats.addWidget(stats_panel)
-		plot_and_stats.setSizes([700, 260])
-		right_layout.addWidget(plot_and_stats, stretch=10)  # Give map area most of the space
+		# Right panel: plots on top, metric list + stats below, zoom at bottom
+		right_panel = QWidget()
+		right_layout = QVBoxLayout(right_panel)
+		right_layout.setContentsMargins(0, 0, 0, 0)
+		right_layout.setSpacing(2)
 
-		# Add colormap controls at the bottom (minimal space)
-		colormap_widget = QWidget()
-		colormap_widget.setLayout(colormap_layout)
-		colormap_widget.setMaximumHeight(40)  # Limit height of control panel
-		right_layout.addWidget(colormap_widget, stretch=1)   # Give controls 1 part of space
+		plots_splitter = QSplitter(Qt.Orientation.Horizontal)
+		plots_splitter.addWidget(self.map_canvas)
+		plots_splitter.addWidget(self.timeseries_canvas)
+		plots_splitter.setSizes([550, 450])
+
+		lower_splitter = QSplitter(Qt.Orientation.Horizontal)
+		lower_splitter.addWidget(metric_panel)
+		lower_splitter.addWidget(stats_panel)
+		lower_splitter.setSizes([200, 600])
+
+		right_layout.addWidget(plots_splitter, stretch=6)
+		right_layout.addWidget(lower_splitter, stretch=4)
+		right_layout.addWidget(zoom_widget, stretch=0)
 
 		# Make font a little smaller
 		font = QFont()
@@ -275,6 +267,7 @@ class MainWindow(QMainWindow):
 		self._set_table_model(empty_df)
 		QTimer.singleShot(0, self._start_async_initial_trips_load)
 		QTimer.singleShot(0, self._populate_metric_columns)
+		self._create_menu_bar()
 		logger.debug("MainWindow initialized and UI set up")
 
 		# self.table_model = PandasModel(self.df_files)
@@ -286,10 +279,60 @@ class MainWindow(QMainWindow):
 
 	def __repr__(self):
 		return f"<MainWindow with {len(self.df_trips)} trips loaded>"
-	
-	def on_colormap_changed(self, colormap_name):
-		"""Called when user changes the colormap selection"""
-		# Debounce to avoid repeated heavy redraws on rapid UI changes.
+
+	def _create_menu_bar(self):
+		menu_bar = self.menuBar()
+
+		# File menu
+		file_menu = menu_bar.addMenu("&File")
+		open_action = QAction("&Open Database...", self)
+		open_action.setShortcut("Ctrl+O")
+		open_action.triggered.connect(self._open_database)
+		file_menu.addAction(open_action)
+		file_menu.addSeparator()
+		export_action = QAction("&Export Stats...", self)
+		export_action.triggered.connect(self._export_stats)
+		file_menu.addAction(export_action)
+		file_menu.addSeparator()
+		exit_action = QAction("E&xit", self)
+		exit_action.setShortcut("Ctrl+Q")
+		exit_action.triggered.connect(self.close)
+		file_menu.addAction(exit_action)
+
+		# View menu — colormap submenu
+		view_menu = menu_bar.addMenu("&View")
+		colormap_menu = view_menu.addMenu("&Colormap")
+		qualitative_maps = ['Set1', 'tab10', 'tab20', 'Dark2', 'Pastel1', 'Pastel2', 'Set2', 'Set3', 'Accent']
+		sequential_maps = ['viridis', 'plasma', 'inferno', 'magma', 'Blues', 'Greens', 'Reds', 'YlOrRd']
+		self._colormap_actions: dict[str, QAction] = {}
+		for cmap_name in qualitative_maps + sequential_maps:
+			action = QAction(cmap_name, self)
+			action.setCheckable(True)
+			action.setChecked(cmap_name == self._current_colormap)
+			action.triggered.connect(lambda checked, name=cmap_name: self._set_colormap(name))
+			colormap_menu.addAction(action)
+			self._colormap_actions[cmap_name] = action
+
+	def _open_database(self):
+		path, _ = QFileDialog.getOpenFileName(self, "Open Database", "", "SQLite Database (*.db);;All Files (*)")
+		if path:
+			QMessageBox.information(self, "Open Database",
+				f"Selected: {path}\n\nRestart with --dbfile \"{path}\" to switch databases.")
+
+	def _export_stats(self):
+		path, _ = QFileDialog.getSaveFileName(self, "Export Stats", "trip_stats.txt", "Text Files (*.txt);;All Files (*)")
+		if path:
+			try:
+				with open(path, 'w', encoding='utf-8') as f:
+					f.write(self.stats_label.text())
+				logger.info(f"Stats exported to {path}")
+			except Exception as e:
+				logger.error(f"Export failed: {e}")
+
+	def _set_colormap(self, colormap_name: str):
+		self._current_colormap = colormap_name
+		for name, action in self._colormap_actions.items():
+			action.setChecked(name == colormap_name)
 		self._plot_refresh_timer.start(200)
 
 	def on_zoom_changed(self, zoom_level):
@@ -297,9 +340,22 @@ class MainWindow(QMainWindow):
 		# Debounce zoom updates to avoid blocking UI with repeated basemap fetches.
 		self._plot_refresh_timer.start(300)
 
-	def on_metric_changed(self, metric_name):
-		"""Called when user changes plotted metric"""
-		self._plot_refresh_timer.start(200)
+	def on_metric_selection_changed(self):
+		"""Called when user changes the metric selection in the list."""
+		if self._get_selected_metrics():
+			self._plot_refresh_timer.start(200)
+
+	def _get_selected_metrics(self) -> list[str]:
+		"""Return all currently selected selectable metric names."""
+		return [
+			item.text() for item in self.metric_list.selectedItems()
+			if item.flags() & Qt.ItemFlag.ItemIsSelectable
+		]
+
+	def _get_selected_metric(self) -> str:
+		"""Return the first selected metric (used for map coloring)."""
+		metrics = self._get_selected_metrics()
+		return metrics[0] if metrics else 'speedobdkmh'
 
 	def _build_torqlogs_column_map(self) -> dict[str, str]:
 		inspector = inspect(self.engine)
@@ -368,16 +424,36 @@ class MainWindow(QMainWindow):
 		if not metric_columns:
 			return
 
-		current = self.metric_combo.currentText()
-		self.metric_combo.blockSignals(True)
-		self.metric_combo.clear()
-		self.metric_combo.addItems(metric_columns)
-		if current in metric_columns:
-			self.metric_combo.setCurrentText(current)
-		else:
-			self.metric_combo.setCurrentText(metric_columns[0])
-		self.metric_combo.blockSignals(False)
-		logger.debug(f"Populated metric columns: {len(metric_columns)}")
+		prev_selected: set[str] = {
+			item.text() for item in self.metric_list.selectedItems()
+			if item.flags() & Qt.ItemFlag.ItemIsSelectable
+		}
+
+		self.metric_list.blockSignals(True)
+		self.metric_list.clear()
+
+		grouped = group_metrics_by_category(metric_columns)
+		first_selectable: QListWidgetItem | None = None
+		for cat, cat_metrics in grouped.items():
+			header = QListWidgetItem(f"── {cat.value} ──")
+			header.setFlags(Qt.ItemFlag.NoItemFlags)
+			header.setForeground(Qt.GlobalColor.darkGray)
+			self.metric_list.addItem(header)
+			for display_name, unit, orig_name in cat_metrics:
+				item = QListWidgetItem(orig_name)
+				item.setToolTip(f"{display_name} ({unit})" if unit else display_name)
+				self.metric_list.addItem(item)
+				if first_selectable is None:
+					first_selectable = item
+				if orig_name in prev_selected:
+					item.setSelected(True)
+
+		if not any(item.isSelected() for item in self.metric_list.findItems('*', Qt.MatchFlag.MatchWildcard) if item.flags() & Qt.ItemFlag.ItemIsSelectable):
+			if first_selectable:
+				first_selectable.setSelected(True)
+
+		self.metric_list.blockSignals(False)
+		logger.debug(f"Populated metric list with {len(metric_columns)} metrics")
 
 	def _resolve_actual_torqlogs_column(self, requested_column: str) -> str | None:
 		return self._torqlogs_norm_to_actual.get(_normalize_col_name(requested_column))
@@ -407,7 +483,7 @@ class MainWindow(QMainWindow):
 			return [int(k) for k in self.df_trips.iloc[rows]['fileid'].tolist() if pd.notna(k)]
 		return []
 
-	def _load_trip_plot_data(self, fileid: int, metric_name: str) -> dict[str, list[float]] | None:
+	def _load_trip_plot_data(self, fileid: int, metric_name: str) -> dict[str, list] | None:
 		cache_key = (fileid, metric_name)
 		if cache_key in self._trip_plot_cache:
 			return self._trip_plot_cache[cache_key]
@@ -415,16 +491,20 @@ class MainWindow(QMainWindow):
 		lat_col = self._resolved_torqlogs_columns.get('latitude')
 		lon_col = self._resolved_torqlogs_columns.get('longitude')
 		speed_col_name = self._resolve_actual_torqlogs_column(metric_name)
+		time_col = (self._resolve_actual_torqlogs_column('gpstime')
+					or self._resolve_actual_torqlogs_column('devicetime'))
 		if not (lat_col and lon_col and speed_col_name):
 			return None
 
+		time_select = f', "{time_col}" AS metric_time' if time_col else ''
+		time_order = f' ORDER BY "{time_col}"' if time_col else ''
 		q = (
 			f'SELECT "{lon_col}" AS longitude, "{lat_col}" AS latitude, '
-			f'"{speed_col_name}" AS selectedmetric FROM torqlogs WHERE fileid = {int(fileid)}'
+			f'"{speed_col_name}" AS selectedmetric{time_select} FROM torqlogs WHERE fileid = {int(fileid)}{time_order}'
 		)
 		df_part = pd.read_sql(q, self.engine)
 		if df_part.empty:
-			self._trip_plot_cache[cache_key] = {"x": [], "y": [], "speed": []}
+			self._trip_plot_cache[cache_key] = {"x": [], "y": [], "speed": [], "time": []}
 			return self._trip_plot_cache[cache_key]
 		try:
 			gdf = gpd.GeoDataFrame(df_part, geometry=[Point(xy) for xy in zip(df_part['longitude'], df_part['latitude'])], crs="EPSG:4326",).to_crs(epsg=3857)
@@ -433,10 +513,15 @@ class MainWindow(QMainWindow):
 			return None
 		speed_series = pd.to_numeric(df_part['selectedmetric'], errors='coerce').fillna(0)
 
-		payload: dict[str, list[float]] = {
+		time_values: list = []
+		if 'metric_time' in df_part.columns:
+			time_values = pd.to_datetime(df_part['metric_time'], errors='coerce').tolist()
+
+		payload: dict[str, list] = {
 			"x": gdf.geometry.x.tolist(),
 			"y": gdf.geometry.y.tolist(),
 			"speed": speed_series.tolist(),
+			"time": time_values,
 		}
 		self._trip_plot_cache[cache_key] = payload
 		logger.debug(f"Loaded trip plot data for fileid={fileid}, metric_name={metric_name}, points={len(payload['x'])}")
@@ -533,8 +618,9 @@ class MainWindow(QMainWindow):
 			return
 
 		zoom = int(self.zoom_combo.currentText())
-		colormap_name = self.colormap_combo.currentText()
-		selected_metric = self.metric_combo.currentText()
+		colormap_name = self._current_colormap
+		selected_metrics = self._get_selected_metrics() or ['speedobdkmh']
+		selected_metric = selected_metrics[0]
 		cached_payload = self._load_cached_map_image(fileids, zoom, colormap_name, selected_metric)
 
 		self.map_canvas.ax.clear()
@@ -577,11 +663,11 @@ class MainWindow(QMainWindow):
 
 			sizes = speed_vals.clip(lower=1, upper=50)
 			base_color = cmap(idx % cycle_length)
-			speed_max = speed_vals.max()
+			speed_abs_max = float(speed_vals.abs().max())
 			colors = [(
-				min(1, base_color[0] + 0.5 * (v / speed_max if speed_max > 0 else 0)),
-				min(1, base_color[1] + 0.5 * (v / speed_max if speed_max > 0 else 0)),
-				min(1, base_color[2] + 0.5 * (v / speed_max if speed_max > 0 else 0)),
+				max(0.0, min(1.0, base_color[0] + 0.5 * (v / speed_abs_max if speed_abs_max > 0 else 0))),
+				max(0.0, min(1.0, base_color[1] + 0.5 * (v / speed_abs_max if speed_abs_max > 0 else 0))),
+				max(0.0, min(1.0, base_color[2] + 0.5 * (v / speed_abs_max if speed_abs_max > 0 else 0))),
 				base_color[3]) for v in speed_vals]
 			sc = self.map_canvas.ax.scatter(x_vals, y_vals, s=sizes, c=colors, label=f"fileid {fileid}", zorder=2)
 			plots.append(sc)
@@ -604,6 +690,7 @@ class MainWindow(QMainWindow):
 		self.map_canvas.ax.set_xlabel("Longitude")
 		self.map_canvas.ax.set_ylabel("Latitude")
 		self.map_canvas.draw_idle()
+		self._update_timeseries_plot(fileids, selected_metrics, colormap_name)
 		self._update_stats_panel(fileids, all_metric_values, all_x, all_y, selected_metric)
 
 	def _load_trip_metadata(self, fileids: list[int]) -> dict:
@@ -622,65 +709,65 @@ class MainWindow(QMainWindow):
 			logger.warning(f"Could not load trip metadata: {e}")
 			return {}
 
-	def _format_trip_stats(self, fileids: list[int], trip_count: int, point_count: int, 
-		metric_name: str, metric_min: float, metric_avg: float, metric_max: float, 
-		all_x: list[float], all_y: list[float], trip_info: dict) -> str:
-		"""Format comprehensive trip stats with metrics and analysis suggestions."""
-		lines = []
-		
-		# Header
-		lines.append("═" * 60)
-		lines.append(f"📊 TRIP SUMMARY (Trips: {trip_count}, Points: {point_count})")
-		lines.append("═" * 60)
-		
-		# Trip metadata
+	def _format_trip_stats(self, fileids: list[int], trip_count: int, point_count: int,
+		metric_name: str, metric_min: float, metric_avg: float, metric_max: float,
+		all_x: list[float], all_y: list[float], trip_info: dict,
+		all_metric_stats: dict | None = None) -> str:
+		"""Format comprehensive trip stats with all metric min/max/avg."""
+		W = 52
+		lines: list[str] = []
+
+		lines.append("═" * W)
+		lines.append(f"TRIP SUMMARY  — {trip_count} trip(s), {point_count} pts")
+		lines.append("═" * W)
+
+		# Trip metadata & date
 		if trip_info:
 			total_distance = sum(row.get('trip_distance', 0) or 0 for row in trip_info.values())
 			total_duration = sum(row.get('trip_duration', 0) or 0 for row in trip_info.values())
+			start_dates = [str(row.get('trip_start', '')) for row in trip_info.values() if row.get('trip_start')]
+			end_dates   = [str(row.get('trip_end',   '')) for row in trip_info.values() if row.get('trip_end')]
+			if start_dates:
+				lines.append(f"Date:     {start_dates[0]}")
+			if end_dates and end_dates != start_dates:
+				lines.append(f"End:      {end_dates[0]}")
 			if total_distance:
-				lines.append(f"\n📍 Distance: {total_distance/1000:.1f} km")
+				lines.append(f"Distance: {total_distance/1000:.2f} km")
 			if total_duration:
-				duration_str = format_duration(total_duration)
-				lines.append(f"⏱️  Duration: {duration_str}")
-			
-			if trip_info and total_distance and total_duration:
-				avg_speed = (total_distance / 1000) / (total_duration / 3600) if total_duration > 0 else 0
-				lines.append(f"💨 Avg Speed: {avg_speed:.1f} km/h")
-		
-		# Current metric display
+				lines.append(f"Duration: {format_duration(total_duration)}")
+			if total_distance and total_duration:
+				avg_spd = (total_distance / 1000) / (total_duration / 3600)
+				lines.append(f"Avg spd:  {avg_spd:.1f} km/h")
+
+		# Selected metric summary
 		category, display_name, unit = categorize_metric(metric_name)
 		unit_str = f" {unit}" if unit else ""
-		lines.append(f"\n{'─' * 60}")
-		lines.append(f"🎯 SELECTED METRIC: {display_name}{unit_str}")
-		lines.append(f"   Min: {metric_min:.2f}  |  Avg: {metric_avg:.2f}  |  Max: {metric_max:.2f}")
-		
-		# Analysis suggestion
+		lines.append(f"\n{'─' * W}")
+		lines.append(f"Selected: {display_name}{unit_str}")
+		lines.append(f"  min {metric_min:.2f}  avg {metric_avg:.2f}  max {metric_max:.2f}")
 		suggestion = get_analysis_suggestion(category)
-		lines.append(f"\n💡 ANALYSIS TIP ({suggestion['analysis_type']}):") 
-		lines.append(f"   {suggestion['description'][:80]}...")
-		lines.append(f"   Visualization: {suggestion['visualization']}")
-		
-		# Map bounds
-		bounds = self._compute_plot_bounds(all_x, all_y)
-		if bounds:
-			xmin, xmax, ymin, ymax = bounds
-			lines.append(f"\n🗺️  Map Bounds:")
-			lines.append(f"   Longitude: [{xmin:.3f}, {xmax:.3f}]")
-			lines.append(f"   Latitude: [{ymin:.3f}, {ymax:.3f}]")
-		
-		# Available metrics by category (show top metrics)
-		metric_columns = self._get_metric_columns_with_valid_data()
-		if metric_columns:
-			lines.append(f"\n📈 AVAILABLE METRICS ({len(metric_columns)} total):")
-			grouped = group_metrics_by_category(metric_columns)
-			for cat in list(grouped.keys())[:5]:  # Show top 5 categories
-				metrics = grouped[cat][:3]  # Show top 3 metrics per category
-				metric_str = ", ".join(f"{name}" for name, unit, _ in metrics)
-				lines.append(f"   {cat.value}: {metric_str}")
-			if sum(len(v) for v in grouped.values()) > 15:
-				lines.append(f"   ... and {sum(len(v) for v in grouped.values()) - 15} more")
-		
-		lines.append("\n" + "═" * 60)
+		lines.append(f"  [{suggestion['analysis_type']}]  {suggestion['visualization']}")
+
+		# All metrics grouped by category
+		if all_metric_stats:
+			grouped = group_metrics_by_category(list(all_metric_stats.keys()))
+			lines.append(f"\n{'─' * W}")
+			lines.append("ALL METRICS  (min / avg / max):")
+			for cat, cat_metrics in grouped.items():
+				cat_lines: list[str] = []
+				for disp, u, orig in cat_metrics:
+					stats = all_metric_stats.get(orig)
+					if stats:
+						u_s = f" {u}" if u else ""
+						cat_lines.append(
+							f"  {disp:<28s}  "
+							f"{stats['min']:.1f}/{stats['avg']:.1f}/{stats['max']:.1f}{u_s}"
+						)
+				if cat_lines:
+					lines.append(f"\n{cat.value}:")
+					lines.extend(cat_lines)
+
+		lines.append("\n" + "═" * W)
 		return "\n".join(lines)
 
 	def _update_stats_panel(self, fileids: list[int], metric_values: list[float], all_x: list[float], all_y: list[float], metric_name: str):
@@ -693,14 +780,148 @@ class MainWindow(QMainWindow):
 
 		# Load trip metadata from database
 		trip_info = self._load_trip_metadata(fileids)
-		
+		all_metric_stats = self._load_all_metric_stats(fileids)
+
 		# Build stats text with trip info, metrics, and suggestions
 		stats_text = self._format_trip_stats(
-			fileids, trip_count, point_count, metric_name, 
-			metric_min, metric_avg, metric_max, all_x, all_y, trip_info
+			fileids, trip_count, point_count, metric_name,
+			metric_min, metric_avg, metric_max, all_x, all_y, trip_info, all_metric_stats
 		)
 
 		self.stats_label.setText(stats_text)
+
+	def _update_timeseries_plot(self, fileids: list[int], metric_names: list[str], colormap_name: str):
+		"""Draw one or more metrics over time for selected trips."""
+		ax = self.timeseries_canvas.ax
+		ax.clear()
+		cmap = plt.colormaps[colormap_name]
+		cycle_length = 9 if colormap_name in ['Set1'] else (8 if colormap_name in ['Set2', 'Dark2'] else 10)
+		# Line styles cycle across trips when multiple trips are shown
+		linestyles = ['-', '--', ':', '-.']
+		multi_metric = len(metric_names) > 1
+		multi_trip = len(fileids) > 1
+
+		has_data = False
+		# Color index cycles per metric so each metric gets a distinct color
+		for m_idx, metric_name in enumerate(metric_names):
+			for t_idx, fileid in enumerate(fileids):
+				plot_data = self._load_trip_plot_data(fileid, metric_name)
+				if not plot_data or not plot_data.get('speed'):
+					continue
+				time_vals = plot_data.get('time') or []
+				metric_vals = plot_data['speed']
+				# Fall back to sequential index when timestamps are unavailable or all-NaT
+				use_time = bool(time_vals) and any(t is not None and not pd.isna(t) for t in time_vals[:10])
+				if use_time:
+					# Drop rows where the timestamp is NaT to avoid matplotlib ConversionError
+					pairs = [(t, v) for t, v in zip(time_vals, metric_vals)
+					         if t is not None and not pd.isna(t)]
+					if pairs:
+						x_vals, metric_vals = zip(*pairs)
+					else:
+						x_vals, metric_vals = [], []
+				else:
+					x_vals = list(range(len(metric_vals)))
+				if not x_vals:
+					continue
+				color = cmap(m_idx % cycle_length)
+				lstyle = linestyles[t_idx % len(linestyles)] if multi_trip else '-'
+				_, display_name, unit = categorize_metric(metric_name)
+				if multi_metric and multi_trip:
+					label = f"{display_name} / trip {fileid}"
+				elif multi_metric:
+					label = display_name
+				elif multi_trip:
+					label = f"trip {fileid}"
+				else:
+					label = None
+				ax.plot(x_vals, metric_vals, color=color, linestyle=lstyle,
+				        linewidth=0.8, alpha=0.85, label=label)
+				has_data = True
+
+		if len(metric_names) == 1:
+			_, display_name, unit = categorize_metric(metric_names[0])
+			unit_str = f" ({unit})" if unit else ""
+			ax.set_title(f"{display_name}{unit_str} over time", fontsize=9, pad=3)
+			ax.set_ylabel(display_name, fontsize=8)
+		else:
+			ax.set_title("Metrics over time", fontsize=9, pad=3)
+			ax.set_ylabel("Value", fontsize=8)
+		ax.set_xlabel("Time", fontsize=8)
+		ax.tick_params(labelsize=7)
+		if (multi_metric or multi_trip) and has_data:
+			ax.legend(fontsize=7)
+		if has_data:
+			try:
+				ax.figure.autofmt_xdate(rotation=30)
+			except Exception as e:
+				logger.warning(f"Could not format x-axis dates: {e} ({type(e)})")
+		self.timeseries_canvas.draw_idle()
+
+	def _get_torqlogs_numeric_columns(self) -> set[str]:
+		"""Return the set of actual torqlogs column names that have a numeric DB type."""
+		inspector = inspect(self.engine)
+		numeric_type_prefixes = (
+			'int', 'float', 'real', 'double', 'numeric', 'decimal',
+			'smallint', 'bigint', 'money', 'number',
+		)
+		numeric_cols: set[str] = set()
+		for col in inspector.get_columns("torqlogs"):
+			type_str = str(col["type"]).lower()
+			if any(type_str.startswith(p) for p in numeric_type_prefixes):
+				numeric_cols.add(str(col["name"]))
+		return numeric_cols
+
+	def _load_all_metric_stats(self, fileids: list[int]) -> dict[str, dict[str, float]]:
+		"""Load min/avg/max for all available metrics for the selected fileids."""
+		if not fileids:
+			return {}
+		metric_columns = self._get_metric_columns_with_valid_data()
+		if not metric_columns:
+			return {}
+
+		numeric_cols = self._get_torqlogs_numeric_columns()
+
+		agg_parts: list[str] = []
+		col_map: list[tuple[str, str]] = []
+		for metric in metric_columns:
+			actual = self._resolve_actual_torqlogs_column(metric)
+			if actual and actual in numeric_cols:
+				agg_parts.append(
+					f'MIN(CAST("{actual}" AS FLOAT)) AS "_s_{metric}_min", '
+					f'AVG(CAST("{actual}" AS FLOAT)) AS "_s_{metric}_avg", '
+					f'MAX(CAST("{actual}" AS FLOAT)) AS "_s_{metric}_max"'
+				)
+				col_map.append((metric, actual))
+
+		if not agg_parts:
+			return {}
+
+		fileids_str = ",".join(str(fid) for fid in fileids)
+		query = f"SELECT {', '.join(agg_parts)} FROM torqlogs WHERE fileid IN ({fileids_str})"
+		try:
+			df = pd.read_sql(query, self.engine)
+			if df.empty:
+				return {}
+			row = df.iloc[0]
+			result: dict[str, dict[str, float]] = {}
+			for metric, _ in col_map:
+				try:
+					min_val = row.get(f"_s_{metric}_min")
+					avg_val = row.get(f"_s_{metric}_avg")
+					max_val = row.get(f"_s_{metric}_max")
+					if min_val is not None and not pd.isna(min_val):
+						result[metric] = {
+							'min': float(min_val),
+							'avg': float(avg_val) if avg_val is not None and not pd.isna(avg_val) else 0.0,
+							'max': float(max_val) if max_val is not None and not pd.isna(max_val) else 0.0,
+						}
+				except Exception as e:
+					logger.warning(f"Error processing stats for metric '{metric}': {e} ({type(e)})")
+			return result
+		except Exception as e:
+			logger.warning(f"Could not load all metric stats: {e}")
+			return {}
 
 	def _start_async_basemap(self, bounds: tuple[float, float, float, float], zoom: int, fileids: list[int], colormap_name: str, metric_name: str):
 		xmin, xmax, ymin, ymax = bounds
