@@ -150,6 +150,9 @@ class MainWindow(QMainWindow):
 			if (actual := self._resolve_actual_torqlogs_column(name)) is not None
 		}
 		self._trip_plot_cache: dict[tuple[int, str], dict[str, list]] = {}
+		self._trip_geo_cache: dict[int, dict[str, list]] = {}
+		self._selection_stats_cache: dict[tuple[int, ...], tuple[dict, dict[str, dict[str, float]]]] = {}
+		self._map_cache_version = "v2"
 		self._current_colormap = 'Set1'
 		self._plot_refresh_timer = QTimer(self)
 		self._plot_refresh_timer.setSingleShot(True)
@@ -313,6 +316,12 @@ class MainWindow(QMainWindow):
 			colormap_menu.addAction(action)
 			self._colormap_actions[cmap_name] = action
 
+		# Cache menu
+		cache_menu = menu_bar.addMenu("&Cache")
+		clear_map_cache_action = QAction("Clear &Map Image Cache", self)
+		clear_map_cache_action.triggered.connect(self._clear_map_image_cache)
+		cache_menu.addAction(clear_map_cache_action)
+
 	def _open_database(self):
 		path, _ = QFileDialog.getOpenFileName(self, "Open Database", "", "SQLite Database (*.db);;All Files (*)")
 		if path:
@@ -328,6 +337,30 @@ class MainWindow(QMainWindow):
 				logger.info(f"Stats exported to {path}")
 			except Exception as e:
 				logger.error(f"Export failed: {e}")
+
+	def _clear_map_image_cache(self):
+		confirm = QMessageBox.question(
+			self,
+			"Clear Cache",
+			"Clear all rows from mapimagecache?\n\nThis will force map images to be regenerated.",
+			QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+			QMessageBox.StandardButton.No,
+		)
+		if confirm != QMessageBox.StandardButton.Yes:
+			return
+
+		try:
+			with self.engine.begin() as conn:
+				conn.execute(text("DELETE FROM mapimagecache"))
+			self._trip_plot_cache.clear()
+			self._trip_geo_cache.clear()
+			self._selection_stats_cache.clear()
+			self._plot_refresh_timer.start(50)
+			logger.info("Cleared mapimagecache and invalidated in-memory plot/stat caches")
+			QMessageBox.information(self, "Cache Cleared", "Map image cache was cleared successfully.")
+		except Exception as e:
+			logger.error(f"Failed to clear mapimagecache: {e} ({type(e)})")
+			QMessageBox.warning(self, "Cache Clear Failed", f"Could not clear mapimagecache:\n{e}")
 
 	def _set_colormap(self, colormap_name: str):
 		self._current_colormap = colormap_name
@@ -483,69 +516,129 @@ class MainWindow(QMainWindow):
 			return [int(k) for k in self.df_trips.iloc[rows]['fileid'].tolist() if pd.notna(k)]
 		return []
 
+	def _load_trip_geo_data(self, fileid: int) -> dict[str, list] | None:
+		if fileid in self._trip_geo_cache:
+			return self._trip_geo_cache[fileid]
+
+		lat_col = self._resolved_torqlogs_columns.get('latitude')
+		lon_col = self._resolved_torqlogs_columns.get('longitude')
+		time_col = (self._resolve_actual_torqlogs_column('gpstime')
+					or self._resolve_actual_torqlogs_column('devicetime'))
+		if not (lat_col and lon_col):
+			return None
+
+		time_select = f', "{time_col}" AS metric_time' if time_col else ''
+		order_col = f'"{time_col}"' if time_col else 'id'
+		q = (
+			f'SELECT "{lon_col}" AS longitude, "{lat_col}" AS latitude{time_select} '
+			f'FROM torqlogs WHERE fileid = {int(fileid)} ORDER BY {order_col}'
+		)
+		df_geo = pd.read_sql(q, self.engine)
+		if df_geo.empty:
+			payload = {"x": [], "y": [], "time": []}
+			self._trip_geo_cache[fileid] = payload
+			return payload
+
+		try:
+			gdf = gpd.GeoDataFrame(
+				df_geo,
+				geometry=[Point(xy) for xy in zip(df_geo['longitude'], df_geo['latitude'])],
+				crs="EPSG:4326",
+			).to_crs(epsg=3857)
+		except KeyError as e:
+			logger.error(f"Missing expected geo columns in trip data: {e} fileid={fileid}")
+			return None
+
+		time_values: list = []
+		if 'metric_time' in df_geo.columns:
+			time_values = pd.to_datetime(df_geo['metric_time'], errors='coerce').tolist()
+
+		payload = {
+			"x": gdf.geometry.x.tolist(),
+			"y": gdf.geometry.y.tolist(),
+			"time": time_values,
+		}
+		self._trip_geo_cache[fileid] = payload
+		return payload
+
 	def _load_trip_plot_data(self, fileid: int, metric_name: str) -> dict[str, list] | None:
 		cache_key = (fileid, metric_name)
 		if cache_key in self._trip_plot_cache:
 			return self._trip_plot_cache[cache_key]
 
-		lat_col = self._resolved_torqlogs_columns.get('latitude')
-		lon_col = self._resolved_torqlogs_columns.get('longitude')
+		geo_payload = self._load_trip_geo_data(fileid)
+		if geo_payload is None:
+			return None
+
 		speed_col_name = self._resolve_actual_torqlogs_column(metric_name)
 		time_col = (self._resolve_actual_torqlogs_column('gpstime')
 					or self._resolve_actual_torqlogs_column('devicetime'))
-		if not (lat_col and lon_col and speed_col_name):
+		if not speed_col_name:
 			return None
 
-		time_select = f', "{time_col}" AS metric_time' if time_col else ''
-		time_order = f' ORDER BY "{time_col}"' if time_col else ''
+		time_order = f' ORDER BY "{time_col}"' if time_col else ' ORDER BY id'
 		q = (
-			f'SELECT "{lon_col}" AS longitude, "{lat_col}" AS latitude, '
-			f'"{speed_col_name}" AS selectedmetric{time_select} FROM torqlogs WHERE fileid = {int(fileid)}{time_order}'
+			f'SELECT "{speed_col_name}" AS selectedmetric '
+			f'FROM torqlogs WHERE fileid = {int(fileid)}{time_order}'
 		)
 		df_part = pd.read_sql(q, self.engine)
 		if df_part.empty:
 			self._trip_plot_cache[cache_key] = {"x": [], "y": [], "speed": [], "time": []}
 			return self._trip_plot_cache[cache_key]
-		try:
-			gdf = gpd.GeoDataFrame(df_part, geometry=[Point(xy) for xy in zip(df_part['longitude'], df_part['latitude'])], crs="EPSG:4326",).to_crs(epsg=3857)
-		except KeyError as e:
-			logger.error(f"Missing expected columns in trip data: {e} fileid={fileid} metric_name={metric_name}")
-			return None
 		speed_series = pd.to_numeric(df_part['selectedmetric'], errors='coerce').fillna(0)
 
-		time_values: list = []
-		if 'metric_time' in df_part.columns:
-			time_values = pd.to_datetime(df_part['metric_time'], errors='coerce').tolist()
+		x_vals = geo_payload["x"]
+		y_vals = geo_payload["y"]
+		time_values = geo_payload["time"]
+		points = min(len(x_vals), len(y_vals), len(speed_series))
+		if time_values:
+			points = min(points, len(time_values))
 
 		payload: dict[str, list] = {
-			"x": gdf.geometry.x.tolist(),
-			"y": gdf.geometry.y.tolist(),
-			"speed": speed_series.tolist(),
-			"time": time_values,
+			"x": x_vals[:points],
+			"y": y_vals[:points],
+			"speed": speed_series.tolist()[:points],
+			"time": time_values[:points] if time_values else [],
 		}
 		self._trip_plot_cache[cache_key] = payload
 		logger.debug(f"Loaded trip plot data for fileid={fileid}, metric_name={metric_name}, points={len(payload['x'])}")
 		return payload
 
 	def _selection_key(self, fileids: list[int], metric_name: str) -> str:
-		return f"metric={metric_name}|" + ",".join(str(fid) for fid in sorted(fileids))
+		return f"{self._map_cache_version}|metric={metric_name}|" + ",".join(str(fid) for fid in sorted(fileids))
+
+	def _basemap_selection_key(self, fileids: list[int]) -> str:
+		# Basemap tiles are independent of metric and colormap for a fixed trip selection/zoom.
+		return f"{self._map_cache_version}|basemap|" + ",".join(str(fid) for fid in sorted(fileids))
+
+	def _timeseries_selection_key(self, fileids: list[int], metric_names: list[str]) -> str:
+		metrics_part = ",".join(metric_names)
+		files_part = ",".join(str(fid) for fid in sorted(fileids))
+		return f"{self._map_cache_version}|timeseries|metrics={metrics_part}|{files_part}"
 
 	def _cache_fileid(self, fileids: list[int]) -> int | None:
 		return int(fileids[0]) if len(fileids) == 1 else None
 
 	def _load_cached_map_image(self, fileids: list[int], zoom: int, colormap: str, metric_name: str) -> tuple[bytes, tuple[float, float, float, float]] | None:
 		selection_key = self._selection_key(fileids, metric_name)
+		basemap_key = self._basemap_selection_key(fileids)
 		q = text(
 			"""
 			SELECT image_png, ext_west, ext_east, ext_south, ext_north
 			FROM mapimagecache
-			WHERE selection_key = :selection_key AND zoom = :zoom AND colormap = :colormap
+			WHERE (
+				(selection_key = :selection_key AND zoom = :zoom AND colormap = :colormap)
+				OR
+				(selection_key = :basemap_key AND zoom = :zoom)
+			)
+			ORDER BY CASE WHEN selection_key = :selection_key AND colormap = :colormap THEN 0 ELSE 1 END
 			LIMIT 1
 			"""
 		)
 		with self.engine.connect() as conn:
 			row = conn.execute(q, {
 				"selection_key": selection_key,
+				"basemap_key": basemap_key,
 				"zoom": zoom,
 				"colormap": colormap,
 			}).first()
@@ -555,6 +648,7 @@ class MainWindow(QMainWindow):
 
 	def _save_cached_map_image(self, fileids: list[int], zoom: int, colormap: str, metric_name: str, ext: tuple[float, float, float, float]):
 		selection_key = self._selection_key(fileids, metric_name)
+		basemap_key = self._basemap_selection_key(fileids)
 		fileid = self._cache_fileid(fileids)
 		ext_west, ext_east, ext_south, ext_north = ext
 		buf = io.BytesIO()
@@ -595,7 +689,67 @@ class MainWindow(QMainWindow):
 				"ext_south": ext_south,
 				"ext_north": ext_north,
 			})
+			# Also store a metric/colormap-agnostic basemap entry for cross-metric reuse.
+			conn.execute(upsert_sql, {
+				"fileid": fileid,
+				"selection_key": basemap_key,
+				"zoom": zoom,
+				"colormap": "basemap",
+				"image_png": image_bytes,
+				"ext_west": ext_west,
+				"ext_east": ext_east,
+				"ext_south": ext_south,
+				"ext_north": ext_north,
+			})
 		logger.debug(f"Saved cached map image for selection_key={selection_key}, zoom={zoom}, colormap={colormap}")
+
+	def _load_cached_timeseries_image(self, fileids: list[int], metric_names: list[str], colormap: str) -> bytes | None:
+		selection_key = self._timeseries_selection_key(fileids, metric_names)
+		q = text(
+			"""
+			SELECT image_png
+			FROM mapimagecache
+			WHERE selection_key = :selection_key AND zoom = :zoom AND colormap = :colormap
+			LIMIT 1
+			"""
+		)
+		with self.engine.connect() as conn:
+			row = conn.execute(q, {
+				"selection_key": selection_key,
+				"zoom": -1,
+				"colormap": colormap,
+			}).first()
+		return bytes(row[0]) if row and row[0] is not None else None
+
+	def _save_cached_timeseries_image(self, fileids: list[int], metric_names: list[str], colormap: str):
+		selection_key = self._timeseries_selection_key(fileids, metric_names)
+		fileid = self._cache_fileid(fileids)
+		buf = io.BytesIO()
+		self.timeseries_canvas.figure.savefig(buf, format='png', dpi=100)
+		image_bytes = buf.getvalue()
+		upsert_sql = text(
+			"""
+			INSERT INTO mapimagecache (fileid, selection_key, zoom, colormap, image_png, ext_west, ext_east, ext_south, ext_north, created_at, updated_at)
+			VALUES (:fileid, :selection_key, :zoom, :colormap, :image_png, :ext_west, :ext_east, :ext_south, :ext_north, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+			ON CONFLICT(selection_key, zoom, colormap)
+			DO UPDATE SET
+				fileid = excluded.fileid,
+				image_png = excluded.image_png,
+				updated_at = CURRENT_TIMESTAMP
+			"""
+		)
+		with self.engine.begin() as conn:
+			conn.execute(upsert_sql, {
+				"fileid": fileid,
+				"selection_key": selection_key,
+				"zoom": -1,
+				"colormap": colormap,
+				"image_png": image_bytes,
+				"ext_west": None,
+				"ext_east": None,
+				"ext_south": None,
+				"ext_north": None,
+			})
 
 	def _compute_plot_bounds(self, all_x: list[float], all_y: list[float]) -> tuple[float, float, float, float] | None:
 		if not all_x or not all_y:
@@ -611,17 +765,33 @@ class MainWindow(QMainWindow):
 		pad_y = dy * 0.03
 		return (xmin - pad_x, xmax + pad_x, ymin - pad_y, ymax + pad_y)
 
+	def _effective_basemap_zoom(self, bounds: tuple[float, float, float, float], base_zoom: int) -> int:
+		"""Increase basemap zoom automatically for short trip extents to reduce blur."""
+		xmin, xmax, ymin, ymax = bounds
+		span = max(1.0, xmax - xmin, ymax - ymin)
+		boost = 0
+		if span <= 1_500:
+			boost = 4
+		elif span <= 3_000:
+			boost = 3
+		elif span <= 7_000:
+			boost = 2
+		elif span <= 15_000:
+			boost = 1
+		# Respect current user-selected zoom as baseline, but improve detail for tight bounds.
+		return max(1, min(18, base_zoom + boost))
+
 	def _plot_for_rows(self, rows):
 		fileids = self._get_selected_fileids(rows)
 		if not fileids:
 			self.stats_label.setText("No trip selected")
 			return
 
-		zoom = int(self.zoom_combo.currentText())
+		base_zoom = int(self.zoom_combo.currentText())
 		colormap_name = self._current_colormap
 		selected_metrics = self._get_selected_metrics() or ['speedobdkmh']
 		selected_metric = selected_metrics[0]
-		cached_payload = self._load_cached_map_image(fileids, zoom, colormap_name, selected_metric)
+		cached_payload: tuple[bytes, tuple[float, float, float, float]] | None = None
 
 		self.map_canvas.ax.clear()
 
@@ -674,6 +844,15 @@ class MainWindow(QMainWindow):
 
 		logger.debug(f"Plotted {len(plots)} trips on map for fileids: {fileids}")
 		bounds = self._compute_plot_bounds(all_x, all_y)
+		effective_zoom = base_zoom
+		if bounds:
+			effective_zoom = self._effective_basemap_zoom(bounds, base_zoom)
+			cached_payload = self._load_cached_map_image(fileids, effective_zoom, colormap_name, selected_metric)
+			if effective_zoom != base_zoom:
+				logger.debug(
+					f"Adaptive basemap zoom: base={base_zoom}, effective={effective_zoom}, "
+					f"metric={selected_metric}, fileids={fileids}"
+				)
 		if bounds:
 			xmin, xmax, ymin, ymax = bounds
 			self.map_canvas.ax.set_xlim(xmin, xmax)
@@ -685,7 +864,7 @@ class MainWindow(QMainWindow):
 			self.map_canvas.ax.imshow(img, extent=cached_ext, interpolation='bilinear', zorder=0)
 		elif plots:
 			if bounds:
-				self._start_async_basemap(bounds, zoom, fileids, colormap_name, selected_metric)
+				self._start_async_basemap(bounds, effective_zoom, fileids, colormap_name, selected_metric)
 		self.map_canvas.ax.set_title(f"Trip Map - {selected_metric}")
 		self.map_canvas.ax.set_xlabel("Longitude")
 		self.map_canvas.ax.set_ylabel("Latitude")
@@ -778,9 +957,14 @@ class MainWindow(QMainWindow):
 		metric_avg = float(metric_series.mean()) if not metric_series.empty else 0.0
 		metric_max = float(metric_series.max()) if not metric_series.empty else 0.0
 
-		# Load trip metadata from database
-		trip_info = self._load_trip_metadata(fileids)
-		all_metric_stats = self._load_all_metric_stats(fileids)
+		# Selection-level metadata and aggregate stats are expensive; cache by selected fileids.
+		selection_key = tuple(sorted(fileids))
+		if selection_key in self._selection_stats_cache:
+			trip_info, all_metric_stats = self._selection_stats_cache[selection_key]
+		else:
+			trip_info = self._load_trip_metadata(fileids)
+			all_metric_stats = self._load_all_metric_stats(fileids)
+			self._selection_stats_cache[selection_key] = (trip_info, all_metric_stats)
 
 		# Build stats text with trip info, metrics, and suggestions
 		stats_text = self._format_trip_stats(
@@ -794,6 +978,15 @@ class MainWindow(QMainWindow):
 		"""Draw one or more metrics over time for selected trips."""
 		ax = self.timeseries_canvas.ax
 		ax.clear()
+		cached_img = self._load_cached_timeseries_image(fileids, metric_names, colormap_name)
+		if cached_img is not None:
+			img = mpimg.imread(io.BytesIO(cached_img), format='png')
+			ax.imshow(img, extent=(0, 1, 0, 1), transform=ax.transAxes, aspect='auto', zorder=0)
+			ax.set_axis_off()
+			self.timeseries_canvas.draw_idle()
+			logger.debug(f"Loaded cached timeseries image for metrics={metric_names}, trips={fileids}")
+			return
+		ax.set_axis_on()
 		cmap = plt.colormaps[colormap_name]
 		cycle_length = 9 if colormap_name in ['Set1'] else (8 if colormap_name in ['Set2', 'Dark2'] else 10)
 		# Line styles cycle across trips when multiple trips are shown
@@ -856,6 +1049,10 @@ class MainWindow(QMainWindow):
 				ax.figure.autofmt_xdate(rotation=30)
 			except Exception as e:
 				logger.warning(f"Could not format x-axis dates: {e} ({type(e)})")
+			try:
+				self._save_cached_timeseries_image(fileids, metric_names, colormap_name)
+			except Exception as e:
+				logger.warning(f"Could not save timeseries cache: {e} ({type(e)})")
 		self.timeseries_canvas.draw_idle()
 
 	def _get_torqlogs_numeric_columns(self) -> set[str]:
