@@ -69,6 +69,89 @@ def _write_start_end_backup(session, backup_file: Path) -> None:
 				f"{row['endid']} | {row['latend']} | {row['lonend']} | {row['count']} | {row['label'] if row['label'] is not None else ''}\n"
 			)
 
+
+def _parse_labeled_coords(backup_file: Path, default_section: str | None = None) -> dict[str, list[tuple[float, float, str]]]:
+	parsed: dict[str, list[tuple[float, float, str]]] = {"start": [], "end": []}
+	section = default_section
+
+	with backup_file.open("r", encoding="utf-8", errors="replace") as f:
+		for raw_line in f:
+			line = raw_line.strip()
+			lower = line.lower()
+			if "table=startpos" in lower or lower.startswith("startid |"):
+				section = "start"
+				continue
+			if "table=endpos" in lower or lower.startswith("endid |"):
+				section = "end"
+				continue
+
+			if section not in ("start", "end") or "|" not in line:
+				continue
+
+			parts = [part.strip() for part in line.split("|")]
+			if len(parts) < 5:
+				continue
+
+			try:
+				int(parts[0])
+				lat = float(parts[1])
+				lon = float(parts[2])
+			except (TypeError, ValueError):
+				continue
+
+			label = parts[4]
+			if not label:
+				continue
+
+			parsed[section].append((lat, lon, label))
+
+	return parsed
+
+
+def _restore_labels_from_coords(
+	session,
+	table_name: str,
+	id_column: str,
+	lat_column: str,
+	lon_column: str,
+	rows: list[tuple[float, float, str]],
+	match_offset: float = 0.001,
+) -> int:
+	updated = 0
+	select_stmt = text(
+		f"""
+		SELECT {id_column} AS row_id, {lat_column} AS lat, {lon_column} AS lon, label
+		FROM {table_name}
+		WHERE {lat_column} BETWEEN :lat_min AND :lat_max
+		  AND {lon_column} BETWEEN :lon_min AND :lon_max
+		"""
+	)
+	update_stmt = text(f"UPDATE {table_name} SET label = :label WHERE {id_column} = :row_id")
+
+	for lat, lon, label in rows:
+		candidates = session.execute(
+			select_stmt,
+			{
+				"lat_min": lat - match_offset,
+				"lat_max": lat + match_offset,
+				"lon_min": lon - match_offset,
+				"lon_max": lon + match_offset,
+			},
+		).mappings().all()
+		if not candidates:
+			continue
+
+		best = min(candidates, key=lambda r: haversine(lat, lon, float(r["lat"]), float(r["lon"])))
+		current_label = best.get("label")
+		if current_label == label:
+			continue
+
+		res = session.execute(update_stmt, {"label": label, "row_id": int(best["row_id"])})
+		if res.rowcount and res.rowcount > 0:
+			updated += int(res.rowcount)
+
+	return updated
+
 def collect_db_filestats(args, todatabase=True, droptable=False):
 	# Incremental and batched filestats collection.
 	session = get_engine_session(args)
@@ -393,6 +476,7 @@ def collect_db_speeds(args):
 
 def collect_db_startends(args, update_start=True, update_end=True, force_refresh=False):
 	session = get_engine_session(args)
+	label_restore_sources: list[Path] = []
 	resolved = _resolve_schema_columns(session, ['gpstime', 'latitude', 'longitude'])
 	time_col = resolved.get('gpstime')
 	lat_col = resolved.get('latitude')
@@ -408,6 +492,17 @@ def collect_db_startends(args, update_start=True, update_end=True, force_refresh
 		)
 		try:
 			backup_dir = Path(__file__).resolve().parent
+			existing_refresh_backups = sorted(backup_dir.glob("start_endpos_backup_before_force_refresh_*.txt"))
+			if existing_refresh_backups:
+				label_restore_sources.append(existing_refresh_backups[-1])
+
+			legacy_start_backup = backup_dir / "startpos_backup0.txt"
+			legacy_end_backup = backup_dir / "endpos_backup0.txt"
+			if legacy_start_backup.exists():
+				label_restore_sources.append(legacy_start_backup)
+			if legacy_end_backup.exists():
+				label_restore_sources.append(legacy_end_backup)
+
 			ts = datetime.now().strftime("%Y%m%d%H%M%S")
 			backup_file = backup_dir / f"start_endpos_backup_before_force_refresh_{ts}.txt"
 			_write_start_end_backup(session, backup_file)
@@ -528,6 +623,48 @@ GROUP BY fileid;
 		)
 
 	session.commit()
+
+	if force_refresh and label_restore_sources:
+		total_start_updates = 0
+		total_end_updates = 0
+		for src in label_restore_sources:
+			try:
+				if src.name.lower() == "startpos_backup0.txt":
+					parsed = _parse_labeled_coords(src, default_section="start")
+				elif src.name.lower() == "endpos_backup0.txt":
+					parsed = _parse_labeled_coords(src, default_section="end")
+				else:
+					parsed = _parse_labeled_coords(src)
+
+				if update_start and parsed["start"]:
+					total_start_updates += _restore_labels_from_coords(
+						session,
+						table_name="startpos",
+						id_column="startid",
+						lat_column="latstart",
+						lon_column="lonstart",
+						rows=parsed["start"],
+					)
+
+				if update_end and parsed["end"]:
+					total_end_updates += _restore_labels_from_coords(
+						session,
+						table_name="endpos",
+						id_column="endid",
+						lat_column="latend",
+						lon_column="lonend",
+						rows=parsed["end"],
+					)
+				logger.info(f"Attempted label restore using backup source: {src}")
+			except Exception as e:
+				logger.warning(f"Could not restore labels from {src}: {e} ({type(e)})")
+
+		session.commit()
+		logger.info(
+			f"Label restore updates after force refresh: "
+			f"startpos={total_start_updates}, endpos={total_end_updates}"
+		)
+
 	logger.info(f"collect_db_startends completed for {processed} files")
 	return 0
 
