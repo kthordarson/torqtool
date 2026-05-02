@@ -172,6 +172,15 @@ class PositionTableModel(QAbstractTableModel):
 		except ValueError:
 			return None
 
+	def source_rows(self) -> list[int]:
+		return [int(x) for x in self._view_order]
+
+	def set_view_order(self, source_rows: list[int]):
+		self.layoutAboutToBeChanged.emit()
+		valid = set(int(idx) for idx in self._source.index.tolist())
+		self._view_order = [int(idx) for idx in source_rows if int(idx) in valid]
+		self.layoutChanged.emit()
+
 
 class PositionLoadWorker(QObject):
 	finished = Signal(object)
@@ -253,6 +262,8 @@ class PositionManagerWindow(QMainWindow):
 		self._full_bounds: tuple[float, float, float, float] | None = None
 		self._basemap_artist = None
 		self._selected_markers: list[Any] = []
+		self._point_label_artists: list[Any] = []
+		self._show_point_labels = True
 		self._basemap_mem_cache: dict[str, tuple[bytes, tuple[float, float, float, float]]] = {}
 		self._load_thread: QThread | None = None
 		self._load_worker: PositionLoadWorker | None = None
@@ -263,6 +274,7 @@ class PositionManagerWindow(QMainWindow):
 		self._queued_basemap_request: tuple[tuple[float, float, float, float], int] | None = None
 		self._pending_close = False
 		self._restore_after_reload: dict[str, Any] | None = None
+		self._skip_sort_once = False
 		self._min_zoom_span_m = 25.0
 		self._current_basemap_zoom = 8
 		self._min_count_filter = 0
@@ -333,14 +345,24 @@ class PositionManagerWindow(QMainWindow):
 		self.apply_label_btn = QPushButton("Apply label to selected")
 		self.delete_btn = QPushButton("Delete")
 		self.zoom_in_btn = QPushButton("Zoom in")
+		self.zoom_out_step_btn = QPushButton("Zoom out")
 		self.zoom_out_btn = QPushButton("Full zoom out")
+		for btn in (self.zoom_in_btn, self.zoom_out_step_btn, self.zoom_out_btn):
+			btn.setFixedSize(92, 26)
+		self.toggle_labels_btn = QPushButton("Labels on")
+		self.toggle_labels_btn.setCheckable(True)
+		self.toggle_labels_btn.setChecked(True)
+		self.sort_similar_btn = QPushButton("Sort by similar lat/lon")
 		button_row.addWidget(self.refresh_btn)
 		button_row.addWidget(self.new_btn)
 		button_row.addWidget(self.save_btn)
 		button_row.addWidget(self.apply_label_btn)
 		button_row.addWidget(self.delete_btn)
 		button_row.addWidget(self.zoom_in_btn)
+		button_row.addWidget(self.zoom_out_step_btn)
 		button_row.addWidget(self.zoom_out_btn)
+		button_row.addWidget(self.toggle_labels_btn)
+		button_row.addWidget(self.sort_similar_btn)
 		button_row.addStretch()
 		editor_layout.addLayout(button_row)
 
@@ -360,7 +382,10 @@ class PositionManagerWindow(QMainWindow):
 		self.delete_btn.clicked.connect(self.delete_entry)
 		self.min_count_filter_spin.valueChanged.connect(self._on_min_count_filter_changed)
 		self.zoom_in_btn.clicked.connect(self._zoom_in)
+		self.zoom_out_step_btn.clicked.connect(self._zoom_out)
 		self.zoom_out_btn.clicked.connect(self._zoom_full)
+		self.toggle_labels_btn.toggled.connect(self._on_toggle_labels)
+		self.sort_similar_btn.clicked.connect(self._sort_table_by_similar_latlon)
 
 		self.load_positions()
 
@@ -602,7 +627,11 @@ class PositionManagerWindow(QMainWindow):
 		self._table_model = PositionTableModel(filtered_df)
 		self.positions_table.setModel(self._table_model)
 		self.positions_table.horizontalHeader().setStretchLastSection(True)
-		self.positions_table.setSortingEnabled(True)
+		if self._skip_sort_once:
+			self.positions_table.setSortingEnabled(False)
+			self._skip_sort_once = False
+		else:
+			self.positions_table.setSortingEnabled(True)
 		self.positions_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
 		self.positions_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
 		if self.positions_table.selectionModel() is not None:
@@ -646,6 +675,7 @@ class PositionManagerWindow(QMainWindow):
 		self.df_positions = df.reset_index(drop=True)
 		self._selected_row_index = None
 		self._selected_row_indices = []
+		self._clear_selection_markers()
 		self._set_table_model()
 		self._plot_positions()
 
@@ -690,6 +720,7 @@ class PositionManagerWindow(QMainWindow):
 		self.map_ax.clear()
 		self._scatter_index_map.clear()
 		self._basemap_artist = None
+		self._clear_point_labels()
 
 		if self.df_positions.empty:
 			self._full_bounds = None
@@ -709,6 +740,8 @@ class PositionManagerWindow(QMainWindow):
 			sizes = end_df["count"].clip(lower=1).astype(float) * 3.0 + 18.0
 			sc_end = self.map_ax.scatter(end_df["x"], end_df["y"], s=sizes, c="tab:red", alpha=0.85, label="endpos", picker=6, zorder=2)
 			self._scatter_index_map[sc_end] = [int(i) for i in end_df.index.tolist()]
+
+		self._draw_point_labels()
 
 		xmin = float(self.df_positions["x"].min())
 		xmax = float(self.df_positions["x"].max())
@@ -778,6 +811,60 @@ class PositionManagerWindow(QMainWindow):
 			except Exception:
 				pass
 		self._selected_markers = []
+
+	def _clear_point_labels(self):
+		if not self._point_label_artists:
+			return
+		for artist in self._point_label_artists:
+			try:
+				artist.remove()
+			except Exception:
+				pass
+		self._point_label_artists = []
+
+	def _draw_point_labels(self):
+		self._clear_point_labels()
+		if not self._show_point_labels or self.df_positions.empty:
+			return
+		for row in self.df_positions.itertuples(index=False):
+			pid = int(getattr(row, "pos_id", 0))
+			raw_label = str(getattr(row, "label", "")).strip()
+			text_value = f"{pid}: {raw_label}" if raw_label else f"{pid}"
+			txt = self.map_ax.annotate(
+				text_value,
+				(getattr(row, "x"), getattr(row, "y")),
+				xytext=(0, -10),
+				textcoords="offset points",
+				ha="center",
+				va="top",
+				fontsize=7,
+				color="black",
+				bbox={"boxstyle": "round,pad=0.15", "facecolor": "white", "alpha": 0.55, "edgecolor": "none"},
+				zorder=3,
+			)
+			self._point_label_artists.append(txt)
+
+	def _on_toggle_labels(self, checked: bool):
+		self._show_point_labels = bool(checked)
+		self.toggle_labels_btn.setText("Labels on" if checked else "Labels off")
+		self._draw_point_labels()
+		self.map_canvas.draw_idle()
+
+	def _sort_table_by_similar_latlon(self):
+		if self._table_model is None:
+			return
+		source_rows = self._table_model.source_rows()
+		if not source_rows:
+			return
+
+		tmp = self.df_positions.loc[source_rows, ["latitude", "longitude"]].copy()
+		tmp["lat_bucket"] = tmp["latitude"].round(3)
+		tmp["lon_bucket"] = tmp["longitude"].round(3)
+		tmp["_src"] = tmp.index
+		tmp.sort_values(by=["lat_bucket", "lon_bucket", "latitude", "longitude"], inplace=True, kind="mergesort")
+		self._table_model.set_view_order([int(v) for v in tmp["_src"].tolist()])
+		if self._selected_row_indices:
+			self._select_rows_by_indices(self._selected_row_indices, select_table=True, zoom_to_points=False)
 
 	def _draw_selection_markers(self, row_indices: list[int]):
 		self._clear_selection_markers()
@@ -881,6 +968,22 @@ class PositionManagerWindow(QMainWindow):
 		self.map_canvas.draw_idle()
 		self._refresh_basemap_for_current_view(target_zoom=self._current_basemap_zoom + 1)
 
+	def _zoom_out(self):
+		x0, x1 = self.map_ax.get_xlim()
+		y0, y1 = self.map_ax.get_ylim()
+		cx = (x0 + x1) / 2.0
+		cy = (y0 + y1) / 2.0
+		current_span = max(abs(x1 - x0), abs(y1 - y0))
+		span = current_span * 1.45
+		if self._full_bounds is not None:
+			full_span = max(abs(self._full_bounds[1] - self._full_bounds[0]), abs(self._full_bounds[3] - self._full_bounds[2]))
+			span = min(full_span, span)
+		span = max(self._min_zoom_span_m, span)
+		self.map_ax.set_xlim(cx - span / 2.0, cx + span / 2.0)
+		self.map_ax.set_ylim(cy - span / 2.0, cy + span / 2.0)
+		self.map_canvas.draw_idle()
+		self._refresh_basemap_for_current_view(target_zoom=self._current_basemap_zoom - 1)
+
 	def _zoom_full(self):
 		if self._full_bounds is None:
 			return
@@ -949,7 +1052,8 @@ class PositionManagerWindow(QMainWindow):
 				for r in rows_data
 			],
 		}
-		QMessageBox.information(self, "Updated", f"Applied label to {len(rows_data)} selected points.")
+		self._skip_sort_once = True
+		# QMessageBox.information(self, "Updated", f"Applied label to {len(rows_data)} selected points.")
 		self.load_positions()
 
 	def save_entry(self):
@@ -999,7 +1103,8 @@ class PositionManagerWindow(QMainWindow):
 			"zoom": self._current_basemap_zoom,
 			"selected_keys": [{"pos_type": pos_type, "pos_id": pos_id}],
 		}
-		QMessageBox.information(self, "Saved", "Position entry saved.")
+		self._skip_sort_once = True
+		# QMessageBox.information(self, "Saved", "Position entry saved.")
 		self.load_positions()
 
 	def delete_entry(self):
@@ -1096,6 +1201,9 @@ class MainWindow(QMainWindow):
 		self._basemap_request_context: dict[int, dict[str, object]] = {}
 		self._basemap_thread: QThread | None = None
 		self._basemap_worker: BasemapWorker | None = None
+		self._show_all_start_end_points = False
+		self._start_end_overlay_artists: list[Any] = []
+		self._start_end_overlay_labels: list[Any] = []
 		self._initial_trips_thread: QThread | None = None
 		self._initial_trips_worker: TripListWorker | None = None
 		self._active_threads: set[QThread] = set()
@@ -1123,6 +1231,11 @@ class MainWindow(QMainWindow):
 		self.zoom_combo.setMaximumHeight(25)
 		self.zoom_combo.currentTextChanged.connect(self.on_zoom_changed)
 		dot_size_label = QLabel("Dot size:")
+		self.toggle_all_start_end_btn = QPushButton("All points off")
+		self.toggle_all_start_end_btn.setCheckable(True)
+		self.toggle_all_start_end_btn.setChecked(False)
+		self.toggle_all_start_end_btn.setFixedHeight(24)
+		self.toggle_all_start_end_btn.toggled.connect(self._on_toggle_all_start_end)
 		self.dot_size_slider = QSlider(Qt.Orientation.Horizontal)
 		self.dot_size_slider.setMinimum(25)
 		self.dot_size_slider.setMaximum(300)
@@ -1138,6 +1251,7 @@ class MainWindow(QMainWindow):
 		zoom_layout.addWidget(dot_size_label)
 		zoom_layout.addWidget(self.dot_size_slider)
 		zoom_layout.addWidget(self.dot_size_value_label)
+		zoom_layout.addWidget(self.toggle_all_start_end_btn)
 		zoom_layout.addStretch()
 		zoom_layout.setSpacing(10)
 		zoom_layout.setContentsMargins(10, 3, 10, 3)
@@ -1346,6 +1460,143 @@ class MainWindow(QMainWindow):
 		"""Called when user changes the metric selection in the list."""
 		if self._get_selected_metrics():
 			self._plot_refresh_timer.start(200)
+
+	def _on_toggle_all_start_end(self, checked: bool):
+		self._show_all_start_end_points = bool(checked)
+		self.toggle_all_start_end_btn.setText("All points on" if checked else "All points off")
+		self._plot_refresh_timer.start(120)
+
+	@staticmethod
+	def _lonlat_to_web_mercator(lon: float, lat: float) -> tuple[float, float]:
+		lat_clamped = max(-85.05112878, min(85.05112878, float(lat)))
+		x = float(lon) * 20037508.34 / 180.0
+		y = np.log(np.tan(np.pi / 4.0 + np.deg2rad(lat_clamped) / 2.0)) * 6378137.0
+		return float(x), float(y)
+
+	@staticmethod
+	def _web_mercator_to_lonlat(x: float, y: float) -> tuple[float, float]:
+		lon = (float(x) / 20037508.34) * 180.0
+		lat = np.rad2deg(2.0 * np.arctan(np.exp(float(y) / 6378137.0)) - np.pi / 2.0)
+		return float(lon), float(lat)
+
+	def _clear_start_end_overlays(self):
+		for artist in self._start_end_overlay_artists:
+			try:
+				artist.remove()
+			except Exception:
+				pass
+		for lbl in self._start_end_overlay_labels:
+			try:
+				lbl.remove()
+			except Exception:
+				pass
+		self._start_end_overlay_artists = []
+		self._start_end_overlay_labels = []
+
+	def _load_selected_file_start_end_points(self, fileids: list[int]) -> list[dict[str, Any]]:
+		if not fileids:
+			return []
+		placeholders = ", ".join(f":fid{idx}" for idx in range(len(fileids)))
+		params = {f"fid{idx}": int(fid) for idx, fid in enumerate(fileids)}
+		q = text(
+			f"""
+			SELECT tf.fileid AS fileid, 'start' AS pos_type, sp.startid AS pos_id, sp.latstart AS lat, sp.lonstart AS lon, sp.label AS label
+			FROM torqfiles tf
+			LEFT JOIN startpos sp ON tf.startid = sp.startid
+			WHERE tf.fileid IN ({placeholders})
+			UNION ALL
+			SELECT tf.fileid AS fileid, 'end' AS pos_type, ep.endid AS pos_id, ep.latend AS lat, ep.lonend AS lon, ep.label AS label
+			FROM torqfiles tf
+			LEFT JOIN endpos ep ON tf.endid = ep.endid
+			WHERE tf.fileid IN ({placeholders})
+			"""
+		)
+		with self.engine.connect() as conn:
+			rows = conn.execute(q, params).mappings().all()
+		result = []
+		for row in rows:
+			if row.get("lat") is None or row.get("lon") is None or row.get("pos_id") is None:
+				continue
+			result.append(dict(row))
+		return result
+
+	def _load_visible_start_end_points(self, bounds_mercator: tuple[float, float, float, float]) -> list[dict[str, Any]]:
+		xmin, xmax, ymin, ymax = bounds_mercator
+		lon_min, lat_min = self._web_mercator_to_lonlat(xmin, ymin)
+		lon_max, lat_max = self._web_mercator_to_lonlat(xmax, ymax)
+		lat_lo, lat_hi = (min(lat_min, lat_max), max(lat_min, lat_max))
+		lon_lo, lon_hi = (min(lon_min, lon_max), max(lon_min, lon_max))
+		q = text(
+			"""
+			SELECT 'start' AS pos_type, startid AS pos_id, latstart AS lat, lonstart AS lon, label
+			FROM startpos
+			WHERE latstart BETWEEN :lat_lo AND :lat_hi
+			  AND lonstart BETWEEN :lon_lo AND :lon_hi
+			UNION ALL
+			SELECT 'end' AS pos_type, endid AS pos_id, latend AS lat, lonend AS lon, label
+			FROM endpos
+			WHERE latend BETWEEN :lat_lo AND :lat_hi
+			  AND lonend BETWEEN :lon_lo AND :lon_hi
+			"""
+		)
+		with self.engine.connect() as conn:
+			rows = conn.execute(q, {
+				"lat_lo": lat_lo,
+				"lat_hi": lat_hi,
+				"lon_lo": lon_lo,
+				"lon_hi": lon_hi,
+			}).mappings().all()
+		return [dict(r) for r in rows if r.get("lat") is not None and r.get("lon") is not None and r.get("pos_id") is not None]
+
+	def _overlay_start_end_points(self, fileids: list[int], bounds_mercator: tuple[float, float, float, float] | None):
+		self._clear_start_end_overlays()
+		selected_points = self._load_selected_file_start_end_points(fileids)
+		all_points: list[dict[str, Any]] = []
+		if self._show_all_start_end_points and bounds_mercator is not None:
+			all_points = self._load_visible_start_end_points(bounds_mercator)
+
+		seen: set[tuple[str, int]] = set()
+		merged: list[tuple[dict[str, Any], bool]] = []
+		for p in selected_points:
+			key = (str(p.get("pos_type", "")), int(p.get("pos_id", 0)))
+			if key in seen:
+				continue
+			seen.add(key)
+			merged.append((p, True))
+		for p in all_points:
+			key = (str(p.get("pos_type", "")), int(p.get("pos_id", 0)))
+			if key in seen:
+				continue
+			seen.add(key)
+			merged.append((p, False))
+
+		for point, is_selected_file in merged:
+			lat = float(point.get("lat", 0.0))
+			lon = float(point.get("lon", 0.0))
+			x, y = self._lonlat_to_web_mercator(lon, lat)
+			pos_type = str(point.get("pos_type", ""))
+			pos_id = int(point.get("pos_id", 0))
+			label_text = str(point.get("label", "")).strip()
+			prefix = "S" if pos_type == "start" else "E"
+			full_label = f"{prefix}{pos_id}: {label_text}" if label_text else f"{prefix}{pos_id}"
+			color = "limegreen" if pos_type == "start" else "darkorange"
+			alpha = 1.0 if is_selected_file else 0.55
+			size = 90 if is_selected_file else 48
+			artist = self.map_canvas.ax.scatter([x], [y], s=size, c=color, marker="D", edgecolors="black", linewidths=0.5, alpha=alpha, zorder=4)
+			self._start_end_overlay_artists.append(artist)
+			label_artist = self.map_canvas.ax.annotate(
+				full_label,
+				(x, y),
+				xytext=(3, -10),
+				textcoords="offset points",
+				ha="left",
+				va="top",
+				fontsize=7,
+				color="black",
+				bbox={"boxstyle": "round,pad=0.12", "facecolor": "white", "alpha": 0.6, "edgecolor": "none"},
+				zorder=5,
+			)
+			self._start_end_overlay_labels.append(label_artist)
 
 	def _get_selected_metrics(self) -> list[str]:
 		"""Return all currently selected selectable metric names."""
@@ -1826,6 +2077,8 @@ class MainWindow(QMainWindow):
 			xmin, xmax, ymin, ymax = bounds
 			self.map_canvas.ax.set_xlim(xmin, xmax)
 			self.map_canvas.ax.set_ylim(ymin, ymax)
+
+		self._overlay_start_end_points(fileids, bounds)
 
 		if plots and cached_payload:
 			cached_img, cached_ext = cached_payload
