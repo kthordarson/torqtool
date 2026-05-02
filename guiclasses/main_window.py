@@ -1758,6 +1758,8 @@ class MainWindow(QMainWindow):
 		linestyles = ['-', '--', ':', '-.']
 		multi_metric = len(metric_names) > 1
 		multi_trip = len(fileids) > 1
+		use_progress_axis = multi_trip
+		has_datetime_x = False
 
 		has_data = False
 		# Color index cycles per metric so each metric gets a distinct color
@@ -1771,19 +1773,34 @@ class MainWindow(QMainWindow):
 						logger.warning(f"No data for timeseries plot: fileid={fileid}, metric={metric_name}")
 					continue
 				time_vals = plot_data.get('time') or []
-				metric_vals = plot_data['speed']
-				# Fall back to sequential index when timestamps are unavailable or all-NaT
+				metric_vals = list(plot_data['speed'])
+				# Fall back to sequential index when timestamps are unavailable or all-NaT.
 				use_time = bool(time_vals) and any(t is not None and not pd.isna(t) for t in time_vals[:10])
-				if use_time:
-					# Drop rows where the timestamp is NaT to avoid matplotlib ConversionError
-					pairs = [(t, v) for t, v in zip(time_vals, metric_vals)
-							 if t is not None and not pd.isna(t)]
-					if pairs:
-						x_vals, metric_vals = zip(*pairs)
+				if use_progress_axis:
+					if use_time:
+						pairs = [(t, v) for t, v in zip(time_vals, metric_vals)
+								 if t is not None and not pd.isna(t)]
+						metric_clean = [v for _, v in pairs]
 					else:
-						x_vals, metric_vals = [], []
+						metric_clean = metric_vals
+
+					if len(metric_clean) <= 1:
+						x_vals = [0.0] * len(metric_clean)
+					else:
+						x_vals = np.linspace(0.0, 100.0, num=len(metric_clean)).tolist()
+					metric_vals = metric_clean
 				else:
-					x_vals = list(range(len(metric_vals)))
+					if use_time:
+						# Drop rows where the timestamp is NaT to avoid matplotlib ConversionError.
+						pairs = [(t, v) for t, v in zip(time_vals, metric_vals)
+								 if t is not None and not pd.isna(t)]
+						if pairs:
+							x_vals, metric_vals = zip(*pairs)
+							has_datetime_x = True
+						else:
+							x_vals, metric_vals = [], []
+					else:
+						x_vals = list(range(len(metric_vals)))
 				if not x_vals:
 					continue
 				color = cmap(m_idx % cycle_length)
@@ -1809,15 +1826,16 @@ class MainWindow(QMainWindow):
 		else:
 			ax.set_title("Metrics over time", fontsize=9, pad=3)
 			ax.set_ylabel("Value", fontsize=8)
-		ax.set_xlabel("Time", fontsize=8)
+		ax.set_xlabel("Trip progress (%)" if use_progress_axis else "Time", fontsize=8)
 		ax.tick_params(labelsize=7)
 		if (multi_metric or multi_trip) and has_data:
 			ax.legend(fontsize=7)
 		if has_data:
-			try:
-				ax.figure.autofmt_xdate(rotation=30)
-			except Exception as e:
-				logger.warning(f"Could not format x-axis dates: {e} ({type(e)})")
+			if has_datetime_x:
+				try:
+					ax.figure.autofmt_xdate(rotation=30)
+				except Exception as e:
+					logger.warning(f"Could not format x-axis dates: {e} ({type(e)})")
 			try:
 				self._save_cached_timeseries_image(fileids, metric_names, colormap_name)
 			except Exception as e:
