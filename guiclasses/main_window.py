@@ -10,10 +10,9 @@ from loguru import logger
 from sqlalchemy import create_engine, text, inspect
 from sqlalchemy.orm import sessionmaker
 from PySide6.QtWidgets import (
-	QApplication, QMainWindow, QTableView, QVBoxLayout, QWidget, QSplitter,
+	QMainWindow, QTableView, QVBoxLayout, QWidget, QSplitter,
 	QHBoxLayout, QLabel, QComboBox, QScrollArea, QFileDialog, QMessageBox,
 	QSlider, QLineEdit, QPushButton, QInputDialog, QAbstractItemView,
-	QListWidget, QListWidgetItem,
 )
 from PySide6.QtGui import QFont, QAction, QCloseEvent
 from PySide6.QtCore import Qt, QTimer, QThread
@@ -73,7 +72,7 @@ class MainWindow(QMainWindow):
 		self._mw_full_bounds: tuple[float, float, float, float] | None = None
 		self._mw_current_fileids: list[int] = []
 		self._mw_last_metric: str = 'speedobdkmh'
-		self._valid_metric_columns_cache: list[str] | None = None
+		self._metric_summary_cache: dict[tuple[int, ...], pd.DataFrame] = {}
 		self._initial_trips_thread: QThread | None = None
 		self._initial_trips_worker: TripListWorker | None = None
 		self._active_threads: set[QThread] = set()
@@ -157,13 +156,17 @@ class MainWindow(QMainWindow):
 		metric_title_font.setPointSize(9)
 		metric_title_font.setBold(True)
 		metric_title.setFont(metric_title_font)
-		self.metric_list = QListWidget()
-		self.metric_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
+		self.metric_table = QTableView()
+		self.metric_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+		self.metric_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+		self.metric_table.setSortingEnabled(True)
+		self.metric_table.verticalHeader().setVisible(False)
 		mono_font = QFont("Monospace", 8)
-		self.metric_list.setFont(mono_font)
-		self.metric_list.itemSelectionChanged.connect(self.on_metric_selection_changed)
+		self.metric_table.setFont(mono_font)
+		self._metric_df = pd.DataFrame(columns=["name", "min", "max", "avg"])
+		self._set_metric_table_model(self._metric_df)
 		metric_panel_layout.addWidget(metric_title)
-		metric_panel_layout.addWidget(self.metric_list)
+		metric_panel_layout.addWidget(self.metric_table)
 
 		# Stats panel (scrollable)
 		from PySide6.QtWidgets import QFrame
@@ -226,13 +229,6 @@ class MainWindow(QMainWindow):
 		QTimer.singleShot(0, self._populate_metric_columns)
 		self._create_menu_bar()
 		logger.debug("MainWindow initialized and UI set up")
-
-		# self.table_model = PandasModel(self.df_files)
-		# self.table.setModel(self.table_model)
-		# self.table.setSortingEnabled(True)
-		# # self.table.setSelectionBehavior(self.table.SelectRows)
-		# self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
-		# self.table.selectionModel().selectionChanged.connect(self.on_row_selected)
 
 	def __repr__(self):
 		return f"<MainWindow with {len(self.df_trips)} trips loaded>"
@@ -499,11 +495,16 @@ class MainWindow(QMainWindow):
 			self._start_end_overlay_labels.append(label_artist)
 
 	def _get_selected_metrics(self) -> list[str]:
-		"""Return all currently selected selectable metric names."""
-		return [
-			item.text() for item in self.metric_list.selectedItems()
-			if item.flags() & Qt.ItemFlag.ItemIsSelectable
-		]
+		"""Return all currently selected metric names from the metric table."""
+		selection_model = self.metric_table.selectionModel()
+		if selection_model is None or self._metric_df.empty:
+			return []
+		rows = sorted(set(index.row() for index in selection_model.selectedRows()))
+		result: list[str] = []
+		for row in rows:
+			if 0 <= row < len(self._metric_df.index):
+				result.append(str(self._metric_df.iloc[row]["name"]))
+		return result
 
 	def _get_selected_metric(self) -> str:
 		"""Return the first selected metric (used for map coloring)."""
@@ -511,13 +512,23 @@ class MainWindow(QMainWindow):
 		if metrics:
 			return metrics[0]
 
-		for row in range(self.metric_list.count()):
-			item = self.metric_list.item(row)
-			if item is not None and item.flags() & Qt.ItemFlag.ItemIsSelectable:
-				return item.text()
+		if not self._metric_df.empty:
+			return str(self._metric_df.iloc[0]["name"])
 
-		valid_metrics = self._get_metric_columns_with_valid_data()
+		rows = sorted(set(index.row() for index in self.table.selectionModel().selectedRows())) if self.table.selectionModel() is not None else []
+		fileids = self._get_selected_fileids(rows)
+		valid_metrics = self._get_metric_columns_with_valid_data(fileids if fileids else None)
 		return valid_metrics[0] if valid_metrics else ""
+
+	def _set_metric_table_model(self, df: pd.DataFrame):
+		self._metric_df = df.reset_index(drop=True)
+		self.metric_table_model = PandasModel(self._metric_df)
+		self.metric_table.setModel(self.metric_table_model)
+		self.metric_table.horizontalHeader().setStretchLastSection(True)
+		self.metric_table.resizeColumnsToContents()
+		selection_model = self.metric_table.selectionModel()
+		if selection_model is not None:
+			selection_model.selectionChanged.connect(lambda *_: self.on_metric_selection_changed())
 
 	def _build_torqlogs_column_map(self) -> dict[str, str]:
 		inspector = inspect(self.engine)
@@ -526,7 +537,9 @@ class MainWindow(QMainWindow):
 
 	def _set_table_model(self, df: pd.DataFrame):
 		self.df_trips = df
-		self.table_model = PandasModel(self.df_trips)
+		display_columns = [col for col in self.df_trips.columns if col != 'trip_distance_sort']
+		sort_overrides = {'trip_distance': 'trip_distance_sort'} if 'trip_distance_sort' in self.df_trips.columns else None
+		self.table_model = PandasModel(self.df_trips, display_columns=display_columns, sort_overrides=sort_overrides)
 		self.table.setModel(self.table_model)
 		self.table.setSortingEnabled(True)
 		self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -568,10 +581,13 @@ class MainWindow(QMainWindow):
 		self._initial_trips_worker = worker
 		self._initial_trips_thread = thread
 		self._active_threads.add(thread)
+		if self.args.debug:
+			logger.debug(f'Starting initial trips load in thread {thread} active threads: {len(self._active_threads)})')
 		thread.start()
 
 	def _on_initial_trips_loaded(self, df_trips: pd.DataFrame):
 		logger.debug(f"Loaded {len(df_trips)} trips from database")
+		df_trips['trip_distance_sort'] = pd.to_numeric(df_trips['trip_distance'], errors='coerce')
 		df_trips['tripdate'] = pd.to_datetime(df_trips['tripdate'], errors='coerce')
 		df_trips['tripdate'] = df_trips['tripdate'].dt.strftime('%Y-%m-%d %H:%M')
 		df_trips['time'] = df_trips['time'].apply(format_duration)
@@ -582,52 +598,43 @@ class MainWindow(QMainWindow):
 	def _on_initial_trips_error(self, error_message: str):
 		logger.error(error_message)
 
-	def _populate_metric_columns(self):
-		prev_selected: set[str] = {
-			item.text() for item in self.metric_list.selectedItems()
-			if item.flags() & Qt.ItemFlag.ItemIsSelectable
-		}
-		self.metric_list.blockSignals(True)
-		self.metric_list.clear()
-		metric_columns = self._get_metric_columns_with_valid_data()
-		if not metric_columns:
-			empty_item = QListWidgetItem("No metrics with valid data")
-			empty_item.setFlags(Qt.ItemFlag.NoItemFlags)
-			empty_item.setForeground(Qt.GlobalColor.darkGray)
-			self.metric_list.addItem(empty_item)
-			self.metric_list.blockSignals(False)
-			logger.warning("No metrics with valid non-zero data were found in torqlogs")
+	def _populate_metric_columns(self, fileids: list[int] | None = None):
+		prev_selected = set(self._get_selected_metrics())
+		summary_df = self._get_metric_summary_for_selection(fileids)
+		self._set_metric_table_model(summary_df)
+
+		if self._metric_df.empty:
+			logger.warning("No metrics with valid non-zero data were found for current selection")
 			return
 
-		grouped = group_metrics_by_category(metric_columns)
-		first_selectable: QListWidgetItem | None = None
-		for cat, cat_metrics in grouped.items():
-			header = QListWidgetItem(f"── {cat.value} ──")
-			header.setFlags(Qt.ItemFlag.NoItemFlags)
-			header.setForeground(Qt.GlobalColor.darkGray)
-			self.metric_list.addItem(header)
-			for display_name, unit, orig_name in cat_metrics:
-				item = QListWidgetItem(orig_name)
-				item.setToolTip(f"{display_name} ({unit})" if unit else display_name)
-				self.metric_list.addItem(item)
-				if first_selectable is None:
-					first_selectable = item
-				if orig_name in prev_selected:
-					item.setSelected(True)
+		selection_model = self.metric_table.selectionModel()
+		if selection_model is None:
+			return
 
-		if not any(item.isSelected() for item in self.metric_list.findItems('*', Qt.MatchFlag.MatchWildcard) if item.flags() & Qt.ItemFlag.ItemIsSelectable):
-			if first_selectable:
-				first_selectable.setSelected(True)
+		selection_model.clearSelection()
+		restored_any = False
+		for row in range(len(self._metric_df.index)):
+			metric_name = str(self._metric_df.iloc[row]["name"])
+			if metric_name in prev_selected:
+				self.metric_table.selectRow(row)
+				restored_any = True
 
-		self.metric_list.blockSignals(False)
-		logger.debug(f"Populated metric list with {len(metric_columns)} metrics")
+		if not restored_any:
+			self.metric_table.selectRow(0)
+
+		logger.debug(
+			f"Populated metric table with {len(self._metric_df)} metrics "
+			f"for {len(fileids) if fileids else 'all'} selected trips"
+		)
 
 	def _resolve_actual_torqlogs_column(self, requested_column: str) -> str | None:
 		return self._torqlogs_norm_to_actual.get(_normalize_col_name(requested_column))
 
-	def _get_metric_columns_with_valid_data(self) -> list[str]:
-		if self._valid_metric_columns_cache is not None:
-			return list(self._valid_metric_columns_cache)
+	def _get_metric_summary_for_selection(self, fileids: list[int] | None = None) -> pd.DataFrame:
+		cache_key = tuple(sorted(int(fid) for fid in fileids)) if fileids else tuple()
+		cached = self._metric_summary_cache.get(cache_key)
+		if cached is not None:
+			return cached.copy()
 
 		requested = sorted(dataschema.keys())
 		numeric_cols = self._get_torqlogs_numeric_columns()
@@ -638,33 +645,70 @@ class MainWindow(QMainWindow):
 				column_pairs.append((req, actual))
 
 		if not column_pairs:
-			self._valid_metric_columns_cache = []
-			return []
+			empty_df = pd.DataFrame(columns=["name", "min", "max", "avg"])
+			self._metric_summary_cache[cache_key] = empty_df
+			return empty_df.copy()
 
 		select_parts: list[str] = []
 		for idx, (_, actual_col) in enumerate(column_pairs):
-			# Include only metrics with at least one non-null, non-zero numeric value.
 			select_parts.append(
-				f'MAX(CASE WHEN "{actual_col}" IS NOT NULL THEN ABS(CAST("{actual_col}" AS FLOAT)) END) AS "_m_{idx}"'
+				f'SUM(CASE WHEN "{actual_col}" IS NOT NULL AND CAST("{actual_col}" AS FLOAT) <> 0 THEN 1 ELSE 0 END) AS "_c_{idx}"'
+			)
+			select_parts.append(
+				f'MIN(CASE WHEN "{actual_col}" IS NOT NULL AND CAST("{actual_col}" AS FLOAT) <> 0 THEN CAST("{actual_col}" AS FLOAT) END) AS "_min_{idx}"'
+			)
+			select_parts.append(
+				f'MAX(CASE WHEN "{actual_col}" IS NOT NULL AND CAST("{actual_col}" AS FLOAT) <> 0 THEN CAST("{actual_col}" AS FLOAT) END) AS "_max_{idx}"'
+			)
+			select_parts.append(
+				f'AVG(CASE WHEN "{actual_col}" IS NOT NULL AND CAST("{actual_col}" AS FLOAT) <> 0 THEN CAST("{actual_col}" AS FLOAT) END) AS "_avg_{idx}"'
 			)
 
-		query = f"SELECT {', '.join(select_parts)} FROM torqlogs"
-		valid_metrics: list[str] = []
+		where_clause = ""
+		if fileids:
+			fileids_str = ",".join(str(int(fid)) for fid in sorted(fileids))
+			where_clause = f" WHERE fileid IN ({fileids_str})"
+
+		query = f"SELECT {', '.join(select_parts)} FROM torqlogs{where_clause}"
+		rows: list[dict[str, float | str]] = []
 		try:
 			df = pd.read_sql(query, self.engine)
 			if not df.empty:
 				row = df.iloc[0]
 				for idx, (requested_col, _) in enumerate(column_pairs):
-					value = row.get(f"_m_{idx}")
-					if value is None or pd.isna(value):
+					count_val = row.get(f"_c_{idx}")
+					if count_val is None or pd.isna(count_val) or int(count_val) <= 0:
 						continue
-					if float(value) > 0.0:
-						valid_metrics.append(requested_col)
+					min_val = row.get(f"_min_{idx}")
+					max_val = row.get(f"_max_{idx}")
+					avg_val = row.get(f"_avg_{idx}")
+					if min_val is None or max_val is None or avg_val is None:
+						continue
+					if pd.isna(min_val) or pd.isna(max_val) or pd.isna(avg_val):
+						continue
+					rows.append({
+						"name": requested_col,
+						"min": float(min_val),
+						"max": float(max_val),
+						"avg": float(avg_val),
+					})
 		except Exception as e:
-			logger.warning(f"Failed to evaluate valid metric columns: {e} ({type(e)})")
+			logger.warning(f"Failed to evaluate metric summary for selection: {e} ({type(e)})")
 
-		self._valid_metric_columns_cache = valid_metrics
-		return list(valid_metrics)
+		summary_df = pd.DataFrame(rows, columns=["name", "min", "max", "avg"])
+		if not summary_df.empty:
+			summary_df.sort_values(by="name", inplace=True)
+			summary_df.reset_index(drop=True, inplace=True)
+			summary_df[["min", "max", "avg"]] = summary_df[["min", "max", "avg"]].round(3)
+
+		self._metric_summary_cache[cache_key] = summary_df
+		return summary_df.copy()
+
+	def _get_metric_columns_with_valid_data(self, fileids: list[int] | None = None) -> list[str]:
+		summary_df = self._get_metric_summary_for_selection(fileids)
+		if summary_df.empty:
+			return []
+		return [str(name) for name in summary_df["name"].tolist()]
 
 	def refresh_plot(self):
 		"""Refresh the current plot with selected rows"""
@@ -1332,7 +1376,10 @@ class MainWindow(QMainWindow):
 		self._basemap_worker = worker
 		self._basemap_thread = thread
 		self._active_threads.add(thread)
-		logger.debug(f"Starting basemap worker thread for request_id={request_id} with bounds=({xmin}, {ymin}, {xmax}, {ymax}) and zoom={zoom}")
+		if self.args.debug:
+			logger.debug(f'{self} starting basemapworker {thread} active threads: {len(self._active_threads)}) request_id={request_id} with bounds=({xmin}, {ymin}, {xmax}, {ymax}) and zoom={zoom}')
+
+		# logger.debug(f"{self} Starting basemap worker thread for request_id={request_id} with bounds=({xmin}, {ymin}, {xmax}, {ymax}) and zoom={zoom}")
 		thread.start()
 
 	def _on_basemap_loaded(self, img, ext, request_id: int):
@@ -1501,7 +1548,9 @@ class MainWindow(QMainWindow):
 		rows = sorted(set(index.row() for index in self.table.selectionModel().selectedRows()))
 		if rows:
 			logger.debug(f"on_row_selected with {len(rows)} selected row(s): {rows[:5]}{'...' if len(rows) > 5 else ''}")
+			self._populate_metric_columns(self._get_selected_fileids(rows))
 			# Debounce bursty selection events while user is building a multi-row selection.
 			self._plot_refresh_timer.start(250)
 		else:
+			self._populate_metric_columns(None)
 			self.stats_label.setText("No trip selected")

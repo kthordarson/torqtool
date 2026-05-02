@@ -30,6 +30,10 @@ class PositionManagerWindow(QMainWindow):
 		self.engine = engine
 		self.setWindowTitle("Position Manager")
 		self.resize(1240, 780)
+		if parent:
+			self.args = parent.args
+		else:
+			self.args = type("Args", (), {"debug": False})()
 
 		self._selected_row_index: int | None = None
 		self._selected_row_indices: list[int] = []
@@ -473,6 +477,8 @@ class PositionManagerWindow(QMainWindow):
 		self._active_threads.add(thread)
 		thread.start()
 		QTimer.singleShot(20000, lambda rid=request_id: self._on_basemap_timeout(rid))
+		if self.args.debug:
+			logger.debug(f"Started basemap worker thread {thread} for request_id {request_id} with bounds {bounds} and zoom {zoom}. active threads: {len(self._active_threads)}")
 
 	def _on_basemap_thread_finished(self):
 		self._basemap_thread = None
@@ -615,6 +621,8 @@ class PositionManagerWindow(QMainWindow):
 		self._load_thread = thread
 		self._load_worker = worker
 		self._active_threads.add(thread)
+		if self.args.debug:
+			logger.debug(f"Started position load worker thread {thread}. active threads: {len(self._active_threads)}")
 		thread.start()
 
 	def _on_load_thread_finished(self):
@@ -649,6 +657,8 @@ class PositionManagerWindow(QMainWindow):
 		for t in list(self._active_threads):
 			if self._thread_is_running(t):
 				threads.add(t)
+		if self.args.debug:
+			logger.debug(f"Detaching {len(threads)} threads")
 		for t in threads:
 			_ORPHAN_QTHREADS.add(t)
 			try:
