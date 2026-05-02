@@ -34,17 +34,28 @@ class PositionLoadWorker(QObject):
 			engine = create_engine(self.engine_url)
 
 			def _load_for_type(pos_type: str) -> pd.DataFrame:
-				table = 'startpos' if pos_type == 'start' else 'endpos'
-				id_col = 'startid' if pos_type == 'start' else 'endid'
-				query = f"SELECT {id_col} AS pos_id, latitude, longitude, count, label FROM {table}"
-				if self.trip_id is not None:
-					query += f" WHERE fileid = {int(self.trip_id)}"
+				if pos_type == 'start':
+					table = 'startpos'
+					id_col = 'startid'
+					lat_col = 'latstart'
+					lon_col = 'lonstart'
+				else:
+					table = 'endpos'
+					id_col = 'endid'
+					lat_col = 'latend'
+					lon_col = 'lonend'
+				query = (
+					f"SELECT {id_col} AS pos_id, "
+					f"{lat_col} AS latitude, "
+					f"{lon_col} AS longitude, "
+					f"count, label FROM {table}"
+				)
 				try:
 					df_part = pd.read_sql(query, engine)
 					df_part.insert(0, "pos_type", pos_type)
 				except Exception as e:
 					logger.error(f"Failed to load {pos_type} positions with query '{query}': {e} ({type(e)})")
-					df_part = pd.DataFrame()
+					df_part = pd.DataFrame(columns=['pos_type', 'pos_id', 'latitude', 'longitude', 'count', 'label'])
 				return df_part
 
 			if self.pos_type in ("start", "end"):

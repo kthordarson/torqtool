@@ -556,6 +556,7 @@ class MainWindow(QMainWindow):
 		thread.finished.connect(worker.deleteLater)
 		thread.finished.connect(thread.deleteLater)
 		thread.finished.connect(lambda t=thread: self._active_threads.discard(t))
+		thread.finished.connect(lambda: setattr(self, '_initial_trips_thread', None))
 
 		self._initial_trips_worker = worker
 		self._initial_trips_thread = thread
@@ -1137,7 +1138,7 @@ class MainWindow(QMainWindow):
 				if use_time:
 					# Drop rows where the timestamp is NaT to avoid matplotlib ConversionError
 					pairs = [(t, v) for t, v in zip(time_vals, metric_vals)
-					         if t is not None and not pd.isna(t)]
+							 if t is not None and not pd.isna(t)]
 					if pairs:
 						x_vals, metric_vals = zip(*pairs)
 					else:
@@ -1158,7 +1159,7 @@ class MainWindow(QMainWindow):
 				else:
 					label = None
 				ax.plot(x_vals, metric_vals, color=color, linestyle=lstyle,
-				        linewidth=0.8, alpha=0.85, label=label)
+						linewidth=0.8, alpha=0.85, label=label)
 				has_data = True
 
 		if len(metric_names) == 1:

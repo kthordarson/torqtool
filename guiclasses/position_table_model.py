@@ -1,6 +1,6 @@
 import pandas as pd
 from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex, QPersistentModelIndex
-
+from loguru import logger
 
 class PositionTableModel(QAbstractTableModel):
 	def __init__(self, source_df: pd.DataFrame):
@@ -31,6 +31,9 @@ class PositionTableModel(QAbstractTableModel):
 		return str(section)
 
 	def sort(self, column: int, order: Qt.SortOrder = Qt.SortOrder.AscendingOrder) -> None:
+		if not self._view_order:
+			logger.warning(f'{self} sort called with empty view order. col={column} order={order}')
+			return
 		col = self._columns[column]
 		ascending = order == Qt.SortOrder.AscendingOrder
 		self.layoutAboutToBeChanged.emit()
