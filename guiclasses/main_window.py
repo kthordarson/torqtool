@@ -24,6 +24,7 @@ from .map_canvas import MapCanvas
 from .time_series_canvas import TimeSeriesCanvas
 from .basemap_worker import BasemapWorker
 from .trip_list_worker import TripListWorker
+from .trip_plot_worker import TripPlotWorker
 from .position_manager_window import PositionManagerWindow
 from .pandas_model import PandasModel
 from ._helpers import _normalize_col_name, format_duration
@@ -79,6 +80,11 @@ class MainWindow(QMainWindow):
 		self._suppress_trip_selection_handler: bool = False
 		self._initial_trips_thread: QThread | None = None
 		self._initial_trips_worker: TripListWorker | None = None
+		self._plot_data_thread: QThread | None = None
+		self._plot_data_worker: TripPlotWorker | None = None
+		self._plot_data_request_id = 0
+		self._plot_async_threshold = 60
+		self._plot_request_context: dict[int, dict[str, Any]] = {}
 		self._active_threads: set[QThread] = set()
 		self._position_manager_window: PositionManagerWindow | None = None
 		self.Session = sessionmaker(bind=self.engine)
@@ -236,8 +242,12 @@ class MainWindow(QMainWindow):
 		self.label_group_mode_combo.currentIndexChanged.connect(self._on_label_group_mode_changed)
 		self.select_trips_by_labels_btn = QPushButton("Select trips by labels")
 		self.select_trips_by_labels_btn.clicked.connect(self._select_torqtrips_for_selected_labels)
+		self.cancel_plot_load_btn = QPushButton("Cancel load")
+		self.cancel_plot_load_btn.setEnabled(False)
+		self.cancel_plot_load_btn.clicked.connect(self._cancel_async_plot_load)
 		label_toolbar_layout.addWidget(self.label_group_mode_combo)
 		label_toolbar_layout.addWidget(self.select_trips_by_labels_btn)
+		label_toolbar_layout.addWidget(self.cancel_plot_load_btn)
 		label_toolbar_layout.addStretch()
 		label_tab_layout.addWidget(label_toolbar)
 		label_tab_layout.addWidget(self.label_groups_table)
@@ -982,7 +992,208 @@ class MainWindow(QMainWindow):
 		rows = sorted(set(index.row() for index in self.table.selectionModel().selectedRows()))
 		if rows:
 			logger.debug(f"refresh_plot triggered with {len(rows)} selected row(s): {rows[:5]}{'...' if len(rows) > 5 else ''}")
+			if len(rows) >= self._plot_async_threshold:
+				self._start_async_plot_for_rows(rows)
+				return
 			self._plot_for_rows(rows)
+
+	def _start_async_plot_for_rows(self, rows: list[int]):
+		fileids = self._get_selected_fileids(rows)
+		if not fileids:
+			self.stats_label.setText("No trip selected")
+			return
+
+		selected_metrics = self._get_selected_metrics()
+		if not selected_metrics:
+			fallback_metric = self._get_selected_metric()
+			selected_metrics = [fallback_metric] if fallback_metric else []
+		if not selected_metrics:
+			self.stats_label.setText("No valid metrics available for plotting")
+			return
+
+		selected_metric = selected_metrics[0]
+		lat_col = self._resolved_torqlogs_columns.get('latitude')
+		lon_col = self._resolved_torqlogs_columns.get('longitude')
+		time_col = (self._resolve_actual_torqlogs_column('gpstime')
+					or self._resolve_actual_torqlogs_column('devicetime'))
+		metric_col = self._resolve_actual_torqlogs_column(selected_metric)
+		if not (lat_col and lon_col and metric_col):
+			self.stats_label.setText("Missing required torqlogs columns for plotting")
+			return
+
+		self._plot_data_request_id += 1
+		request_id = self._plot_data_request_id
+		self._plot_request_context[request_id] = {
+			"fileids": list(fileids),
+			"selected_metrics": list(selected_metrics),
+			"selected_metric": selected_metric,
+			"colormap_name": self._current_colormap,
+		}
+
+		self.stats_label.setText(f"Loading {len(fileids)} trips in background...")
+		self.cancel_plot_load_btn.setEnabled(True)
+
+		thread = QThread()
+		worker = TripPlotWorker(
+			self.engine.url.render_as_string(hide_password=False),
+			request_id,
+			fileids,
+			metric_col,
+			lat_col,
+			lon_col,
+			time_col,
+		)
+		worker.moveToThread(thread)
+
+		thread.started.connect(worker.run)
+		worker.finished.connect(self._on_async_plot_data_loaded)
+		worker.error.connect(self._on_async_plot_data_error)
+		worker.progress.connect(self._on_async_plot_data_progress)
+		worker.cancelled.connect(self._on_async_plot_data_cancelled)
+		worker.finished.connect(thread.quit)
+		worker.error.connect(thread.quit)
+		worker.cancelled.connect(thread.quit)
+		thread.finished.connect(worker.deleteLater)
+		thread.finished.connect(thread.deleteLater)
+		thread.finished.connect(lambda t=thread: self._active_threads.discard(t))
+		thread.finished.connect(lambda: setattr(self, '_plot_data_thread', None))
+
+		self._plot_data_worker = worker
+		self._plot_data_thread = thread
+		self._active_threads.add(thread)
+		thread.start()
+
+	def _cancel_async_plot_load(self):
+		thread = self._plot_data_thread
+		if thread is None:
+			self.cancel_plot_load_btn.setEnabled(False)
+			return
+		if thread.isRunning():
+			thread.requestInterruption()
+			self.stats_label.setText("Cancelling background load...")
+		self.cancel_plot_load_btn.setEnabled(False)
+
+	def _on_async_plot_data_loaded(self, request_id: int, payload: object):
+		if request_id != self._plot_data_request_id:
+			return
+		self.cancel_plot_load_btn.setEnabled(False)
+		ctx = self._plot_request_context.pop(request_id, None)
+		if not ctx:
+			return
+
+		data = cast(dict[str, Any], payload)
+		trips = cast(list[dict[str, Any]], data.get("trips", []))
+		all_x = cast(list[float], data.get("all_x", []))
+		all_y = cast(list[float], data.get("all_y", []))
+		all_metric_values = cast(list[float], data.get("all_metric_values", []))
+
+		fileids = cast(list[int], ctx["fileids"])
+		selected_metrics = cast(list[str], ctx["selected_metrics"])
+		selected_metric = cast(str, ctx["selected_metric"])
+		colormap_name = cast(str, ctx["colormap_name"])
+
+		for item in trips:
+			fid = int(item.get("fileid", -1))
+			if fid >= 0:
+				self._trip_plot_cache[(fid, selected_metric)] = {
+					"x": list(item.get("x", [])),
+					"y": list(item.get("y", [])),
+					"speed": list(item.get("speed", [])),
+					"time": list(item.get("time", [])),
+				}
+
+		self._clear_start_end_overlays()
+		self.map_canvas.ax.clear()
+
+		cmap = plt.colormaps[colormap_name]
+		if colormap_name in ['tab10']:
+			cycle_length = 10
+		elif colormap_name in ['tab20', 'tab20b', 'tab20c']:
+			cycle_length = 20
+		elif colormap_name in ['Set1']:
+			cycle_length = 9
+		elif colormap_name in ['Set2', 'Dark2', 'Pastel2']:
+			cycle_length = 8
+		elif colormap_name in ['Set3', 'Pastel1']:
+			cycle_length = 12
+		else:
+			cycle_length = 10
+
+		plots = []
+		for idx, trip in enumerate(trips):
+			x_vals = cast(list[float], trip.get("x", []))
+			y_vals = cast(list[float], trip.get("y", []))
+			speed_vals = pd.to_numeric(pd.Series(trip.get("speed", [])), errors='coerce').fillna(0)
+			if not x_vals or not y_vals:
+				continue
+			sizes = (speed_vals.clip(lower=1, upper=50) * self._dot_size_scale).clip(lower=1, upper=200)
+			base_color = cmap(idx % cycle_length)
+			speed_abs_max = float(speed_vals.abs().max())
+			colors = [(
+				max(0.0, min(1.0, base_color[0] + 0.5 * (v / speed_abs_max if speed_abs_max > 0 else 0))),
+				max(0.0, min(1.0, base_color[1] + 0.5 * (v / speed_abs_max if speed_abs_max > 0 else 0))),
+				max(0.0, min(1.0, base_color[2] + 0.5 * (v / speed_abs_max if speed_abs_max > 0 else 0))),
+				base_color[3],
+			) for v in speed_vals]
+			sc = self.map_canvas.ax.scatter(
+				x_vals,
+				y_vals,
+				s=sizes,
+				c=colors,
+				label=f"fileid {int(trip.get('fileid', -1))}",
+				zorder=2,
+			)
+			plots.append(sc)
+
+		bounds = self._compute_plot_bounds(all_x, all_y)
+		effective_zoom = int(self.zoom_combo.currentText())
+		cached_payload: tuple[bytes, tuple[float, float, float, float]] | None = None
+		if bounds:
+			effective_zoom = self._effective_basemap_zoom(bounds, effective_zoom)
+			cached_payload = self._load_cached_map_image(fileids, effective_zoom, colormap_name, selected_metric)
+			xmin, xmax, ymin, ymax = bounds
+			self.map_canvas.ax.set_xlim(xmin, xmax)
+			self.map_canvas.ax.set_ylim(ymin, ymax)
+			self._mw_full_bounds = bounds
+			self._mw_current_fileids = list(fileids)
+			self._mw_last_metric = selected_metric
+
+		self._overlay_start_end_points(fileids, bounds)
+
+		if plots and cached_payload:
+			cached_img, cached_ext = cached_payload
+			img = mpimg.imread(io.BytesIO(cached_img), format='png')
+			self.map_canvas.ax.imshow(img, extent=cached_ext, interpolation='bilinear', zorder=0)
+		elif plots and bounds:
+			self._start_async_basemap(bounds, effective_zoom, fileids, colormap_name, selected_metric)
+
+		self.map_canvas.ax.set_title(f"Trip Map - {selected_metric}")
+		self.map_canvas.ax.set_xlabel("Longitude")
+		self.map_canvas.ax.set_ylabel("Latitude")
+		self.map_canvas.draw_idle()
+		self._update_timeseries_plot(fileids, selected_metrics, colormap_name)
+		self._update_stats_panel(fileids, all_metric_values, all_x, all_y, selected_metric)
+
+	def _on_async_plot_data_progress(self, request_id: int, done: int, total: int):
+		if request_id != self._plot_data_request_id:
+			return
+		done_safe = max(0, int(done))
+		total_safe = max(1, int(total))
+		self.stats_label.setText(f"Loading trips in background... ({done_safe}/{total_safe})")
+
+	def _on_async_plot_data_error(self, request_id: int, error_message: str):
+		if request_id != self._plot_data_request_id:
+			return
+		self.cancel_plot_load_btn.setEnabled(False)
+		self._plot_request_context.pop(request_id, None)
+		logger.error(error_message)
+
+	def _on_async_plot_data_cancelled(self, request_id: int):
+		if request_id != self._plot_data_request_id:
+			return
+		self.cancel_plot_load_btn.setEnabled(False)
+		self._plot_request_context.pop(request_id, None)
+		self.stats_label.setText("Background load cancelled")
 
 	def _get_selected_fileids(self, rows):
 		if not rows:
