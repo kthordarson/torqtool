@@ -221,6 +221,46 @@ def _repair_postgres_column_type_mismatches(conn, table_name: str, column_types:
 	if conn.in_transaction():
 		conn.commit()
 
+
+def _collapse_duplicate_dataframe_columns(df: pd.DataFrame, csvfile: Path) -> pd.DataFrame:
+	"""
+	Collapse duplicate DataFrame column names by coalescing values left-to-right.
+	This prevents `to_sql` from failing when multiple source headers map to the same canonical name.
+	"""
+	if not df.columns.duplicated().any():
+		return df
+
+	resolved_duplicates = [str(col) for col in pd.unique(df.columns[df.columns.duplicated()])]
+	logger.warning(
+		f"Resolved duplicate canonical columns for {csvfile}: {resolved_duplicates}"
+	)
+
+	ordered_unique_cols: list[str] = []
+	seen = set()
+	for col in df.columns:
+		col_name = str(col)
+		if col_name in seen:
+			continue
+		seen.add(col_name)
+		ordered_unique_cols.append(col_name)
+
+	series_list: list[pd.Series] = []
+	for col_name in ordered_unique_cols:
+		col_block = df.loc[:, df.columns == col_name]
+		if col_block.shape[1] == 1:
+			series_list.append(col_block.iloc[:, 0].rename(col_name))
+			continue
+
+		# Treat whitespace-only strings as missing, then take first non-null value per row.
+		coalesced = col_block.replace(r"^\s*$", pd.NA, regex=True).bfill(axis=1).iloc[:, 0]
+		series_list.append(coalesced.rename(col_name))
+
+	if not series_list:
+		return pd.DataFrame(index=df.index)
+
+	# Build all columns in one concat to avoid block fragmentation warnings.
+	return pd.concat(series_list, axis=1).copy()
+
 def update_trip_and_file_for_fileid(conn, fileid):
 	"""
 	Update TorqFile and Torqtrips for a single fileid after inserting its data.
@@ -389,7 +429,7 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs'):
 
 	# Initialize dictionary to store column stats and file info
 	pd_columns = {'stats': {}, 'files': {}}
-
+	skipped_count = 0
 	# Get list of CSV files
 	csv_files = list(Path(args.logpath).glob("**/trackLog*.csv"))
 	if not csv_files:
@@ -424,7 +464,8 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs'):
 				existing_file = conn.execute(text("SELECT fileid FROM torqfiles WHERE csvhash = :csvhash"),{"csvhash": csvhash}).first()
 
 			if existing_file:
-				logger.info(f"[{file_idx}/{len(csv_files)}] File {csvfile} already processed, skipping")
+				skipped_count += 1
+				# logger.info(f"[{file_idx}/{len(csv_files)}] File {csvfile} already processed, skipping")
 				continue
 
 			# Read only the header row
@@ -450,14 +491,15 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs'):
 		except Exception as e:
 			logger.error(f"Error reading headers from {csvfile}: {e}")
 			continue
-
+	if args.debug and skipped_count > 0:
+		logger.debug(f'skipped {skipped_count} files that were already processed based on hash')
 	if not valid_files:
 		logger.warning("No valid CSV files found after header validation")
 		return None, pd_columns
 	if args.file_limit:
 		random.shuffle(valid_files)
 		valid_files = [k for k in valid_files][0:10]
-	logger.info(f"Found {len(valid_files)} valid CSV files with columns: {len(all_columns)}")
+	logger.info(f"Found {len(valid_files)} valid CSV files, skipped {skipped_count}. Columns: {len(all_columns)}")
 	column_types = COLUMN_TYPES.copy()
 	for col in all_columns:
 		if col in column_types:
@@ -474,6 +516,8 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs'):
 
 	# Second pass: Read and insert data from valid files
 	df = pd.DataFrame()
+	if args.debug:
+		logger.debug(f"Starting data insertion for {len(valid_files)} files into table {table_name} with {len(all_columns)} columns")
 	with session.get_bind().connect() as conn:  # type: ignore[union-attr]
 		if conn.dialect.name == "sqlite":
 			conn.execute(text("PRAGMA journal_mode = WAL"))  # Use Write-Ahead Logging
@@ -527,6 +571,7 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs'):
 							db_col_rename_map[c] = actual_col
 					if db_col_rename_map:
 						df = df.rename(columns=db_col_rename_map)
+					df = _collapse_duplicate_dataframe_columns(df, csvfile)
 					df = df.replace(['-', '∞', 'inf', '-inf'], pd.NA)
 
 					# Convert numeric columns
@@ -539,10 +584,16 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs'):
 					df = df[~df.apply(lambda row: list(row) == header_row, axis=1)]
 					df = df[~df.apply(lambda row: row.astype(str).str.contains(' Device Time').any(), axis=1)]
 
+					pre_filter_columns = list(df.columns)
 					allowed_cols = set(actual_table_columns)
 					ordered_cols = [col for col in ['fileid'] if col in df.columns and col in allowed_cols]
 					ordered_cols.extend(sorted([col for col in df.columns if col != 'fileid' and col in allowed_cols]))
 					df = df[ordered_cols]
+					if len(df.columns) == 0:
+						raise ValueError(
+							f"No matching columns remain after filtering for table {table_name}. "
+							f"Input columns sample: {pre_filter_columns[:10]}"
+						)
 
 					# Insert data
 					# SQLite limits bind variables to 999 (or 32766 on newer builds).
@@ -575,7 +626,7 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs'):
 						conn.rollback()
 					logger.error(f"Error processing {csvfile}: {e}")
 					if args.debug:
-						logger.debug(f"DataFrame columns: {df.columns.tolist()}")
+						logger.error(f"DataFrame columns: {df.columns.tolist()}")
 					continue
 
 		except Exception as e:

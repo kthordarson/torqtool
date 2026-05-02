@@ -12,10 +12,10 @@ from sqlalchemy.orm import sessionmaker
 from PySide6.QtWidgets import (
 	QMainWindow, QTableView, QVBoxLayout, QWidget, QSplitter,
 	QHBoxLayout, QLabel, QComboBox, QScrollArea, QFileDialog, QMessageBox,
-	QSlider, QLineEdit, QPushButton, QInputDialog, QAbstractItemView,
+	QSlider, QLineEdit, QPushButton, QInputDialog, QAbstractItemView, QTabWidget,
 )
 from PySide6.QtGui import QFont, QAction, QCloseEvent
-from PySide6.QtCore import Qt, QTimer, QThread
+from PySide6.QtCore import Qt, QTimer, QThread, QItemSelectionModel
 
 from datamodels import database_init
 from schemas import dataschema
@@ -73,6 +73,10 @@ class MainWindow(QMainWindow):
 		self._mw_current_fileids: list[int] = []
 		self._mw_last_metric: str = 'speedobdkmh'
 		self._metric_summary_cache: dict[tuple[int, ...], pd.DataFrame] = {}
+		self._label_groups_df = pd.DataFrame(columns=["label", "start_points", "end_points", "total_points", "total_count"])
+		self._start_end_points_df = pd.DataFrame(columns=["pos_type", "pos_id", "lat", "lon", "count", "label_group"])
+		self._label_group_mode: str = "label"
+		self._suppress_trip_selection_handler: bool = False
 		self._initial_trips_thread: QThread | None = None
 		self._initial_trips_worker: TripListWorker | None = None
 		self._active_threads: set[QThread] = set()
@@ -84,6 +88,7 @@ class MainWindow(QMainWindow):
 		# Set up UI
 		splitter = QSplitter(Qt.Orientation.Horizontal)
 		self.table = QTableView()
+		self.label_groups_table = QTableView()
 		self.map_canvas = MapCanvas()
 		self.map_canvas.mpl_connect("pick_event", self._on_map_pick)
 		self.timeseries_canvas = TimeSeriesCanvas()
@@ -211,8 +216,38 @@ class MainWindow(QMainWindow):
 		font = QFont()
 		font.setPointSize(9)
 		self.table.setFont(font)
+		self.label_groups_table.setFont(font)
+		self.label_groups_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+		self.label_groups_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+		self.label_groups_table.setSortingEnabled(True)
+		self.label_groups_table.verticalHeader().setVisible(False)
 
-		splitter.addWidget(self.table)
+		label_tab = QWidget()
+		label_tab_layout = QVBoxLayout(label_tab)
+		label_tab_layout.setContentsMargins(2, 2, 2, 2)
+		label_toolbar = QWidget()
+		label_toolbar_layout = QHBoxLayout(label_toolbar)
+		label_toolbar_layout.setContentsMargins(0, 0, 0, 0)
+		label_toolbar_layout.addWidget(QLabel("Group by:"))
+		self.label_group_mode_combo = QComboBox()
+		self.label_group_mode_combo.addItem("Label (ignore type)", "label")
+		self.label_group_mode_combo.addItem("Start labels", "start")
+		self.label_group_mode_combo.addItem("End labels", "end")
+		self.label_group_mode_combo.currentIndexChanged.connect(self._on_label_group_mode_changed)
+		self.select_trips_by_labels_btn = QPushButton("Select trips by labels")
+		self.select_trips_by_labels_btn.clicked.connect(self._select_torqtrips_for_selected_labels)
+		label_toolbar_layout.addWidget(self.label_group_mode_combo)
+		label_toolbar_layout.addWidget(self.select_trips_by_labels_btn)
+		label_toolbar_layout.addStretch()
+		label_tab_layout.addWidget(label_toolbar)
+		label_tab_layout.addWidget(self.label_groups_table)
+
+		self.left_tabs = QTabWidget()
+		self.left_tabs.addTab(self.table, "Trips")
+		self.left_tabs.addTab(label_tab, "Label Groups")
+		self.left_tabs.currentChanged.connect(self._on_left_tab_changed)
+
+		splitter.addWidget(self.left_tabs)
 		splitter.addWidget(right_panel)
 		splitter.setSizes([150, 600])  # Give more space to the map panel
 
@@ -225,7 +260,9 @@ class MainWindow(QMainWindow):
 		empty_df = pd.DataFrame(columns=['fileid', 'trip_distance', 'tripdate', 'time'])
 		empty_df.index.name = 'id'
 		self._set_table_model(empty_df)
+		self._set_label_groups_table_model(self._label_groups_df)
 		QTimer.singleShot(0, self._start_async_initial_trips_load)
+		QTimer.singleShot(0, self._populate_label_groups_table)
 		QTimer.singleShot(0, self._populate_metric_columns)
 		self._create_menu_bar()
 		logger.debug("MainWindow initialized and UI set up")
@@ -530,6 +567,17 @@ class MainWindow(QMainWindow):
 		if selection_model is not None:
 			selection_model.selectionChanged.connect(lambda *_: self.on_metric_selection_changed())
 
+	def _set_label_groups_table_model(self, df: pd.DataFrame):
+		self._label_groups_df = df.reset_index(drop=True)
+		display_columns = ["label", "start_points", "end_points", "total_points", "total_count"]
+		self.label_groups_table_model = PandasModel(self._label_groups_df, display_columns=display_columns)
+		self.label_groups_table.setModel(self.label_groups_table_model)
+		self.label_groups_table.horizontalHeader().setStretchLastSection(True)
+		self.label_groups_table.resizeColumnsToContents()
+		selection_model = self.label_groups_table.selectionModel()
+		if selection_model is not None:
+			selection_model.selectionChanged.connect(self._on_label_group_selection_changed)
+
 	def _build_torqlogs_column_map(self) -> dict[str, str]:
 		inspector = inspect(self.engine)
 		actual_columns = [str(col["name"]) for col in inspector.get_columns("torqlogs")]
@@ -537,7 +585,7 @@ class MainWindow(QMainWindow):
 
 	def _set_table_model(self, df: pd.DataFrame):
 		self.df_trips = df
-		display_columns = [col for col in self.df_trips.columns if col != 'trip_distance_sort']
+		display_columns = ["fileid", "trip_distance", "tripdate", "time"]
 		sort_overrides = {'trip_distance': 'trip_distance_sort'} if 'trip_distance_sort' in self.df_trips.columns else None
 		self.table_model = PandasModel(self.df_trips, display_columns=display_columns, sort_overrides=sort_overrides)
 		self.table.setModel(self.table_model)
@@ -594,6 +642,224 @@ class MainWindow(QMainWindow):
 		df_trips['trip_distance'] = df_trips['trip_distance'].apply(lambda x: f"{x/1000:.1f} km" if pd.notna(x) else "")
 		df_trips.set_index('id', inplace=True)
 		self._set_table_model(df_trips)
+
+	def _populate_label_groups_table(self):
+		query = text(
+			"""
+			SELECT 'start' AS pos_type, startid AS pos_id, latstart AS lat, lonstart AS lon, count, label
+			FROM startpos
+			UNION ALL
+			SELECT 'end' AS pos_type, endid AS pos_id, latend AS lat, lonend AS lon, count, label
+			FROM endpos
+			"""
+		)
+		try:
+			df_points = pd.read_sql(query, self.engine)
+		except Exception as e:
+			logger.error(f"Failed to load label groups from start/end tables: {e} ({type(e)})")
+			df_points = pd.DataFrame(columns=["pos_type", "pos_id", "lat", "lon", "count", "label"])
+
+		if df_points.empty:
+			self._start_end_points_df = pd.DataFrame(columns=["pos_type", "pos_id", "lat", "lon", "count", "label_group"])
+			self._set_label_groups_table_model(pd.DataFrame(columns=["label", "start_points", "end_points", "total_points", "total_count"]))
+			return
+
+		df_points["label_group"] = df_points["label"].fillna("").astype(str).str.strip()
+		df_points.loc[df_points["label_group"] == "", "label_group"] = "(no label)"
+		df_points["count"] = pd.to_numeric(df_points["count"], errors="coerce").fillna(0).astype(float)
+		df_points["lat"] = pd.to_numeric(df_points["lat"], errors="coerce")
+		df_points["lon"] = pd.to_numeric(df_points["lon"], errors="coerce")
+		df_points = df_points[df_points["lat"].notna() & df_points["lon"].notna()].copy()
+		self._start_end_points_df = df_points
+
+		if self._start_end_points_df.empty:
+			self._set_label_groups_table_model(pd.DataFrame(columns=["label", "start_points", "end_points", "total_points", "total_count"]))
+			return
+
+		points_for_mode = self._start_end_points_df
+		if self._label_group_mode == "start":
+			points_for_mode = points_for_mode[points_for_mode["pos_type"] == "start"]
+		elif self._label_group_mode == "end":
+			points_for_mode = points_for_mode[points_for_mode["pos_type"] == "end"]
+
+		if points_for_mode.empty:
+			self._set_label_groups_table_model(pd.DataFrame(columns=["label", "start_points", "end_points", "total_points", "total_count"]))
+			return
+
+		grouped = points_for_mode.groupby("label_group", dropna=False)
+		rows: list[dict[str, Any]] = []
+		for label, group in grouped:
+			start_points = int((group["pos_type"] == "start").sum())
+			end_points = int((group["pos_type"] == "end").sum())
+			total_points = int(len(group))
+			total_count = float(group["count"].sum())
+			rows.append(
+				{
+					"label": str(label),
+					"start_points": start_points,
+					"end_points": end_points,
+					"total_points": total_points,
+					"total_count": round(total_count, 2),
+				}
+			)
+
+		label_groups_df = pd.DataFrame(rows, columns=["label", "start_points", "end_points", "total_points", "total_count"])
+		if not label_groups_df.empty:
+			label_groups_df.sort_values(by="label", inplace=True)
+			label_groups_df.reset_index(drop=True, inplace=True)
+		self._set_label_groups_table_model(label_groups_df)
+
+	def _on_label_group_mode_changed(self, index: int):
+		if not hasattr(self, "label_group_mode_combo"):
+			return
+		mode = str(self.label_group_mode_combo.currentData() or "label")
+		self._label_group_mode = mode
+		self._populate_label_groups_table()
+
+	def _on_label_group_selection_changed(self, selected, deselected):
+		labels = self._get_selected_label_groups()
+		if labels:
+			self._plot_label_groups_on_map(labels)
+
+	def _get_selected_label_groups(self) -> list[str]:
+		selection_model = self.label_groups_table.selectionModel()
+		if selection_model is None or self._label_groups_df.empty:
+			return []
+		rows = sorted(set(index.row() for index in selection_model.selectedRows()))
+		selected_labels: list[str] = []
+		for row in rows:
+			if 0 <= row < len(self._label_groups_df.index):
+				selected_labels.append(str(self._label_groups_df.iloc[row]["label"]))
+		return selected_labels
+
+	def _plot_label_groups_on_map(self, labels: list[str]):
+		if not labels or self._start_end_points_df.empty:
+			return
+
+		points = self._start_end_points_df[self._start_end_points_df["label_group"].isin(labels)].copy()
+		if self._label_group_mode == "start":
+			points = points[points["pos_type"] == "start"]
+		elif self._label_group_mode == "end":
+			points = points[points["pos_type"] == "end"]
+		if points.empty:
+			return
+
+		points["x"] = points.apply(lambda r: self._lonlat_to_web_mercator(float(r["lon"]), float(r["lat"]))[0], axis=1)
+		points["y"] = points.apply(lambda r: self._lonlat_to_web_mercator(float(r["lon"]), float(r["lat"]))[1], axis=1)
+
+		self._clear_start_end_overlays()
+		self.map_canvas.ax.clear()
+		self.timeseries_canvas.ax.clear()
+		self.timeseries_canvas.draw_idle()
+
+		start_points = points[points["pos_type"] == "start"]
+		end_points = points[points["pos_type"] == "end"]
+		if not start_points.empty:
+			self.map_canvas.ax.scatter(start_points["x"], start_points["y"], s=42, c="limegreen", marker="o", alpha=0.75, label="start", zorder=2)
+		if not end_points.empty:
+			self.map_canvas.ax.scatter(end_points["x"], end_points["y"], s=42, c="darkorange", marker="^", alpha=0.75, label="end", zorder=2)
+
+		all_x = points["x"].tolist()
+		all_y = points["y"].tolist()
+		bounds = self._compute_plot_bounds(all_x, all_y)
+		if bounds:
+			xmin, xmax, ymin, ymax = bounds
+			self.map_canvas.ax.set_xlim(xmin, xmax)
+			self.map_canvas.ax.set_ylim(ymin, ymax)
+			self._mw_full_bounds = bounds
+			self._mw_current_fileids = []
+			self._mw_last_metric = "labels"
+			self._start_async_basemap(bounds, int(self.zoom_combo.currentText()), [], self._current_colormap, "labels")
+
+		self.map_canvas.ax.legend(loc="best", fontsize=8)
+		self.map_canvas.ax.set_title(f"Start/End labels: {', '.join(labels[:3])}{'...' if len(labels) > 3 else ''}")
+		self.map_canvas.ax.set_xlabel("Longitude")
+		self.map_canvas.ax.set_ylabel("Latitude")
+		self.map_canvas.draw_idle()
+		self.stats_label.setText(f"Selected labels: {len(labels)}\nPoints shown: {len(points)}")
+
+	def _select_torqtrips_for_selected_labels(self):
+		labels = self._get_selected_label_groups()
+		if not labels:
+			QMessageBox.information(self, "No labels selected", "Select one or more labels in the Label Groups tab.")
+			return
+
+		if self.table.selectionModel() is None or self.df_trips.empty:
+			return
+
+		placeholders = ", ".join(f":lbl{idx}" for idx in range(len(labels)))
+		params = {f"lbl{idx}": label for idx, label in enumerate(labels)}
+
+		label_expr_start = "COALESCE(NULLIF(TRIM(sp.label), ''), '(no label)')"
+		label_expr_end = "COALESCE(NULLIF(TRIM(ep.label), ''), '(no label)')"
+		if self._label_group_mode == "start":
+			where_clause = f"{label_expr_start} IN ({placeholders})"
+		elif self._label_group_mode == "end":
+			where_clause = f"{label_expr_end} IN ({placeholders})"
+		else:
+			where_clause = f"({label_expr_start} IN ({placeholders}) OR {label_expr_end} IN ({placeholders}))"
+
+		query = text(
+			f"""
+			SELECT DISTINCT tf.fileid AS fileid
+			FROM torqfiles tf
+			LEFT JOIN startpos sp ON tf.startid = sp.startid
+			LEFT JOIN endpos ep ON tf.endid = ep.endid
+			WHERE {where_clause}
+			"""
+		)
+
+		try:
+			with self.engine.connect() as conn:
+				rows = conn.execute(query, params).mappings().all()
+		except Exception as e:
+			logger.error(f"Failed to query torqtrips by labels: {e} ({type(e)})")
+			QMessageBox.warning(self, "Query failed", f"Could not select trips by labels:\n{e}")
+			return
+
+		fileids = {int(r["fileid"]) for r in rows if r.get("fileid") is not None}
+		if not fileids:
+			QMessageBox.information(self, "No matches", "No trips match the selected labels.")
+			return
+
+		selection_model = self.table.selectionModel()
+		if selection_model is None:
+			return
+
+		table_df = self.df_trips.reset_index(drop=True)
+		matching_rows = [
+			int(idx)
+			for idx, fid in enumerate(pd.to_numeric(table_df.get("fileid"), errors="coerce").fillna(-1).astype(int).tolist())
+			if fid in fileids
+		]
+		if not matching_rows:
+			QMessageBox.information(self, "No matches", "No visible trips match the selected labels.")
+			return
+
+		self._suppress_trip_selection_handler = True
+		selection_model.blockSignals(True)
+		self.table.setUpdatesEnabled(False)
+		try:
+			selection_model.clearSelection()
+			flags = QItemSelectionModel.SelectionFlag.Select | QItemSelectionModel.SelectionFlag.Rows
+			for row_idx in matching_rows:
+				model_index = self.table.model().index(row_idx, 0)
+				selection_model.select(model_index, flags)
+		finally:
+			self.table.setUpdatesEnabled(True)
+			selection_model.blockSignals(False)
+			self._suppress_trip_selection_handler = False
+
+		self.left_tabs.setCurrentIndex(0)
+		selected_fileids = self._get_selected_fileids(matching_rows)
+		self._populate_metric_columns(selected_fileids if selected_fileids else None)
+		self._plot_refresh_timer.start(120)
+
+	def _on_left_tab_changed(self, index: int):
+		# Keep metric panel in sync when returning to Trips tab.
+		if index == 0:
+			rows = sorted(set(idx.row() for idx in self.table.selectionModel().selectedRows())) if self.table.selectionModel() is not None else []
+			self._populate_metric_columns(self._get_selected_fileids(rows) if rows else None)
 
 	def _on_initial_trips_error(self, error_message: str):
 		logger.error(error_message)
@@ -1035,6 +1301,8 @@ class MainWindow(QMainWindow):
 		all_y: list[float] = []
 		all_metric_values: list[float] = []
 		for idx, fileid in enumerate(fileids):
+			if self.args.debug:
+				logger.debug(f"Processing fileid={fileid} ({idx + 1}/{len(fileids)}) for metric='{selected_metric}'")
 			plot_data = self._load_trip_plot_data(fileid, selected_metric)
 			if not plot_data:
 				if self.args.debug:
@@ -1061,7 +1329,7 @@ class MainWindow(QMainWindow):
 			sc = self.map_canvas.ax.scatter(x_vals, y_vals, s=sizes, c=colors, label=f"fileid {fileid}", zorder=2)
 			plots.append(sc)
 
-		logger.debug(f"Plotted {len(plots)} trips on map for fileids: {fileids}")
+		logger.debug(f"Plotted {len(plots)} trips on map for fileids: {len(fileids)}")
 		bounds = self._compute_plot_bounds(all_x, all_y)
 		effective_zoom = base_zoom
 		if bounds:
@@ -1093,8 +1361,14 @@ class MainWindow(QMainWindow):
 		self.map_canvas.ax.set_xlabel("Longitude")
 		self.map_canvas.ax.set_ylabel("Latitude")
 		self.map_canvas.draw_idle()
+		if self.args.debug:
+			logger.debug(f"Map plot updated for fileids={fileids}, metric='{selected_metric}' with {len(all_x)} points")
 		self._update_timeseries_plot(fileids, selected_metrics, colormap_name)
+		if self.args.debug:
+			logger.debug(f"Timeseries plot updated for fileids={fileids}, metrics={selected_metrics}")
 		self._update_stats_panel(fileids, all_metric_values, all_x, all_y, selected_metric)
+		if self.args.debug:
+			logger.debug(f"Stats panel updated for fileids={fileids}, metric='{selected_metric}'")
 
 	def _load_trip_metadata(self, fileids: list[int]) -> dict:
 		"""Load trip metadata from torqfiles table."""
@@ -1222,6 +1496,8 @@ class MainWindow(QMainWindow):
 		# Color index cycles per metric so each metric gets a distinct color
 		for m_idx, metric_name in enumerate(metric_names):
 			for t_idx, fileid in enumerate(fileids):
+				if self.args.debug:
+					logger.debug(f"Processing fileid={fileid} ({t_idx + 1}/{len(fileids)}) for metric='{metric_name}'")
 				plot_data = self._load_trip_plot_data(fileid, metric_name)
 				if not plot_data or not plot_data.get('speed'):
 					if self.args.debug:
@@ -1532,6 +1808,7 @@ class MainWindow(QMainWindow):
 					{"label": label_value, "pos_id": pos_id},
 				)
 			logger.debug(f"Saved label for {pos_type} #{pos_id}: '{label_value}'")
+			self._populate_label_groups_table()
 			return True
 		except Exception as e:
 			logger.error(f"Failed to save label for {pos_type} #{pos_id}: {e} ({type(e)})")
@@ -1545,6 +1822,8 @@ class MainWindow(QMainWindow):
 		super().closeEvent(event)
 
 	def on_row_selected(self, selected, deselected):
+		if self._suppress_trip_selection_handler:
+			return
 		rows = sorted(set(index.row() for index in self.table.selectionModel().selectedRows()))
 		if rows:
 			logger.debug(f"on_row_selected with {len(rows)} selected row(s): {rows[:5]}{'...' if len(rows) > 5 else ''}")

@@ -13,7 +13,7 @@ from sqlalchemy import text
 from PySide6.QtWidgets import (
 	QMainWindow, QWidget, QVBoxLayout, QSplitter, QHBoxLayout, QLabel,
 	QComboBox, QFrame, QTableView, QAbstractItemView, QLineEdit, QPushButton,
-	QFormLayout, QSpinBox, QDoubleSpinBox, QMessageBox, QCheckBox, QCompleter,
+	QFormLayout, QSpinBox, QDoubleSpinBox, QMessageBox, QCheckBox, QCompleter, QTabWidget,
 )
 from PySide6.QtCore import Qt, QTimer, QThread, QItemSelectionModel, QStringListModel
 from PySide6.QtGui import QCloseEvent
@@ -21,6 +21,7 @@ from PySide6.QtGui import QCloseEvent
 from .basemap_worker import BasemapWorker
 from .position_load_worker import PositionLoadWorker
 from .position_table_model import PositionTableModel
+from .pandas_model import PandasModel
 from ._helpers import _ORPHAN_QTHREADS, _release_orphan_thread
 
 
@@ -70,6 +71,11 @@ class PositionManagerWindow(QMainWindow):
 		self._hide_labeled_active: bool = False
 		self._updating_selection: bool = False
 		self._pending_pick_call: tuple[list[int], bool] | None = None
+		self._group_mode: str = "label"
+		self._grouped_positions_df = pd.DataFrame(
+			columns=["label", "start_points", "end_points", "total_points", "total_count", "avg_latitude", "avg_longitude"]
+		)
+		self._grouped_sources: dict[str, list[int]] = {}
 		self._pick_debounce_timer: QTimer = QTimer(self)
 		self._pick_debounce_timer.setSingleShot(True)
 		self._pick_debounce_timer.setInterval(80)
@@ -96,7 +102,33 @@ class PositionManagerWindow(QMainWindow):
 		self.positions_table = QTableView()
 		self.positions_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
 		self.positions_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-		right_layout.addWidget(self.positions_table, stretch=6)
+
+		grouped_tab = QWidget()
+		grouped_layout = QVBoxLayout(grouped_tab)
+		grouped_layout.setContentsMargins(2, 2, 2, 2)
+		grouped_toolbar = QWidget()
+		grouped_toolbar_layout = QHBoxLayout(grouped_toolbar)
+		grouped_toolbar_layout.setContentsMargins(0, 0, 0, 0)
+		grouped_toolbar_layout.addWidget(QLabel("Group by:"))
+		self.group_mode_combo = QComboBox()
+		self.group_mode_combo.addItem("Label (ignore type)", "label")
+		self.group_mode_combo.addItem("Start labels", "start")
+		self.group_mode_combo.addItem("End labels", "end")
+		self.group_mode_combo.currentIndexChanged.connect(self._on_group_mode_changed)
+		grouped_toolbar_layout.addWidget(self.group_mode_combo)
+		grouped_toolbar_layout.addStretch()
+		self.grouped_positions_table = QTableView()
+		self.grouped_positions_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+		self.grouped_positions_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+		self.grouped_positions_table.setSortingEnabled(True)
+		self.grouped_positions_table.verticalHeader().setVisible(False)
+		grouped_layout.addWidget(grouped_toolbar)
+		grouped_layout.addWidget(self.grouped_positions_table)
+
+		self.table_tabs = QTabWidget()
+		self.table_tabs.addTab(self.positions_table, "Positions")
+		self.table_tabs.addTab(grouped_tab, "Grouped labels")
+		right_layout.addWidget(self.table_tabs, stretch=6)
 
 		editor = QFrame()
 		editor_layout = QVBoxLayout(editor)
@@ -532,19 +564,7 @@ class PositionManagerWindow(QMainWindow):
 		self._draw_basemap_array(img, ext)
 
 	def _set_table_model(self):
-		filtered_df = self.df_positions
-		if self._min_count_filter > 0 and not self.df_positions.empty:
-			filtered_df = filtered_df[filtered_df["count"] >= self._min_count_filter]
-		if self._hide_labeled_active and not filtered_df.empty:
-			filtered_df = filtered_df[filtered_df["label"].astype(str).str.strip() == ""]
-		if self._label_filter_active and not filtered_df.empty:
-			if self._label_filter_text:
-				mask = filtered_df["label"].astype(str).str.contains(
-					self._label_filter_text, case=False, na=False, regex=False
-				)
-				filtered_df = filtered_df[mask]
-			else:
-				filtered_df = filtered_df[filtered_df["label"].astype(str).str.strip() != ""]
+		filtered_df = self._filtered_positions_df()
 		self._table_model = PositionTableModel(filtered_df)
 		self.positions_table.setModel(self._table_model)
 		self.positions_table.horizontalHeader().setStretchLastSection(True)
@@ -559,6 +579,100 @@ class PositionManagerWindow(QMainWindow):
 				self._applying_sort = False
 		if self.positions_table.selectionModel() is not None:
 			self.positions_table.selectionModel().selectionChanged.connect(self._on_table_selection_changed)
+		self._refresh_grouped_positions_table()
+
+	def _filtered_positions_df(self) -> pd.DataFrame:
+		filtered_df = self.df_positions
+		if self._min_count_filter > 0 and not filtered_df.empty:
+			filtered_df = filtered_df[filtered_df["count"] >= self._min_count_filter]
+		if self._hide_labeled_active and not filtered_df.empty:
+			filtered_df = filtered_df[filtered_df["label"].astype(str).str.strip() == ""]
+		if self._label_filter_active and not filtered_df.empty:
+			if self._label_filter_text:
+				mask = filtered_df["label"].astype(str).str.contains(
+					self._label_filter_text, case=False, na=False, regex=False
+				)
+				filtered_df = filtered_df[mask]
+			else:
+				filtered_df = filtered_df[filtered_df["label"].astype(str).str.strip() != ""]
+		return filtered_df
+
+	def _on_group_mode_changed(self, index: int):
+		mode = str(self.group_mode_combo.currentData() or "label")
+		self._group_mode = mode
+		self._refresh_grouped_positions_table()
+
+	def _refresh_grouped_positions_table(self):
+		base = self._filtered_positions_df().copy()
+		self._grouped_sources = {}
+		if base.empty:
+			self._grouped_positions_df = pd.DataFrame(
+				columns=["label", "start_points", "end_points", "total_points", "total_count", "avg_latitude", "avg_longitude"]
+			)
+			self.grouped_positions_table.setModel(PandasModel(self._grouped_positions_df))
+			return
+
+		base["label_group"] = base["label"].fillna("").astype(str).str.strip()
+		base.loc[base["label_group"] == "", "label_group"] = "(no label)"
+		if self._group_mode == "start":
+			base = base[base["pos_type"] == "start"]
+		elif self._group_mode == "end":
+			base = base[base["pos_type"] == "end"]
+
+		if base.empty:
+			self._grouped_positions_df = pd.DataFrame(
+				columns=["label", "start_points", "end_points", "total_points", "total_count", "avg_latitude", "avg_longitude"]
+			)
+			self.grouped_positions_table.setModel(PandasModel(self._grouped_positions_df))
+			return
+
+		rows: list[dict[str, Any]] = []
+		for label, group in base.groupby("label_group", dropna=False):
+			self._grouped_sources[str(label)] = [int(v) for v in group.index.tolist()]
+			rows.append(
+				{
+					"label": str(label),
+					"start_points": int((group["pos_type"] == "start").sum()),
+					"end_points": int((group["pos_type"] == "end").sum()),
+					"total_points": int(len(group)),
+					"total_count": round(float(pd.to_numeric(group["count"], errors="coerce").fillna(0).sum()), 2),
+					"avg_latitude": round(float(pd.to_numeric(group["latitude"], errors="coerce").mean()), 6),
+					"avg_longitude": round(float(pd.to_numeric(group["longitude"], errors="coerce").mean()), 6),
+				}
+			)
+
+		self._grouped_positions_df = pd.DataFrame(
+			rows,
+			columns=["label", "start_points", "end_points", "total_points", "total_count", "avg_latitude", "avg_longitude"],
+		)
+		if not self._grouped_positions_df.empty:
+			self._grouped_positions_df.sort_values(by="label", inplace=True)
+			self._grouped_positions_df.reset_index(drop=True, inplace=True)
+
+		model = PandasModel(self._grouped_positions_df)
+		self.grouped_positions_table.setModel(model)
+		self.grouped_positions_table.horizontalHeader().setStretchLastSection(True)
+		self.grouped_positions_table.resizeColumnsToContents()
+		if self.grouped_positions_table.selectionModel() is not None:
+			self.grouped_positions_table.selectionModel().selectionChanged.connect(self._on_grouped_selection_changed)
+
+	def _on_grouped_selection_changed(self, selected, deselected):
+		if self.grouped_positions_table.selectionModel() is None or self._grouped_positions_df.empty:
+			return
+		rows = self.grouped_positions_table.selectionModel().selectedRows()
+		if not rows:
+			return
+		source_rows: list[int] = []
+		for row in rows:
+			view_idx = row.row()
+			if view_idx < 0 or view_idx >= len(self._grouped_positions_df.index):
+				continue
+			label = str(self._grouped_positions_df.iloc[view_idx]["label"])
+			source_rows.extend(self._grouped_sources.get(label, []))
+		if not source_rows:
+			return
+		source_rows = list(dict.fromkeys(source_rows))
+		self._select_rows_by_indices(source_rows, select_table=True, zoom_to_points=(len(source_rows) == 1))
 
 	def _on_min_count_filter_changed(self, value: int):
 		self._min_count_filter = int(value)
