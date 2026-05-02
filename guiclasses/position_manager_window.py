@@ -76,10 +76,15 @@ class PositionManagerWindow(QMainWindow):
 			columns=["label", "start_points", "end_points", "total_points", "total_count", "avg_latitude", "avg_longitude"]
 		)
 		self._grouped_sources: dict[str, list[int]] = {}
+		self._suspend_view_refresh: bool = False
 		self._pick_debounce_timer: QTimer = QTimer(self)
 		self._pick_debounce_timer.setSingleShot(True)
 		self._pick_debounce_timer.setInterval(80)
 		self._pick_debounce_timer.timeout.connect(self._flush_pending_pick)
+		self._view_change_timer: QTimer = QTimer(self)
+		self._view_change_timer.setSingleShot(True)
+		self._view_change_timer.setInterval(180)
+		self._view_change_timer.timeout.connect(self._on_view_change_timeout)
 		self.df_positions = pd.DataFrame(
 			columns=['pos_type', 'pos_id', 'latitude', 'longitude', 'count', 'label', 'x', 'y']
 		)
@@ -92,6 +97,8 @@ class PositionManagerWindow(QMainWindow):
 		left_layout = QVBoxLayout(left_panel)
 		self.map_fig, self.map_ax = plt.subplots(figsize=(8, 6))
 		self.map_canvas = FigureCanvas(self.map_fig)
+		self.map_ax.callbacks.connect("xlim_changed", self._on_view_limits_changed)
+		self.map_ax.callbacks.connect("ylim_changed", self._on_view_limits_changed)
 		self.map_toolbar = NavigationToolbar(self.map_canvas, self)
 		left_layout.addWidget(self.map_toolbar)
 		left_layout.addWidget(self.map_canvas)
@@ -323,10 +330,28 @@ class PositionManagerWindow(QMainWindow):
 
 	def _refresh_basemap_for_current_view(self, target_zoom: int | None = None):
 		bounds = self._current_view_bounds()
-		zoom = target_zoom if target_zoom is not None else self._recommended_zoom_for_bounds(bounds)
+		if target_zoom is None:
+			# Prefer one level more detail for clearer imagery on initial and toolbar zoom redraws.
+			zoom = self._recommended_zoom_for_bounds(bounds) + 1
+		else:
+			zoom = target_zoom
 		zoom = max(3, min(18, int(zoom)))
 		self._current_basemap_zoom = zoom
 		self._start_async_basemap(bounds, zoom)
+
+	def _on_view_limits_changed(self, _axes):
+		if self._suspend_view_refresh:
+			return
+		if self.df_positions.empty:
+			return
+		self._view_change_timer.start()
+
+	def _on_view_change_timeout(self):
+		if self._suspend_view_refresh:
+			return
+		if self.df_positions.empty:
+			return
+		self._refresh_basemap_for_current_view()
 
 	@staticmethod
 	def _thread_is_running(thread: QThread | None) -> bool:
@@ -556,7 +581,7 @@ class PositionManagerWindow(QMainWindow):
 				self._basemap_artist.remove()
 			except Exception as e:
 				logger.error(f"Failed to remove previous basemap artist: {e} ({type(e)})")
-		self._basemap_artist = self.map_ax.imshow(img, extent=ext, interpolation="bilinear", zorder=0)
+		self._basemap_artist = self.map_ax.imshow(img, extent=ext, interpolation="nearest", zorder=0)
 		self.map_canvas.draw_idle()
 
 	def _draw_basemap_from_bytes(self, image_bytes: bytes, ext: tuple[float, float, float, float]):
@@ -1168,9 +1193,13 @@ class PositionManagerWindow(QMainWindow):
 		# keep their current zoom level and only recenter to selected point.
 		span = current_span if current_span <= target_span else target_span
 		span = max(self._min_zoom_span_m, span)
-		self.map_ax.set_xlim(x - span / 2.0, x + span / 2.0)
-		self.map_ax.set_ylim(y - span / 2.0, y + span / 2.0)
-		self.map_canvas.draw_idle()
+		self._suspend_view_refresh = True
+		try:
+			self.map_ax.set_xlim(x - span / 2.0, x + span / 2.0)
+			self.map_ax.set_ylim(y - span / 2.0, y + span / 2.0)
+			self.map_canvas.draw_idle()
+		finally:
+			self._suspend_view_refresh = False
 		self._refresh_basemap_for_current_view()
 
 	def _zoom_in(self):
@@ -1180,9 +1209,13 @@ class PositionManagerWindow(QMainWindow):
 		cy = (y0 + y1) / 2.0
 		span = max(abs(x1 - x0), abs(y1 - y0)) * 0.5
 		span = max(self._min_zoom_span_m, span * 0.65)
-		self.map_ax.set_xlim(cx - span / 2.0, cx + span / 2.0)
-		self.map_ax.set_ylim(cy - span / 2.0, cy + span / 2.0)
-		self.map_canvas.draw_idle()
+		self._suspend_view_refresh = True
+		try:
+			self.map_ax.set_xlim(cx - span / 2.0, cx + span / 2.0)
+			self.map_ax.set_ylim(cy - span / 2.0, cy + span / 2.0)
+			self.map_canvas.draw_idle()
+		finally:
+			self._suspend_view_refresh = False
 		self._refresh_basemap_for_current_view(target_zoom=self._current_basemap_zoom + 1)
 
 	def _zoom_out(self):
@@ -1196,17 +1229,25 @@ class PositionManagerWindow(QMainWindow):
 			full_span = max(abs(self._full_bounds[1] - self._full_bounds[0]), abs(self._full_bounds[3] - self._full_bounds[2]))
 			span = min(full_span, span)
 		span = max(self._min_zoom_span_m, span)
-		self.map_ax.set_xlim(cx - span / 2.0, cx + span / 2.0)
-		self.map_ax.set_ylim(cy - span / 2.0, cy + span / 2.0)
-		self.map_canvas.draw_idle()
+		self._suspend_view_refresh = True
+		try:
+			self.map_ax.set_xlim(cx - span / 2.0, cx + span / 2.0)
+			self.map_ax.set_ylim(cy - span / 2.0, cy + span / 2.0)
+			self.map_canvas.draw_idle()
+		finally:
+			self._suspend_view_refresh = False
 		self._refresh_basemap_for_current_view(target_zoom=self._current_basemap_zoom - 1)
 
 	def _zoom_full(self):
 		if self._full_bounds is None:
 			return
-		self.map_ax.set_xlim(self._full_bounds[0], self._full_bounds[1])
-		self.map_ax.set_ylim(self._full_bounds[2], self._full_bounds[3])
-		self.map_canvas.draw_idle()
+		self._suspend_view_refresh = True
+		try:
+			self.map_ax.set_xlim(self._full_bounds[0], self._full_bounds[1])
+			self.map_ax.set_ylim(self._full_bounds[2], self._full_bounds[3])
+			self.map_canvas.draw_idle()
+		finally:
+			self._suspend_view_refresh = False
 		self._refresh_basemap_for_current_view(target_zoom=self._recommended_zoom_for_bounds(self._full_bounds))
 
 	def _start_new_entry(self):

@@ -41,8 +41,8 @@ def to_float(value: object) -> float | None:
             return None
     return None
 
-def collect_db_filestats(args, todatabase=True, droptable=True):
-	# todo fix this is very slow
+def collect_db_filestats(args, todatabase=True, droptable=False):
+	# Incremental and batched filestats collection.
 	session = get_engine_session(args)
 	# if droptable:
 	# 	session.execute(text("drop table if exists filestats"))
@@ -52,12 +52,14 @@ def collect_db_filestats(args, todatabase=True, droptable=True):
 		session.execute(text("pragma temp_store = memory;"))
 		session.execute(text("pragma mmap_size = 30000000000;"))
 		# session.execute(text('pragma journal_mode = memory;'))
-	q = "select fileid from torqfiles;"
+	q = "select fileid from torqfiles"
 	if args.db_limit:
 		q += f" limit {args.db_limit}"
-	file_ids = pd.DataFrame(session.execute(text(q)))
-	logger.debug(f"fileids={len(file_ids)} ")
-	results = []
+	q += ";"
+	fileid_rows = session.execute(text(q)).all()
+	file_ids = [int(row[0]) for row in fileid_rows if row and row[0] is not None]
+	logger.debug(f"candidate fileids={len(file_ids)}")
+	results: list[dict[str, object]] = []
 	requested_columns = [k for k in dataschema if k not in ['gpstime','devicetime']]
 	resolved_columns = _resolve_schema_columns(session, requested_columns)
 	missing_count = len(requested_columns) - len(resolved_columns)
@@ -70,41 +72,76 @@ def collect_db_filestats(args, todatabase=True, droptable=True):
 		logger.warning("No compatible columns found for file stats")
 		return 0
 
-	# Build one aggregate query and reuse for each fileid.
-	select_parts = [
-		"COUNT(*) AS total_rows",
-	]
-	for req, actual in column_pairs:
-		alias = f"nulls_{req}"
-		select_parts.append(f'SUM(CASE WHEN "{actual}" IS NULL THEN 1 ELSE 0 END) AS "{alias}"')
-	agg_sql = text(f'SELECT {", ".join(select_parts)} FROM torqlogs WHERE fileid = :fileid')
-
-	for fileidx, file in enumerate(file_ids.itertuples()):
-		row = session.execute(agg_sql, {"fileid": file.fileid}).mappings().one()
-		total_rows = int(row["total_rows"] or 0)
-		if total_rows == 0:
-			logger.warning(f"no rows for {file.fileid}")
-			continue
-
-		for idx, (requested_col, actual_col) in enumerate(column_pairs):
-			alias = f"nulls_{requested_col}"
-			nulls = int(row.get(alias, 0) or 0)
-			# notnulls = total_rows - nulls
-			# dfval = df.values[0][0]
-			result = ({
-					"fileid": file.fileid,
-					"column": actual_col,
-					"nulls": nulls,
-					"nullratio": nulls / total_rows,
-				}
-			)
-			results.append(result)
-		logger.info(f"[{fileidx}/{len(file_ids)}] fileid: {file.fileid} results: {len(results)}")
-
-	if todatabase and results:
+	if todatabase and droptable:
 		try:
 			session.execute(text("DELETE FROM filestats"))
 			session.commit()
+		except Exception as e:
+			logger.error(f"{type(e)} {e} while clearing filestats")
+			session.rollback()
+			return -1
+
+	already_analyzed: set[int] = set()
+	if todatabase and not droptable:
+		try:
+			existing_rows = session.execute(text("SELECT DISTINCT fileid FROM filestats")).all()
+			already_analyzed = {int(row[0]) for row in existing_rows if row and row[0] is not None}
+		except Exception as e:
+			logger.debug(f"filestats table may be empty/missing; continuing without skip set: {e} ({type(e)})")
+
+	pending_fileids = [fid for fid in file_ids if fid not in already_analyzed]
+	skipped_count = len(file_ids) - len(pending_fileids)
+	logger.info(
+		f"Found {len(file_ids)} candidate files; processing {len(pending_fileids)}, "
+		f"skipped already analyzed {skipped_count}"
+	)
+	if not pending_fileids:
+		return 0
+
+	# Aggregate null stats in batches to reduce SQL round-trips.
+	select_parts = ["fileid", "COUNT(*) AS total_rows"]
+	for idx, (_, actual) in enumerate(column_pairs):
+		select_parts.append(f'SUM(CASE WHEN "{actual}" IS NULL THEN 1 ELSE 0 END) AS "n_{idx}"')
+
+	if args.dbmode == "sqlite":
+		# Keep room for SELECT params and DB limits.
+		batch_size = 300
+	else:
+		batch_size = 1000
+
+	total_processed = 0
+	for batch_start in range(0, len(pending_fileids), batch_size):
+		batch = pending_fileids[batch_start:batch_start + batch_size]
+		placeholders = ", ".join(f":fid{i}" for i in range(len(batch)))
+		params = {f"fid{i}": int(fid) for i, fid in enumerate(batch)}
+		agg_sql = text(
+			f'SELECT {", ".join(select_parts)} '
+			f'FROM torqlogs WHERE fileid IN ({placeholders}) GROUP BY fileid'
+		)
+		batch_rows = session.execute(agg_sql, params).mappings().all()
+		for row in batch_rows:
+			fileid = int(row.get("fileid", 0) or 0)
+			total_rows = int(row.get("total_rows", 0) or 0)
+			if fileid <= 0 or total_rows <= 0:
+				continue
+			for idx, (_, actual_col) in enumerate(column_pairs):
+				nulls = int(row.get(f"n_{idx}", 0) or 0)
+				results.append(
+					{
+						"fileid": fileid,
+						"column": actual_col,
+						"nulls": nulls,
+						"nullratio": nulls / total_rows,
+					}
+				)
+			total_processed += 1
+		logger.info(
+			f"processed batch {batch_start // batch_size + 1} "
+			f"({min(batch_start + len(batch), len(pending_fileids))}/{len(pending_fileids)} files)"
+		)
+
+	if todatabase and results:
+		try:
 			pd.DataFrame(results).to_sql(
 				name='filestats',
 				con=session.get_bind(),
