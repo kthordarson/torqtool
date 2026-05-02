@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 	QScrollArea, QFileDialog, QMessageBox, QSlider, QLineEdit, QPushButton,
 	QFormLayout, QSpinBox, QDoubleSpinBox
 )
+from PySide6.QtWidgets import QCheckBox
 from PySide6.QtGui import QFont, QAction
 from PySide6.QtWidgets import QAbstractItemView
 from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex, QPersistentModelIndex, QTimer, QObject, Signal, QThread, QItemSelectionModel
@@ -90,7 +91,8 @@ class BasemapWorker(QObject):
 			source = None
 			try:
 				source = cast(Any, ctx.providers).OpenStreetMap.Mapnik
-			except Exception:
+			except Exception as e:
+				logger.warning(f"Basemap provider resolution failed: {e} ({type(e)})")
 				source = None
 			kwargs: dict[str, Any] = {"zoom": cast(Any, self.zoom)}
 			if source is not None:
@@ -157,7 +159,15 @@ class PositionTableModel(QAbstractTableModel):
 		self.layoutAboutToBeChanged.emit()
 		tmp = self._source.loc[self._view_order, [col]].copy()
 		tmp["_src"] = self._view_order
-		tmp.sort_values(by=col, ascending=ascending, inplace=True, kind="mergesort")
+		if col == "label":
+			tmp["_sort_key"] = tmp[col].fillna("").astype(str).str.casefold()
+			sort_col = "_sort_key"
+		elif col in ("pos_id", "latitude", "longitude", "count"):
+			tmp["_sort_key"] = pd.to_numeric(tmp[col], errors="coerce")
+			sort_col = "_sort_key"
+		else:
+			sort_col = col
+		tmp.sort_values(by=sort_col, ascending=ascending, inplace=True, kind="mergesort")
 		self._view_order = [int(x) for x in tmp["_src"].tolist()]
 		self.layoutChanged.emit()
 
@@ -264,6 +274,8 @@ class PositionManagerWindow(QMainWindow):
 		self._selected_markers: list[Any] = []
 		self._point_label_artists: list[Any] = []
 		self._show_point_labels = True
+		self._show_labeled_points = True
+		self._visible_row_indices: set[int] = set()
 		self._basemap_mem_cache: dict[str, tuple[bytes, tuple[float, float, float, float]]] = {}
 		self._load_thread: QThread | None = None
 		self._load_worker: PositionLoadWorker | None = None
@@ -273,6 +285,7 @@ class PositionManagerWindow(QMainWindow):
 		self._pending_basemap_key: str | None = None
 		self._queued_basemap_request: tuple[tuple[float, float, float, float], int] | None = None
 		self._pending_close = False
+		self._active_threads: set[QThread] = set()
 		self._restore_after_reload: dict[str, Any] | None = None
 		self._skip_sort_once = False
 		self._min_zoom_span_m = 25.0
@@ -329,6 +342,8 @@ class PositionManagerWindow(QMainWindow):
 		self.min_count_filter_spin.setToolTip("Only show rows with count >= this value")
 		self.label_edit = QLineEdit()
 		self.label_edit.setPlaceholderText("Location label")
+		self.show_labeled_points_chk = QCheckBox("Show points with labels")
+		self.show_labeled_points_chk.setChecked(True)
 		form.addRow("Type", self.pos_type_combo)
 		form.addRow("ID", self.pos_id_spin)
 		form.addRow("Latitude", self.lat_spin)
@@ -336,6 +351,7 @@ class PositionManagerWindow(QMainWindow):
 		form.addRow("Count", self.count_spin)
 		form.addRow("Min count (table)", self.min_count_filter_spin)
 		form.addRow("Label", self.label_edit)
+		form.addRow("Map", self.show_labeled_points_chk)
 		editor_layout.addLayout(form)
 
 		button_row = QHBoxLayout()
@@ -381,6 +397,7 @@ class PositionManagerWindow(QMainWindow):
 		self.apply_label_btn.clicked.connect(self.apply_label_to_selected)
 		self.delete_btn.clicked.connect(self.delete_entry)
 		self.min_count_filter_spin.valueChanged.connect(self._on_min_count_filter_changed)
+		self.show_labeled_points_chk.toggled.connect(self._on_toggle_labeled_points)
 		self.zoom_in_btn.clicked.connect(self._zoom_in)
 		self.zoom_out_step_btn.clicked.connect(self._zoom_out)
 		self.zoom_out_btn.clicked.connect(self._zoom_full)
@@ -569,8 +586,10 @@ class PositionManagerWindow(QMainWindow):
 		thread.finished.connect(worker.deleteLater)
 		thread.finished.connect(thread.deleteLater)
 		thread.finished.connect(self._on_basemap_thread_finished)
+		thread.finished.connect(lambda t=thread: self._active_threads.discard(t))
 		self._basemap_thread = thread
 		self._basemap_worker = worker
+		self._active_threads.add(thread)
 		thread.start()
 
 	def _on_basemap_thread_finished(self):
@@ -611,8 +630,8 @@ class PositionManagerWindow(QMainWindow):
 		if self._basemap_artist is not None:
 			try:
 				self._basemap_artist.remove()
-			except Exception:
-				pass
+			except Exception as e:
+				logger.error(f"Failed to remove previous basemap artist: {e} ({type(e)})")
 		self._basemap_artist = self.map_ax.imshow(img, extent=ext, interpolation="bilinear", zorder=0)
 		self.map_canvas.draw()
 
@@ -643,6 +662,12 @@ class PositionManagerWindow(QMainWindow):
 		if self._selected_row_indices:
 			self._select_rows_by_indices(self._selected_row_indices, select_table=True, zoom_to_points=False)
 
+	def _on_toggle_labeled_points(self, checked: bool):
+		self._show_labeled_points = bool(checked)
+		self._plot_positions()
+		if self._selected_row_indices:
+			self._draw_selection_markers(self._selected_row_indices)
+
 	def load_positions(self):
 		self.selected_info.setText("Loading position data...")
 		if self._thread_is_running(self._load_thread):
@@ -660,8 +685,10 @@ class PositionManagerWindow(QMainWindow):
 		thread.finished.connect(worker.deleteLater)
 		thread.finished.connect(thread.deleteLater)
 		thread.finished.connect(self._on_load_thread_finished)
+		thread.finished.connect(lambda t=thread: self._active_threads.discard(t))
 		self._load_thread = thread
 		self._load_worker = worker
+		self._active_threads.add(thread)
 		thread.start()
 
 	def _on_load_thread_finished(self):
@@ -670,6 +697,25 @@ class PositionManagerWindow(QMainWindow):
 		if self._pending_close and not self._thread_is_running(self._basemap_thread):
 			self._pending_close = False
 			self.close()
+
+	def _shutdown_thread(self, thread: QThread | None, name: str):
+		if thread is None:
+			return
+		try:
+			if not thread.isRunning():
+				return
+		except RuntimeError:
+			# QThread QObject can already be deleted by Qt during shutdown.
+			return
+		if thread.currentThread() is thread:
+			return
+		logger.debug(f"PositionManagerWindow stopping thread '{name}'")
+		thread.requestInterruption()
+		thread.quit()
+		if not thread.wait(3000):
+			logger.warning(f"PositionManagerWindow thread '{name}' did not stop in time; terminating")
+			thread.terminate()
+			thread.wait(1000)
 
 	def _on_positions_loaded(self, df: pd.DataFrame):
 		self.df_positions = df.reset_index(drop=True)
@@ -717,10 +763,21 @@ class PositionManagerWindow(QMainWindow):
 		self.selected_info.setText("Failed to load positions")
 
 	def _plot_positions(self):
+		prev_bounds: tuple[float, float, float, float] | None = None
+		if self._full_bounds is not None:
+			try:
+				prev_bounds = self._current_view_bounds()
+			except Exception as e:
+				logger.error(f"Failed to capture previous map bounds: {e} ({type(e)})")
+				prev_bounds = None
+
+		# Remove explicit artists before clearing axes to avoid Matplotlib remove() errors.
+		self._clear_selection_markers()
+		self._clear_point_labels()
 		self.map_ax.clear()
 		self._scatter_index_map.clear()
 		self._basemap_artist = None
-		self._clear_point_labels()
+		self._visible_row_indices = set()
 
 		if self.df_positions.empty:
 			self._full_bounds = None
@@ -728,8 +785,20 @@ class PositionManagerWindow(QMainWindow):
 			self.map_canvas.draw_idle()
 			return
 
-		start_df = self.df_positions[self.df_positions["pos_type"] == "start"]
-		end_df = self.df_positions[self.df_positions["pos_type"] == "end"]
+		plot_df = self.df_positions
+		if not self._show_labeled_points:
+			plot_df = plot_df[plot_df["label"].astype(str).str.strip() == ""]
+
+		if plot_df.empty:
+			self._full_bounds = None
+			self.map_ax.set_title("No points for current map filter")
+			self.map_canvas.draw_idle()
+			return
+
+		self._visible_row_indices = set(int(i) for i in plot_df.index.tolist())
+
+		start_df = plot_df[plot_df["pos_type"] == "start"]
+		end_df = plot_df[plot_df["pos_type"] == "end"]
 
 		if not start_df.empty:
 			sizes = start_df["count"].clip(lower=1).astype(float) * 3.0 + 18.0
@@ -741,27 +810,30 @@ class PositionManagerWindow(QMainWindow):
 			sc_end = self.map_ax.scatter(end_df["x"], end_df["y"], s=sizes, c="tab:red", alpha=0.85, label="endpos", picker=6, zorder=2)
 			self._scatter_index_map[sc_end] = [int(i) for i in end_df.index.tolist()]
 
-		self._draw_point_labels()
+		self._draw_point_labels(plot_df)
 
-		xmin = float(self.df_positions["x"].min())
-		xmax = float(self.df_positions["x"].max())
-		ymin = float(self.df_positions["y"].min())
-		ymax = float(self.df_positions["y"].max())
+		xmin = float(plot_df["x"].min())
+		xmax = float(plot_df["x"].max())
+		ymin = float(plot_df["y"].min())
+		ymax = float(plot_df["y"].max())
 		dx = max(1.0, xmax - xmin)
 		dy = max(1.0, ymax - ymin)
 		pad_x = dx * 0.06
 		pad_y = dy * 0.06
 		self._full_bounds = (xmin - pad_x, xmax + pad_x, ymin - pad_y, ymax + pad_y)
 
-		self.map_ax.set_xlim(self._full_bounds[0], self._full_bounds[1])
-		self.map_ax.set_ylim(self._full_bounds[2], self._full_bounds[3])
+		if prev_bounds is not None:
+			self.map_ax.set_xlim(prev_bounds[0], prev_bounds[1])
+			self.map_ax.set_ylim(prev_bounds[2], prev_bounds[3])
+		else:
+			self.map_ax.set_xlim(self._full_bounds[0], self._full_bounds[1])
+			self.map_ax.set_ylim(self._full_bounds[2], self._full_bounds[3])
 		self.map_ax.set_title("Position Manager: Start/End points")
 		self.map_ax.legend(loc="upper right")
 		self.map_ax.set_axis_off()
 
-		zoom = self._recommended_zoom_for_bounds(self._full_bounds)
-		self._current_basemap_zoom = zoom
-		self._start_async_basemap(self._full_bounds, zoom)
+		# Preserve current zoom level on redraws; only zoom buttons should change it.
+		self._refresh_basemap_for_current_view(target_zoom=self._current_basemap_zoom)
 		self.map_canvas.draw_idle()
 
 	def _on_pick_point(self, event):
@@ -776,12 +848,18 @@ class PositionManagerWindow(QMainWindow):
 		if local_idx >= len(mapped_rows):
 			return
 		row_index = mapped_rows[local_idx]
-		additive = bool(getattr(getattr(event, "mouseevent", None), "key", None) in ("control", "ctrl", "shift"))
-		if additive and self._selected_row_indices:
-			rows = list(dict.fromkeys(self._selected_row_indices + [row_index]))
-			self._select_rows_by_indices(rows, select_table=True, zoom_to_points=False)
-		else:
+		mouse_key = str(getattr(getattr(event, "mouseevent", None), "key", "") or "").lower()
+		replace_selection = mouse_key in ("alt", "meta")
+		if replace_selection:
 			self._select_rows_by_indices([row_index], select_table=True, zoom_to_points=True)
+		elif row_index in self._selected_row_indices and len(self._selected_row_indices) > 1:
+			rows = [r for r in self._selected_row_indices if r != row_index]
+			self._select_rows_by_indices(rows, select_table=True, zoom_to_points=False)
+		elif row_index in self._selected_row_indices:
+			self._select_rows_by_indices([row_index], select_table=True, zoom_to_points=True)
+		else:
+			rows = list(dict.fromkeys(self._selected_row_indices + [row_index]))
+			self._select_rows_by_indices(rows, select_table=True, zoom_to_points=(len(rows) == 1))
 
 	def _on_table_selection_changed(self, selected, deselected):
 		if self.positions_table.selectionModel() is None or self._table_model is None:
@@ -806,27 +884,38 @@ class PositionManagerWindow(QMainWindow):
 		if not self._selected_markers:
 			return
 		for marker in self._selected_markers:
+			if marker is None or getattr(marker, "axes", None) is None:
+				continue
 			try:
 				marker.remove()
-			except Exception:
-				pass
+			except NotImplementedError as e:
+				logger.debug(f"Selection marker already detached during redraw: {e} ({type(e)})")
+			except Exception as e:
+				logger.error(f"Failed to remove selection marker: {e} ({type(e)})")
 		self._selected_markers = []
 
 	def _clear_point_labels(self):
 		if not self._point_label_artists:
 			return
 		for artist in self._point_label_artists:
+			if artist is None or getattr(artist, "axes", None) is None:
+				continue
 			try:
 				artist.remove()
-			except Exception:
-				pass
+			except NotImplementedError as e:
+				logger.debug(f"Point label artist already detached during redraw: {e} ({type(e)})")
+			except Exception as e:
+				logger.error(f"Failed to remove point label artist: {e} ({type(e)})")
 		self._point_label_artists = []
 
-	def _draw_point_labels(self):
+	def _draw_point_labels(self, source_df: pd.DataFrame | None = None):
 		self._clear_point_labels()
-		if not self._show_point_labels or self.df_positions.empty:
+		if not self._show_point_labels:
 			return
-		for row in self.df_positions.itertuples(index=False):
+		df = self.df_positions if source_df is None else source_df
+		if df.empty:
+			return
+		for row in df.itertuples(index=False):
 			pid = int(getattr(row, "pos_id", 0))
 			raw_label = str(getattr(row, "label", "")).strip()
 			text_value = f"{pid}: {raw_label}" if raw_label else f"{pid}"
@@ -869,6 +958,8 @@ class PositionManagerWindow(QMainWindow):
 	def _draw_selection_markers(self, row_indices: list[int]):
 		self._clear_selection_markers()
 		for idx in row_indices:
+			if self._visible_row_indices and idx not in self._visible_row_indices:
+				continue
 			if idx not in self.df_positions.index:
 				continue
 			row = self.df_positions.loc[idx]
@@ -1141,13 +1232,10 @@ class PositionManagerWindow(QMainWindow):
 		self.load_positions()
 
 	def closeEvent(self, event: QCloseEvent):
-		load_running = self._thread_is_running(self._load_thread)
-		basemap_running = self._thread_is_running(self._basemap_thread)
-		if load_running or basemap_running:
-			self._pending_close = True
-			self.hide()
-			event.ignore()
-			return
+		self._shutdown_thread(self._basemap_thread, "basemap")
+		self._shutdown_thread(self._load_thread, "positions_load")
+		for idx, t in enumerate(list(self._active_threads)):
+			self._shutdown_thread(t, f"active_{idx}")
 		super().closeEvent(event)
 
 def format_duration(seconds):
@@ -1481,15 +1569,23 @@ class MainWindow(QMainWindow):
 
 	def _clear_start_end_overlays(self):
 		for artist in self._start_end_overlay_artists:
+			if artist is None or getattr(artist, "axes", None) is None:
+				continue
 			try:
 				artist.remove()
-			except Exception:
-				pass
+			except NotImplementedError as e:
+				logger.debug(f"Start/end overlay artist already detached during redraw: {e} ({type(e)})")
+			except Exception as e:
+				logger.error(f"Failed to remove start/end overlay artist: {e} ({type(e)})")
 		for lbl in self._start_end_overlay_labels:
+			if lbl is None or getattr(lbl, "axes", None) is None:
+				continue
 			try:
 				lbl.remove()
-			except Exception:
-				pass
+			except NotImplementedError as e:
+				logger.debug(f"Start/end overlay label already detached during redraw: {e} ({type(e)})")
+			except Exception as e:
+				logger.error(f"Failed to remove start/end overlay label: {e} ({type(e)})")
 		self._start_end_overlay_artists = []
 		self._start_end_overlay_labels = []
 
@@ -2013,6 +2109,8 @@ class MainWindow(QMainWindow):
 		selected_metric = selected_metrics[0]
 		cached_payload: tuple[bytes, tuple[float, float, float, float]] | None = None
 
+		# Remove overlay artists before clearing axes so remove() has valid artist owners.
+		self._clear_start_end_overlays()
 		self.map_canvas.ax.clear()
 
 		# Get selected colormap
