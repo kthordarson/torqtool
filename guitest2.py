@@ -5,6 +5,8 @@ import geopandas as gpd
 from shapely.geometry import Point
 import sys
 import io
+import time
+import socket
 import numpy as np
 import pandas as pd
 from typing import Any, cast
@@ -47,6 +49,13 @@ def _resolve_torqlogs_columns(engine, requested_columns: list[str]) -> dict[str,
 		if actual:
 			resolved[requested] = actual
 	return resolved
+
+
+_ORPHAN_QTHREADS: set[QThread] = set()
+
+
+def _release_orphan_thread(thread: QThread) -> None:
+	_ORPHAN_QTHREADS.discard(thread)
 
 class MapCanvas(FigureCanvas):
 	def __init__(self, parent=None):
@@ -94,10 +103,29 @@ class BasemapWorker(QObject):
 			except Exception as e:
 				logger.warning(f"Basemap provider resolution failed: {e} ({type(e)})")
 				source = None
-			kwargs: dict[str, Any] = {"zoom": cast(Any, self.zoom)}
+			# Apply a per-socket timeout so tile fetches cannot block indefinitely.
+			# n_connections=4 fetches tiles in parallel; max_retries=1 allows one retry.
+			kwargs: dict[str, Any] = {
+				"zoom": cast(Any, self.zoom),
+				"wait": 0.5,
+				"max_retries": 1,
+				"n_connections": 4,
+			}
 			if source is not None:
 				kwargs["source"] = source
-			img, ext = ctx.bounds2img(west, south, east, north, **kwargs)
+			old_socket_timeout = socket.getdefaulttimeout()
+			socket.setdefaulttimeout(5.0)
+			try:
+				try:
+					img, ext = ctx.bounds2img(west, south, east, north, **kwargs)
+				except TypeError:
+					# Older contextily versions may not accept all timeout/retry kwargs.
+					fallback_kwargs: dict[str, Any] = {"zoom": cast(Any, self.zoom)}
+					if source is not None:
+						fallback_kwargs["source"] = source
+					img, ext = ctx.bounds2img(west, south, east, north, **fallback_kwargs)
+			finally:
+				socket.setdefaulttimeout(old_socket_timeout)
 			self.finished.emit(img, ext, self.request_id)
 			logger.debug(f"BasemapWorker finished fetching basemap for request_id={self.request_id}")
 		except Exception as e:
@@ -285,7 +313,9 @@ class PositionManagerWindow(QMainWindow):
 		self._pending_basemap_key: str | None = None
 		self._queued_basemap_request: tuple[tuple[float, float, float, float], int] | None = None
 		self._pending_close = False
+		self._pending_close_started_at: float | None = None
 		self._active_threads: set[QThread] = set()
+		self._basemap_status_artist = None
 		self._restore_after_reload: dict[str, Any] | None = None
 		self._skip_sort_once = False
 		self._min_zoom_span_m = 25.0
@@ -481,7 +511,8 @@ class PositionManagerWindow(QMainWindow):
 			return False
 		try:
 			return thread.isRunning()
-		except RuntimeError:
+		except RuntimeError as e:
+			logger.debug(f"RuntimeError calling thread.isRunning(): {e} ({type(e)})")
 			return False
 
 	def _stop_thread(self, attr_name: str, wait_ms: int = 1200) -> bool:
@@ -500,7 +531,8 @@ class PositionManagerWindow(QMainWindow):
 				return True
 			logger.warning(f"Thread {attr_name} still running after {wait_ms}ms; waiting for natural completion")
 			return False
-		except RuntimeError:
+		except RuntimeError as e:
+			logger.error(f"RuntimeError in _stop_thread for '{attr_name}': {e} ({type(e)})")
 			setattr(self, attr_name, None)
 			return True
 
@@ -557,12 +589,73 @@ class PositionManagerWindow(QMainWindow):
 				"ext_north": ext[3],
 			})
 
+	def _set_basemap_status(self, message: str | None):
+		if self._basemap_status_artist is not None:
+			if getattr(self._basemap_status_artist, "axes", None) is None:
+				self._basemap_status_artist = None
+			else:
+				try:
+					self._basemap_status_artist.remove()
+				except NotImplementedError:
+					# Artist can already be detached after axes clear.
+					pass
+				except Exception as e:
+					logger.debug(f"Could not remove basemap status artist: {e} ({type(e)})")
+				self._basemap_status_artist = None
+		if not message:
+			return
+		self._basemap_status_artist = self.map_ax.text(
+			0.01,
+			0.99,
+			message,
+			transform=self.map_ax.transAxes,
+			ha="left",
+			va="top",
+			fontsize=8,
+			color="black",
+			bbox={"boxstyle": "round,pad=0.2", "facecolor": "white", "alpha": 0.65, "edgecolor": "none"},
+			zorder=10,
+		)
+
+	def _cancel_basemap_thread(self, reason: str) -> bool:
+		thread = self._basemap_thread
+		if thread is None:
+			return True
+		try:
+			if not thread.isRunning():
+				self._active_threads.discard(thread)
+				self._basemap_thread = None
+				self._basemap_worker = None
+				return True
+		except RuntimeError as e:
+			logger.error(f"RuntimeError checking basemap thread.isRunning() ({reason}): {e} ({type(e)})")
+			self._active_threads.discard(thread)
+			self._basemap_thread = None
+			self._basemap_worker = None
+			return True
+		logger.warning(f"Cancelling PositionManager basemap worker ({reason})")
+		thread.requestInterruption()
+		thread.quit()
+		return False
+
+	def _on_basemap_timeout(self, request_id: int):
+		if request_id != self._basemap_request_id:
+			return
+		if not self._thread_is_running(self._basemap_thread):
+			return
+		logger.warning(f"PositionManager basemap request timed out (request_id={request_id}); cancelling stuck worker")
+		self._set_basemap_status("Basemap unavailable; showing points only")
+		# Cancel the stuck thread so the next refresh attempt can start a new worker.
+		self._cancel_basemap_thread("timeout")
+		self.map_canvas.draw_idle()
+
 	def _start_async_basemap(self, bounds: tuple[float, float, float, float], zoom: int):
 		cache_key = self._bounds_key(bounds, zoom)
 
 		cached = self._load_cached_basemap(cache_key)
 		if cached:
 			img, ext = cached
+			self._set_basemap_status('cached')
 			self._draw_basemap_from_bytes(img, ext)
 			return
 
@@ -574,6 +667,7 @@ class PositionManagerWindow(QMainWindow):
 		self._basemap_request_id += 1
 		request_id = self._basemap_request_id
 		self._pending_basemap_key = cache_key
+		self._set_basemap_status("Loading basemap...")
 
 		thread = QThread()
 		worker = BasemapWorker(bounds, zoom, request_id)
@@ -591,6 +685,7 @@ class PositionManagerWindow(QMainWindow):
 		self._basemap_worker = worker
 		self._active_threads.add(thread)
 		thread.start()
+		QTimer.singleShot(20000, lambda rid=request_id: self._on_basemap_timeout(rid))
 
 	def _on_basemap_thread_finished(self):
 		self._basemap_thread = None
@@ -600,7 +695,7 @@ class PositionManagerWindow(QMainWindow):
 			self._queued_basemap_request = None
 			self._start_async_basemap(bounds, zoom)
 			return
-		if self._pending_close and not self._thread_is_running(self._load_thread):
+		if self._pending_close and not self._any_worker_running():
 			self._pending_close = False
 			self.close()
 
@@ -612,19 +707,23 @@ class PositionManagerWindow(QMainWindow):
 		if self._pending_basemap_key is not None:
 			self._save_cached_basemap(self._pending_basemap_key, img, ext_typed)
 		self._current_basemap_zoom = max(3, min(18, self._current_basemap_zoom))
+		self._set_basemap_status(f'z: {self._current_basemap_zoom} id: {request_id}')
 		self._draw_basemap_array(img, ext_typed)
 
 	def _on_basemap_error(self, error: str, request_id: int):
 		if request_id != self._basemap_request_id:
 			return
 		logger.warning(f"PositionManager basemap load failed: {error}")
+		self._set_basemap_status(f"Basemap unavailable; showing points only: {error}")
 		# Fallback path: try a synchronous paint if async worker/provider failed.
 		if self._full_bounds is not None:
 			try:
 				ctx.add_basemap(self.map_ax, crs="EPSG:3857")
+				self._set_basemap_status(f"Basemap unavailable; showing points only: {error}")
 				self.map_canvas.draw()
 			except Exception as sync_err:
 				logger.warning(f"PositionManager sync basemap fallback failed: {sync_err} ({type(sync_err)})")
+				self.map_canvas.draw_idle()
 
 	def _draw_basemap_array(self, img, ext: tuple[float, float, float, float]):
 		if self._basemap_artist is not None:
@@ -694,28 +793,74 @@ class PositionManagerWindow(QMainWindow):
 	def _on_load_thread_finished(self):
 		self._load_thread = None
 		self._load_worker = None
-		if self._pending_close and not self._thread_is_running(self._basemap_thread):
+		if self._pending_close and not self._any_worker_running():
 			self._pending_close = False
 			self.close()
 
 	def _shutdown_thread(self, thread: QThread | None, name: str):
 		if thread is None:
-			return
+			return True
 		try:
 			if not thread.isRunning():
-				return
-		except RuntimeError:
-			# QThread QObject can already be deleted by Qt during shutdown.
-			return
+				return True
+		except RuntimeError as e:
+			logger.error(f"RuntimeError checking thread.isRunning() for '{name}': {e} ({type(e)})")
+			return True
 		if thread.currentThread() is thread:
-			return
-		logger.debug(f"PositionManagerWindow stopping thread '{name}'")
+			return False
+		logger.debug(f"PositionManagerWindow requesting stop for thread '{name}'")
 		thread.requestInterruption()
 		thread.quit()
-		if not thread.wait(3000):
-			logger.warning(f"PositionManagerWindow thread '{name}' did not stop in time; terminating")
-			thread.terminate()
-			thread.wait(1000)
+		return False
+
+	def _detach_running_threads_for_close(self):
+		threads: set[QThread] = set()
+		if self._thread_is_running(self._basemap_thread):
+			threads.add(cast(QThread, self._basemap_thread))
+		if self._thread_is_running(self._load_thread):
+			threads.add(cast(QThread, self._load_thread))
+		for t in list(self._active_threads):
+			if self._thread_is_running(t):
+				threads.add(t)
+		for t in threads:
+			_ORPHAN_QTHREADS.add(t)
+			try:
+				t.finished.connect(lambda thr=t: _release_orphan_thread(thr))
+			except RuntimeError as e:
+				logger.error(f"RuntimeError connecting finished signal to orphan release: {e} ({type(e)})")
+				_release_orphan_thread(t)
+		self._active_threads.clear()
+		self._basemap_thread = None
+		self._basemap_worker = None
+		self._load_thread = None
+		self._load_worker = None
+		self._queued_basemap_request = None
+
+	def _any_worker_running(self) -> bool:
+		if self._thread_is_running(self._basemap_thread) or self._thread_is_running(self._load_thread):
+			return True
+		for t in list(self._active_threads):
+			if self._thread_is_running(t):
+				return True
+		return False
+
+	def _retry_pending_close(self):
+		if not self._pending_close:
+			return
+		if self._any_worker_running():
+			started = self._pending_close_started_at
+			if started is not None and (time.monotonic() - started) >= 15.0:
+				logger.warning("PositionManagerWindow forcing close; detaching still-running worker threads")
+				self._detach_running_threads_for_close()
+				self._pending_close = False
+				self._pending_close_started_at = None
+				self.close()
+				return
+			QTimer.singleShot(250, self._retry_pending_close)
+			return
+		self._pending_close = False
+		self._pending_close_started_at = None
+		self.close()
 
 	def _on_positions_loaded(self, df: pd.DataFrame):
 		self.df_positions = df.reset_index(drop=True)
@@ -781,6 +926,7 @@ class PositionManagerWindow(QMainWindow):
 
 		if self.df_positions.empty:
 			self._full_bounds = None
+			self._set_basemap_status('no data')
 			self.map_ax.set_title("No start/end points available")
 			self.map_canvas.draw_idle()
 			return
@@ -791,6 +937,7 @@ class PositionManagerWindow(QMainWindow):
 
 		if plot_df.empty:
 			self._full_bounds = None
+			self._set_basemap_status('no points for current filter')
 			self.map_ax.set_title("No points for current map filter")
 			self.map_canvas.draw_idle()
 			return
@@ -832,9 +979,15 @@ class PositionManagerWindow(QMainWindow):
 		self.map_ax.legend(loc="upper right")
 		self.map_ax.set_axis_off()
 
-		# Preserve current zoom level on redraws; only zoom buttons should change it.
-		self._refresh_basemap_for_current_view(target_zoom=self._current_basemap_zoom)
-		self.map_canvas.draw_idle()
+		if prev_bounds is not None:
+			# Reload after an edit: preserve both the previous viewport and zoom level.
+			self._refresh_basemap_for_current_view(target_zoom=self._current_basemap_zoom)
+		else:
+			# Initial load: derive zoom from the actual data extent so we don't request
+			# hundreds of tiles for a continent-wide view.
+			self._refresh_basemap_for_current_view()
+		# Draw points immediately; basemap can arrive later.
+		self.map_canvas.draw()
 
 	def _on_pick_point(self, event):
 		artist = event.artist
@@ -1232,10 +1385,28 @@ class PositionManagerWindow(QMainWindow):
 		self.load_positions()
 
 	def closeEvent(self, event: QCloseEvent):
-		self._shutdown_thread(self._basemap_thread, "basemap")
-		self._shutdown_thread(self._load_thread, "positions_load")
-		for idx, t in enumerate(list(self._active_threads)):
-			self._shutdown_thread(t, f"active_{idx}")
+		if self._any_worker_running():
+			if not self._pending_close:
+				logger.warning("PositionManagerWindow close deferred until workers stop")
+				self._pending_close_started_at = time.monotonic()
+			elif self._pending_close_started_at is not None and (time.monotonic() - self._pending_close_started_at) >= 2.5:
+				logger.warning("PositionManagerWindow close forcing detach of stuck worker threads")
+				self._detach_running_threads_for_close()
+				self._pending_close = False
+				self._pending_close_started_at = None
+				super().closeEvent(event)
+				return
+			self._pending_close = True
+			self._cancel_basemap_thread("window-close")
+			self._shutdown_thread(self._basemap_thread, "basemap")
+			self._shutdown_thread(self._load_thread, "positions_load")
+			for idx, t in enumerate(list(self._active_threads)):
+				self._shutdown_thread(t, f"active_{idx}")
+			QTimer.singleShot(200, self._retry_pending_close)
+			event.ignore()
+			return
+		self._pending_close = False
+		self._pending_close_started_at = None
 		super().closeEvent(event)
 
 def format_duration(seconds):
@@ -2512,8 +2683,8 @@ class MainWindow(QMainWindow):
 		try:
 			if not thread.isRunning():
 				return
-		except RuntimeError:
-			# QThread QObject can already be deleted by Qt during shutdown.
+		except RuntimeError as e:
+			logger.error(f"RuntimeError checking thread.isRunning() for '{name}': {e} ({type(e)})")
 			return
 		if thread.currentThread() is thread:
 			return
