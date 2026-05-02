@@ -41,8 +41,9 @@ class BasemapWorker(QObject):
 			try:
 				try:
 					img, ext = ctx.bounds2img(west, south, east, north, **kwargs)
-				except TypeError:
+				except TypeError as e:
 					# Older contextily versions may not accept all timeout/retry kwargs.
+					logger.warning(f"Basemap fetch failed with TypeError: {e} ({type(e)})")
 					fallback_kwargs: dict[str, Any] = {"zoom": cast(Any, self.zoom)}
 					if source is not None:
 						fallback_kwargs["source"] = source

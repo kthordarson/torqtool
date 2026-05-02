@@ -1,6 +1,5 @@
 import io
 from typing import Any, cast
-
 import numpy as np
 import pandas as pd
 import geopandas as gpd
@@ -74,6 +73,7 @@ class MainWindow(QMainWindow):
 		self._mw_full_bounds: tuple[float, float, float, float] | None = None
 		self._mw_current_fileids: list[int] = []
 		self._mw_last_metric: str = 'speedobdkmh'
+		self._valid_metric_columns_cache: list[str] | None = None
 		self._initial_trips_thread: QThread | None = None
 		self._initial_trips_worker: TripListWorker | None = None
 		self._active_threads: set[QThread] = set()
@@ -161,8 +161,6 @@ class MainWindow(QMainWindow):
 		self.metric_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
 		mono_font = QFont("Monospace", 8)
 		self.metric_list.setFont(mono_font)
-		if self._resolve_actual_torqlogs_column('speedobdkmh'):
-			self.metric_list.addItem(QListWidgetItem('speedobdkmh'))
 		self.metric_list.itemSelectionChanged.connect(self.on_metric_selection_changed)
 		metric_panel_layout.addWidget(metric_title)
 		metric_panel_layout.addWidget(self.metric_list)
@@ -510,7 +508,16 @@ class MainWindow(QMainWindow):
 	def _get_selected_metric(self) -> str:
 		"""Return the first selected metric (used for map coloring)."""
 		metrics = self._get_selected_metrics()
-		return metrics[0] if metrics else 'speedobdkmh'
+		if metrics:
+			return metrics[0]
+
+		for row in range(self.metric_list.count()):
+			item = self.metric_list.item(row)
+			if item is not None and item.flags() & Qt.ItemFlag.ItemIsSelectable:
+				return item.text()
+
+		valid_metrics = self._get_metric_columns_with_valid_data()
+		return valid_metrics[0] if valid_metrics else ""
 
 	def _build_torqlogs_column_map(self) -> dict[str, str]:
 		inspector = inspect(self.engine)
@@ -576,17 +583,21 @@ class MainWindow(QMainWindow):
 		logger.error(error_message)
 
 	def _populate_metric_columns(self):
-		metric_columns = self._get_metric_columns_with_valid_data()
-		if not metric_columns:
-			return
-
 		prev_selected: set[str] = {
 			item.text() for item in self.metric_list.selectedItems()
 			if item.flags() & Qt.ItemFlag.ItemIsSelectable
 		}
-
 		self.metric_list.blockSignals(True)
 		self.metric_list.clear()
+		metric_columns = self._get_metric_columns_with_valid_data()
+		if not metric_columns:
+			empty_item = QListWidgetItem("No metrics with valid data")
+			empty_item.setFlags(Qt.ItemFlag.NoItemFlags)
+			empty_item.setForeground(Qt.GlobalColor.darkGray)
+			self.metric_list.addItem(empty_item)
+			self.metric_list.blockSignals(False)
+			logger.warning("No metrics with valid non-zero data were found in torqlogs")
+			return
 
 		grouped = group_metrics_by_category(metric_columns)
 		first_selectable: QListWidgetItem | None = None
@@ -615,14 +626,45 @@ class MainWindow(QMainWindow):
 		return self._torqlogs_norm_to_actual.get(_normalize_col_name(requested_column))
 
 	def _get_metric_columns_with_valid_data(self) -> list[str]:
-		# Fast startup path: list metrics that exist in torqlogs without full-table scans.
+		if self._valid_metric_columns_cache is not None:
+			return list(self._valid_metric_columns_cache)
+
 		requested = sorted(dataschema.keys())
-		valid_metrics: list[str] = []
+		numeric_cols = self._get_torqlogs_numeric_columns()
+		column_pairs: list[tuple[str, str]] = []
 		for req in requested:
 			actual = self._resolve_actual_torqlogs_column(req)
-			if actual:
-				valid_metrics.append(req)
-		return valid_metrics
+			if actual and actual in numeric_cols:
+				column_pairs.append((req, actual))
+
+		if not column_pairs:
+			self._valid_metric_columns_cache = []
+			return []
+
+		select_parts: list[str] = []
+		for idx, (_, actual_col) in enumerate(column_pairs):
+			# Include only metrics with at least one non-null, non-zero numeric value.
+			select_parts.append(
+				f'MAX(CASE WHEN "{actual_col}" IS NOT NULL THEN ABS(CAST("{actual_col}" AS FLOAT)) END) AS "_m_{idx}"'
+			)
+
+		query = f"SELECT {', '.join(select_parts)} FROM torqlogs"
+		valid_metrics: list[str] = []
+		try:
+			df = pd.read_sql(query, self.engine)
+			if not df.empty:
+				row = df.iloc[0]
+				for idx, (requested_col, _) in enumerate(column_pairs):
+					value = row.get(f"_m_{idx}")
+					if value is None or pd.isna(value):
+						continue
+					if float(value) > 0.0:
+						valid_metrics.append(requested_col)
+		except Exception as e:
+			logger.warning(f"Failed to evaluate valid metric columns: {e} ({type(e)})")
+
+		self._valid_metric_columns_cache = valid_metrics
+		return list(valid_metrics)
 
 	def refresh_plot(self):
 		"""Refresh the current plot with selected rows"""
@@ -912,7 +954,13 @@ class MainWindow(QMainWindow):
 
 		base_zoom = int(self.zoom_combo.currentText())
 		colormap_name = self._current_colormap
-		selected_metrics = self._get_selected_metrics() or ['speedobdkmh']
+		selected_metrics = self._get_selected_metrics()
+		if not selected_metrics:
+			fallback_metric = self._get_selected_metric()
+			selected_metrics = [fallback_metric] if fallback_metric else []
+		if not selected_metrics:
+			self.stats_label.setText("No valid metrics available for plotting")
+			return
 		selected_metric = selected_metrics[0]
 		cached_payload: tuple[bytes, tuple[float, float, float, float]] | None = None
 
@@ -945,6 +993,8 @@ class MainWindow(QMainWindow):
 		for idx, fileid in enumerate(fileids):
 			plot_data = self._load_trip_plot_data(fileid, selected_metric)
 			if not plot_data:
+				if self.args.debug:
+					logger.warning(f"No plot data for fileid={fileid}, metric={selected_metric}")
 				continue
 
 			x_vals = plot_data["x"]
@@ -1130,6 +1180,8 @@ class MainWindow(QMainWindow):
 			for t_idx, fileid in enumerate(fileids):
 				plot_data = self._load_trip_plot_data(fileid, metric_name)
 				if not plot_data or not plot_data.get('speed'):
+					if self.args.debug:
+						logger.warning(f"No data for timeseries plot: fileid={fileid}, metric={metric_name}")
 					continue
 				time_vals = plot_data.get('time') or []
 				metric_vals = plot_data['speed']

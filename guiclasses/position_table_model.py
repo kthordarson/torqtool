@@ -59,7 +59,8 @@ class PositionTableModel(QAbstractTableModel):
 	def view_row_for_source_row(self, source_row: int) -> int | None:
 		try:
 			return self._view_order.index(source_row)
-		except ValueError:
+		except ValueError as e:
+			logger.warning(f'{self} view_row_for_source_row: source_row {source_row} not found in view order: {e}')
 			return None
 
 	def source_rows(self) -> list[int]:
