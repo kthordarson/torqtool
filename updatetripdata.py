@@ -3,6 +3,7 @@
 import pandas as pd
 import argparse
 from datetime import datetime
+from pathlib import Path
 from loguru import logger
 import sys
 from sqlalchemy import (text, inspect)
@@ -40,6 +41,33 @@ def to_float(value: object) -> float | None:
         except (TypeError, ValueError):
             return None
     return None
+
+
+def _write_start_end_backup(session, backup_file: Path) -> None:
+	start_rows = session.execute(
+		text("SELECT startid, latstart, lonstart, count, label FROM startpos ORDER BY startid")
+	).mappings().all()
+	end_rows = session.execute(
+		text("SELECT endid, latend, lonend, count, label FROM endpos ORDER BY endid")
+	).mappings().all()
+
+	with backup_file.open("w", encoding="utf-8", errors="replace") as f:
+		f.write(f"# backup_at={datetime.now().isoformat()}\n")
+		f.write("# table=startpos\n")
+		f.write("startid | latstart | lonstart | count | label\n")
+		f.write("--------+----------+----------+-------+------\n")
+		for row in start_rows:
+			f.write(
+				f"{row['startid']} | {row['latstart']} | {row['lonstart']} | {row['count']} | {row['label'] if row['label'] is not None else ''}\n"
+			)
+
+		f.write("\n# table=endpos\n")
+		f.write("endid | latend | lonend | count | label\n")
+		f.write("------+--------+--------+-------+------\n")
+		for row in end_rows:
+			f.write(
+				f"{row['endid']} | {row['latend']} | {row['lonend']} | {row['count']} | {row['label'] if row['label'] is not None else ''}\n"
+			)
 
 def collect_db_filestats(args, todatabase=True, droptable=False):
 	# Incremental and batched filestats collection.
@@ -296,7 +324,8 @@ def collect_db_columnstats(args):
 		if nullratio > 0.9:
 			logger.warning(f"[{idx}/{len(column_pairs)}]  {requested_col}->{actual_col} nulls {nulls} ratio:  {nullratio} notnulls:{notnulls} nlr: {notnulls/total_rows}")
 		else:
-			logger.info(f"[{idx}/{len(column_pairs)}] {requested_col}->{actual_col} nulls {nulls} ratio:  {nullratio} notnulls:{notnulls} nlr: {notnulls/total_rows}")
+			pass
+			# logger.info(f"[{idx}/{len(column_pairs)}] {requested_col}->{actual_col} nulls {nulls} ratio:  {nullratio} notnulls:{notnulls} nlr: {notnulls/total_rows}")
 		tempres[actual_col] = {
 			"column_name": actual_col,
 			"nulls": nulls,
@@ -362,7 +391,7 @@ def collect_db_speeds(args):
 		session.rollback()
 	return 0
 
-def collect_db_startends(args, update_start=True, update_end=True):
+def collect_db_startends(args, update_start=True, update_end=True, force_refresh=False):
 	session = get_engine_session(args)
 	resolved = _resolve_schema_columns(session, ['gpstime', 'latitude', 'longitude'])
 	time_col = resolved.get('gpstime')
@@ -372,7 +401,50 @@ def collect_db_startends(args, update_start=True, update_end=True):
 		logger.error("Missing required torqlogs columns for start/end collection")
 		return -1
 
-	getstartendquery = f"""
+	if force_refresh:
+		logger.info(
+			f"Force refresh requested for start/end collection "
+			f"(update_start={update_start}, update_end={update_end})"
+		)
+		try:
+			backup_dir = Path(__file__).resolve().parent
+			ts = datetime.now().strftime("%Y%m%d%H%M%S")
+			backup_file = backup_dir / f"start_endpos_backup_before_force_refresh_{ts}.txt"
+			_write_start_end_backup(session, backup_file)
+			logger.info(f"Backed up start/end tables to {backup_file}")
+
+			if update_start:
+				session.execute(text("UPDATE torqfiles SET startid = NULL"))
+				session.execute(text("DELETE FROM startpos"))
+			if update_end:
+				session.execute(text("UPDATE torqfiles SET endid = NULL"))
+				session.execute(text("DELETE FROM endpos"))
+			session.commit()
+		except Exception as e:
+			logger.error(f"Failed forced reset for start/end collection: {e} ({type(e)})")
+			session.rollback()
+			return -1
+
+	if update_start and update_end:
+		pending_q = "SELECT fileid FROM torqfiles WHERE startid IS NULL OR endid IS NULL"
+	elif update_start:
+		pending_q = "SELECT fileid FROM torqfiles WHERE startid IS NULL"
+	elif update_end:
+		pending_q = "SELECT fileid FROM torqfiles WHERE endid IS NULL"
+	else:
+		logger.info("collect_db_startends called with nothing to update")
+		return 0
+
+	if args.db_limit:
+		pending_q += f" LIMIT {int(args.db_limit)}"
+	pending_fileids_rows = session.execute(text(pending_q)).all()
+	pending_fileids = [int(row[0]) for row in pending_fileids_rows if row and row[0] is not None]
+	if not pending_fileids:
+		logger.info("No new/pending torqfiles for start/end processing")
+		return 0
+	logger.info(f"Processing start/end info for {len(pending_fileids)} pending files")
+
+	getstartendquery_template = f"""
 SELECT fileid,
 	MAX(CASE WHEN rn_asc = 1 THEN "{lat_col}" END) AS latstart,
 	MAX(CASE WHEN rn_asc = 1 THEN "{lon_col}" END) AS lonstart,
@@ -384,66 +456,79 @@ FROM (
 		ROW_NUMBER() OVER (PARTITION BY fileid ORDER BY "{time_col}" DESC) AS rn_desc
 	FROM torqlogs
 	WHERE "{lat_col}" IS NOT NULL AND "{lon_col}" IS NOT NULL
+	  AND fileid IN ({{placeholders}})
 ) sub
 WHERE rn_asc = 1 OR rn_desc = 1
 GROUP BY fileid;
 """
 	gpsoffset = 0.001  # ~111 m clustering radius
 
-	rows = session.execute(text(getstartendquery)).mappings().all()
-	for pos in rows:
-		fileid = pos.get("fileid")
-		latstart = to_float(pos.get("latstart"))
-		lonstart = to_float(pos.get("lonstart"))
-		latend = to_float(pos.get("latend"))
-		lonend = to_float(pos.get("lonend"))
+	# Query start/end points in batches so we only process pending files.
+	batch_size = 300 if args.dbmode == "sqlite" else 1000
+	processed = 0
+	for batch_start in range(0, len(pending_fileids), batch_size):
+		batch = pending_fileids[batch_start:batch_start + batch_size]
+		placeholders = ", ".join(f":fid{i}" for i in range(len(batch)))
+		params = {f"fid{i}": int(fid) for i, fid in enumerate(batch)}
+		getstartendquery = getstartendquery_template.format(placeholders=placeholders)
+		rows = session.execute(text(getstartendquery), params).mappings().all()
 
-		torqfile = session.query(TorqFile).filter(TorqFile.fileid == fileid).first()
-		if not isinstance(torqfile, TorqFile):
-			logger.warning(f"no TorqFile for fileid={fileid}")
-			continue
+		for pos in rows:
+			fileid = pos.get("fileid")
+			latstart = to_float(pos.get("latstart"))
+			lonstart = to_float(pos.get("lonstart"))
+			latend = to_float(pos.get("latend"))
+			lonend = to_float(pos.get("lonend"))
 
-		if update_start and latstart is not None and lonstart is not None:
-			sp_matches = (
-				session.query(Startpos)
-				.filter(
-					Startpos.latstart.between(latstart - gpsoffset, latstart + gpsoffset),
-					Startpos.lonstart.between(lonstart - gpsoffset, lonstart + gpsoffset),
+			torqfile = session.query(TorqFile).filter(TorqFile.fileid == fileid).first()
+			if not isinstance(torqfile, TorqFile):
+				logger.warning(f"no TorqFile for fileid={fileid}")
+				continue
+
+			if update_start and torqfile.startid is None and latstart is not None and lonstart is not None:
+				sp_matches = (
+					session.query(Startpos)
+					.filter(
+						Startpos.latstart.between(latstart - gpsoffset, latstart + gpsoffset),
+						Startpos.lonstart.between(lonstart - gpsoffset, lonstart + gpsoffset),
+					)
+					.all()
 				)
-				.all()
-			)
-			if sp_matches:
-				sp = min(sp_matches, key=lambda s: haversine(latstart, lonstart, s.latstart, s.lonstart))
-				sp.count = int(sp.count or 0) + 1
-				logger.info(f"startpos match fileid={fileid} startid={sp.startid} count={sp.count}")
-			else:
-				sp = Startpos(latstart=latstart, lonstart=lonstart, count=1)
-				session.add(sp)
-				session.flush()
-				logger.info(f"new startpos fileid={fileid} startid={sp.startid} lat={latstart} lon={lonstart}")
-			torqfile.startid = sp.startid
+				if sp_matches:
+					sp = min(sp_matches, key=lambda s: haversine(latstart, lonstart, s.latstart, s.lonstart))
+					sp.count = int(sp.count or 0) + 1
+				else:
+					sp = Startpos(latstart=latstart, lonstart=lonstart, count=1)
+					session.add(sp)
+					session.flush()
+				torqfile.startid = sp.startid
 
-		if update_end and latend is not None and lonend is not None:
-			ep_matches = (
-				session.query(Endpos)
-				.filter(
-					Endpos.latend.between(latend - gpsoffset, latend + gpsoffset),
-					Endpos.lonend.between(lonend - gpsoffset, lonend + gpsoffset),
+			if update_end and torqfile.endid is None and latend is not None and lonend is not None:
+				ep_matches = (
+					session.query(Endpos)
+					.filter(
+						Endpos.latend.between(latend - gpsoffset, latend + gpsoffset),
+						Endpos.lonend.between(lonend - gpsoffset, lonend + gpsoffset),
+					)
+					.all()
 				)
-				.all()
-			)
-			if ep_matches:
-				ep = min(ep_matches, key=lambda e: haversine(latend, lonend, e.latend, e.lonend))
-				ep.count = int(ep.count or 0) + 1
-				logger.info(f"endpos match fileid={fileid} endid={ep.endid} count={ep.count}")
-			else:
-				ep = Endpos(latend=latend, lonend=lonend, count=1)
-				session.add(ep)
-				session.flush()
-				logger.info(f"new endpos fileid={fileid} endid={ep.endid} lat={latend} lon={lonend}")
-			torqfile.endid = ep.endid
+				if ep_matches:
+					ep = min(ep_matches, key=lambda e: haversine(latend, lonend, e.latend, e.lonend))
+					ep.count = int(ep.count or 0) + 1
+				else:
+					ep = Endpos(latend=latend, lonend=lonend, count=1)
+					session.add(ep)
+					session.flush()
+				torqfile.endid = ep.endid
+			processed += 1
+
+		logger.info(
+			f"start/end batch {batch_start // batch_size + 1}: "
+			f"{min(batch_start + len(batch), len(pending_fileids))}/{len(pending_fileids)} files"
+		)
 
 	session.commit()
+	logger.info(f"collect_db_startends completed for {processed} files")
 	return 0
 
 def main(args):
@@ -458,18 +543,18 @@ def main(args):
 	elif args.db_columnstats:
 		return collect_db_columnstats(args)
 	elif args.db_startpos:
-		return collect_db_startends(args, update_start=True, update_end=False)
+		return collect_db_startends(args, update_start=True, update_end=False, force_refresh=args.force_refresh)
 	elif args.db_endpos:
-		return collect_db_startends(args, update_start=False, update_end=True)
+		return collect_db_startends(args, update_start=False, update_end=True, force_refresh=args.force_refresh)
 	elif args.db_startends:
-		return collect_db_startends(args)
+		return collect_db_startends(args, force_refresh=args.force_refresh)
 	elif args.db_speed:
 		return collect_db_speeds(args)
 	elif args.db_allstats:
 		logger.debug("starting all stats")
 		dbspeed = collect_db_speeds(args)
 		logger.debug("all stats dbspeed done")
-		dbstartends = collect_db_startends(args)
+		dbstartends = collect_db_startends(args, force_refresh=args.force_refresh)
 		logger.debug("all stats dbstartends done")
 		dbcolumstats = collect_db_columnstats(args)
 		logger.debug("all stats dbcolumstats done")
@@ -528,6 +613,12 @@ if __name__ == "__main__":
 		help="db_allstats",
 		action="store_true",
 		dest="db_allstats",
+	)
+	parser.add_argument("--force_refresh",
+		default=False,
+		help="force full recalculation for start/end stats",
+		action="store_true",
+		dest="force_refresh",
 	)
 
 	args = parser.parse_args()
