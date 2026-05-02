@@ -225,12 +225,12 @@ def update_trip_and_file_for_fileid(conn, fileid):
 	"""
 	Update TorqFile and Torqtrips for a single fileid after inserting its data.
 	"""
-	resolved = _resolve_torqlogs_columns(conn, ["gpstime", "latitude", "longitude"])
-	time_col = resolved.get("gpstime")
-	lat_col = resolved.get("latitude")
-	lon_col = resolved.get("longitude")
+	resolved = _resolve_torqlogs_columns(conn, ['gpstime', 'latitude', 'longitude'])
+	time_col = resolved.get('gpstime')
+	lat_col = resolved.get('latitude')
+	lon_col = resolved.get('longitude')
 	if not (time_col and lat_col and lon_col):
-		logger.error(f"Missing required torqlogs columns for fileid {fileid}: {resolved}")
+		logger.error(f'Missing required torqlogs columns for fileid {fileid}: {resolved}')
 		return
 
 	# Aggregate trip info for this fileid

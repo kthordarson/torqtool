@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 from sqlalchemy import create_engine
 from PySide6.QtCore import QObject, Signal
-
+from loguru import logger
 
 class PositionLoadWorker(QObject):
 	finished = Signal(object)
@@ -18,14 +18,14 @@ class PositionLoadWorker(QObject):
 	def _to_web_mercator(df: pd.DataFrame) -> pd.DataFrame:
 		if df.empty:
 			return df
-		lon = df["longitude"].astype(float)
-		lat = df["latitude"].astype(float)
+		lon = df['longitude'].astype(float)
+		lat = df['latitude'].astype(float)
 		x = lon * 20037508.34 / 180.0
 		y = np.log(np.tan((90.0 + lat) * np.pi / 360.0)) / (np.pi / 180.0)
 		y = y * 20037508.34 / 180.0
 		df = df.copy()
-		df["x"] = x
-		df["y"] = y
+		df['x'] = x
+		df['y'] = y
 		return df
 
 	def run(self):
@@ -34,13 +34,17 @@ class PositionLoadWorker(QObject):
 			engine = create_engine(self.engine_url)
 
 			def _load_for_type(pos_type: str) -> pd.DataFrame:
-				table = "startpos" if pos_type == "start" else "endpos"
-				id_col = "startid" if pos_type == "start" else "endid"
+				table = 'startpos' if pos_type == 'start' else 'endpos'
+				id_col = 'startid' if pos_type == 'start' else 'endid'
 				query = f"SELECT {id_col} AS pos_id, latitude, longitude, count, label FROM {table}"
 				if self.trip_id is not None:
 					query += f" WHERE fileid = {int(self.trip_id)}"
-				df_part = pd.read_sql(query, engine)
-				df_part.insert(0, "pos_type", pos_type)
+				try:
+					df_part = pd.read_sql(query, engine)
+					df_part.insert(0, "pos_type", pos_type)
+				except Exception as e:
+					logger.error(f"Failed to load {pos_type} positions with query '{query}': {e} ({type(e)})")
+					df_part = pd.DataFrame()
 				return df_part
 
 			if self.pos_type in ("start", "end"):

@@ -6,7 +6,7 @@ class PositionTableModel(QAbstractTableModel):
 	def __init__(self, source_df: pd.DataFrame):
 		super().__init__()
 		self._source = source_df
-		self._columns = ["pos_type", "pos_id", "latitude", "longitude", "count", "label"]
+		self._columns = ['pos_type', 'pos_id', 'latitude', 'longitude', 'count', 'label']
 		self._view_order = list(source_df.index)
 
 	def rowCount(self, parent: QModelIndex | QPersistentModelIndex = QModelIndex()) -> int:
@@ -39,7 +39,7 @@ class PositionTableModel(QAbstractTableModel):
 		if col == "label":
 			tmp["_sort_key"] = tmp[col].fillna("").astype(str).str.casefold()
 			sort_col = "_sort_key"
-		elif col in ("pos_id", "latitude", "longitude", "count"):
+		elif col in ('pos_id', 'latitude', 'longitude', 'count'):
 			tmp["_sort_key"] = pd.to_numeric(tmp[col], errors="coerce")
 			sort_col = "_sort_key"
 		else:

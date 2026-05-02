@@ -71,7 +71,7 @@ class PositionManagerWindow(QMainWindow):
 		self._pick_debounce_timer.setInterval(80)
 		self._pick_debounce_timer.timeout.connect(self._flush_pending_pick)
 		self.df_positions = pd.DataFrame(
-			columns=["pos_type", "pos_id", "latitude", "longitude", "count", "label", "x", "y"]
+			columns=['pos_type', 'pos_id', 'latitude', 'longitude', 'count', 'label', 'x', 'y']
 		)
 
 		central = QWidget()
@@ -731,7 +731,7 @@ class PositionManagerWindow(QMainWindow):
 		self._start_new_entry()
 
 	def _on_positions_error(self, error_message: str):
-		logger.error(error_message)
+		logger.error(f'{self} {error_message}')
 		QMessageBox.warning(self, "Load Failed", error_message)
 		self.selected_info.setText("Failed to load positions")
 
@@ -941,12 +941,12 @@ class PositionManagerWindow(QMainWindow):
 		if not source_rows:
 			return
 
-		tmp = self.df_positions.loc[source_rows, ["latitude", "longitude"]].copy()
-		tmp["lat_bucket"] = tmp["latitude"].round(3)
-		tmp["lon_bucket"] = tmp["longitude"].round(3)
-		tmp["_src"] = tmp.index
-		tmp.sort_values(by=["lat_bucket", "lon_bucket", "latitude", "longitude"], inplace=True, kind="mergesort")
-		self._table_model.set_view_order([int(v) for v in tmp["_src"].tolist()])
+		tmp = self.df_positions.loc[source_rows, ['latitude', 'longitude']].copy()
+		tmp['lat_bucket'] = tmp['latitude'].round(3)
+		tmp['lon_bucket'] = tmp['longitude'].round(3)
+		tmp['_src'] = tmp.index
+		tmp.sort_values(by=['lat_bucket', 'lon_bucket', 'latitude', 'longitude'], inplace=True, kind='mergesort')
+		self._table_model.set_view_order([int(v) for v in tmp['_src'].tolist()])
 		# Custom sort — clear column-sort tracking so it isn't inadvertently restored.
 		self._current_sort_column = -1
 		self.positions_table.horizontalHeader().setSortIndicator(-1, Qt.SortOrder.AscendingOrder)
@@ -1004,15 +1004,15 @@ class PositionManagerWindow(QMainWindow):
 
 		if len(rows_data) == 1:
 			row_data = rows_data[0]
-			self.pos_type_combo.setCurrentText(str(row_data.get("pos_type", "start")))
-			self.pos_id_spin.setValue(int(row_data.get("pos_id", 1)))
-			self.lat_spin.setValue(float(row_data.get("latitude", 0.0)))
-			self.lon_spin.setValue(float(row_data.get("longitude", 0.0)))
-			self.count_spin.setValue(int(row_data.get("count", 0)))
-			self.label_edit.setText(str(row_data.get("label", "")))
+			self.pos_type_combo.setCurrentText(str(row_data.get('pos_type', 'start')))
+			self.pos_id_spin.setValue(int(row_data.get('pos_id', 1)))
+			self.lat_spin.setValue(float(row_data.get('latitude', 0.0)))
+			self.lon_spin.setValue(float(row_data.get('longitude', 0.0)))
+			self.count_spin.setValue(int(row_data.get('count', 0)))
+			self.label_edit.setText(str(row_data.get('label', '')))
 			self.selected_info.setText(
-				f"Selected {str(row_data.get('pos_type', ''))} point #{int(row_data.get('pos_id', 0))}  |  "
-				f"lat={float(row_data.get('latitude', 0.0)):.6f}, lon={float(row_data.get('longitude', 0.0)):.6f}, count={int(row_data.get('count', 0))}"
+				f'Selected {str(row_data.get('pos_type', ''))} point #{int(row_data.get('pos_id', 0))}  |  '
+				f'lat={float(row_data.get('latitude', 0.0)):.6f}, lon={float(row_data.get('longitude', 0.0)):.6f}, count={int(row_data.get('count', 0))}'
 			)
 			if zoom_to_points:
 				self._zoom_to_point(float(row_data.get("x", 0.0)), float(row_data.get("y", 0.0)))
