@@ -31,22 +31,11 @@ from ._helpers import _normalize_col_name, format_duration
 
 
 class MainWindow(QMainWindow):
-	def __init__(self, args):
+	def __init__(self, args, engine):
 		super().__init__()
 		self.args = args
+		self.engine = engine
 		self.setWindowTitle("TorqFiles Viewer")
-		# Set up SQLAlchemy session
-		# session = get_engine_session(args)
-		# self.engine = create_engine(args.dburl)
-		if self.args.dbmode == 'psql':
-			dburl = f"postgresql://{args.dbuser}:{args.dbpass}@{args.dbhost}/{args.dbname}"
-		elif self.args.dbmode == 'sqlite':
-			dburl = f"sqlite:///{args.dbfile}"
-		else:
-			dburl = ''
-		# engine = create_engine(dburl)
-		self.engine = create_engine(dburl)
-		database_init(self.engine)
 		self._torqlogs_norm_to_actual = self._build_torqlogs_column_map()
 		self._resolved_torqlogs_columns = {
 			name: actual
@@ -1028,9 +1017,10 @@ class MainWindow(QMainWindow):
 			"selected_metrics": list(selected_metrics),
 			"selected_metric": selected_metric,
 			"colormap_name": self._current_colormap,
+			"preview_trips": {},
 		}
 
-		self.stats_label.setText(f"Loading {len(fileids)} trips in background...")
+		self.stats_label.setText(f"Loading {len(fileids)} trips in background (paths first)...")
 		self.cancel_plot_load_btn.setEnabled(True)
 
 		thread = QThread()
@@ -1049,6 +1039,7 @@ class MainWindow(QMainWindow):
 		worker.finished.connect(self._on_async_plot_data_loaded)
 		worker.error.connect(self._on_async_plot_data_error)
 		worker.progress.connect(self._on_async_plot_data_progress)
+		worker.preview.connect(self._on_async_plot_preview)
 		worker.cancelled.connect(self._on_async_plot_data_cancelled)
 		worker.finished.connect(thread.quit)
 		worker.error.connect(thread.quit)
@@ -1062,6 +1053,71 @@ class MainWindow(QMainWindow):
 		self._plot_data_thread = thread
 		self._active_threads.add(thread)
 		thread.start()
+
+	def _on_async_plot_preview(self, request_id: int, payload: object):
+		if request_id != self._plot_data_request_id:
+			return
+		ctx = self._plot_request_context.get(request_id)
+		if not ctx:
+			return
+
+		preview_payload = cast(dict[str, Any], payload)
+		trip_payload = cast(dict[str, Any] | None, preview_payload.get("trip"))
+		done = int(preview_payload.get("done", 0) or 0)
+		total = int(preview_payload.get("total", 0) or 0)
+
+		preview_trips = cast(dict[int, dict[str, Any]], ctx.get("preview_trips", {}))
+		if trip_payload:
+			fid = int(trip_payload.get("fileid", -1))
+			if fid >= 0:
+				preview_trips[fid] = {
+					"fileid": fid,
+					"x": list(trip_payload.get("x", [])),
+					"y": list(trip_payload.get("y", [])),
+				}
+
+		if not preview_trips:
+			self.stats_label.setText(f"Loading trip paths... ({done}/{max(1, total)})")
+			return
+
+		self.map_canvas.ax.clear()
+		cmap_name = cast(str, ctx.get("colormap_name", self._current_colormap))
+		cmap = plt.colormaps[cmap_name]
+		cycle_length = 10 if cmap_name in ["tab10", "viridis", "plasma", "inferno", "magma"] else 9
+
+		all_x: list[float] = []
+		all_y: list[float] = []
+		for idx, trip in enumerate(preview_trips.values()):
+			x_vals = cast(list[float], trip.get("x", []))
+			y_vals = cast(list[float], trip.get("y", []))
+			if not x_vals or not y_vals:
+				continue
+			all_x.extend(x_vals)
+			all_y.extend(y_vals)
+			self.map_canvas.ax.scatter(
+				x_vals,
+				y_vals,
+				s=max(1.0, 5.0 * self._dot_size_scale),
+				c=[cmap(idx % cycle_length)],
+				alpha=0.65,
+				zorder=2,
+			)
+
+		bounds = self._compute_plot_bounds(all_x, all_y)
+		if bounds:
+			xmin, xmax, ymin, ymax = bounds
+			self.map_canvas.ax.set_xlim(xmin, xmax)
+			self.map_canvas.ax.set_ylim(ymin, ymax)
+			self._mw_full_bounds = bounds
+			self._mw_current_fileids = cast(list[int], ctx.get("fileids", []))
+			self._mw_last_metric = "preview"
+			self._overlay_start_end_points(cast(list[int], ctx.get("fileids", [])), bounds)
+
+		self.map_canvas.ax.set_title("Trip Map - loading paths preview")
+		self.map_canvas.ax.set_xlabel("Longitude")
+		self.map_canvas.ax.set_ylabel("Latitude")
+		self.map_canvas.draw_idle()
+		self.stats_label.setText(f"Loading trip paths... ({done}/{max(1, total)})")
 
 	def _cancel_async_plot_load(self):
 		thread = self._plot_data_thread
@@ -1179,7 +1235,7 @@ class MainWindow(QMainWindow):
 			return
 		done_safe = max(0, int(done))
 		total_safe = max(1, int(total))
-		self.stats_label.setText(f"Loading trips in background... ({done_safe}/{total_safe})")
+		self.stats_label.setText(f"Processing metrics in background... ({done_safe}/{total_safe})")
 
 	def _on_async_plot_data_error(self, request_id: int, error_message: str):
 		if request_id != self._plot_data_request_id:

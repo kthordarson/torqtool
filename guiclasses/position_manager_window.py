@@ -26,15 +26,16 @@ from ._helpers import _ORPHAN_QTHREADS, _release_orphan_thread
 
 
 class PositionManagerWindow(QMainWindow):
-	def __init__(self, engine, parent=None):
+	def __init__(self, args, engine, parent=None):
 		super().__init__(parent)
 		self.engine = engine
 		self.setWindowTitle("Position Manager")
 		self.resize(1240, 780)
+		self.args = args
 		if parent:
-			self.args = parent.args
+			self.parent_args = parent.args
 		else:
-			self.args = type("Args", (), {"debug": False})()
+			self.parent_args = type("Args", (), {"debug": False})()
 
 		self._selected_row_index: int | None = None
 		self._selected_row_indices: list[int] = []
@@ -1135,6 +1136,8 @@ class PositionManagerWindow(QMainWindow):
 				for idx, source_row in enumerate(clean_rows):
 					view_row = self._table_model.view_row_for_source_row(source_row)
 					if view_row is None:
+						if self.args.debug:
+							logger.warning(f"[{idx}/{len(clean_rows)}] Source row {source_row} not found in current table model for selection")
 						continue
 					model_index = self.positions_table.model().index(view_row, 0)
 					flags = QItemSelectionModel.SelectionFlag.Select | QItemSelectionModel.SelectionFlag.Rows

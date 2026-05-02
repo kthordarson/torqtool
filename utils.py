@@ -40,6 +40,9 @@ def get_parser(appname):
 	parser.add_argument("--sqlchunksize", nargs="?", default=1000, type=int, help="sql chunk", action="store")
 	parser.add_argument("-i", "--info", "--dbinfo", default=False, help="show dbinfo", action="store_true", dest="dbinfo", )
 	parser.add_argument("-d", "--debug", default=False, help="debugmode", action="store_true", dest="debug", )
+	if appname == "guitest2":
+		parser.add_argument('--main-window', help="start main window", action="store_true", dest='main_window', default=True)
+		parser.add_argument('--pos-manager', help="start position manager window", action="store_true", dest='pos_manager', default=False)
 	return parser
 
 class TimeZoneAwareConstructorWarning:
