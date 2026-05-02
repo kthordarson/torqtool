@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
 	QApplication, QMainWindow, QTableView, QVBoxLayout, QWidget, QSplitter,
 	QHBoxLayout, QLabel, QComboBox, QFrame, QListWidget, QListWidgetItem,
 	QScrollArea, QFileDialog, QMessageBox, QSlider, QLineEdit, QPushButton,
-	QFormLayout, QSpinBox, QDoubleSpinBox
+	QFormLayout, QSpinBox, QDoubleSpinBox, QInputDialog
 )
 from PySide6.QtWidgets import QCheckBox
 from PySide6.QtGui import QFont, QAction
@@ -399,6 +399,8 @@ class PositionManagerWindow(QMainWindow):
 		self.toggle_labels_btn.setCheckable(True)
 		self.toggle_labels_btn.setChecked(True)
 		self.sort_similar_btn = QPushButton("Sort by similar lat/lon")
+		self.reload_map_btn = QPushButton("Reload map")
+		self.reload_map_btn.setFixedSize(92, 26)
 		button_row.addWidget(self.refresh_btn)
 		button_row.addWidget(self.new_btn)
 		button_row.addWidget(self.save_btn)
@@ -409,6 +411,7 @@ class PositionManagerWindow(QMainWindow):
 		button_row.addWidget(self.zoom_out_btn)
 		button_row.addWidget(self.toggle_labels_btn)
 		button_row.addWidget(self.sort_similar_btn)
+		button_row.addWidget(self.reload_map_btn)
 		button_row.addStretch()
 		editor_layout.addLayout(button_row)
 
@@ -433,6 +436,7 @@ class PositionManagerWindow(QMainWindow):
 		self.zoom_out_btn.clicked.connect(self._zoom_full)
 		self.toggle_labels_btn.toggled.connect(self._on_toggle_labels)
 		self.sort_similar_btn.clicked.connect(self._sort_table_by_similar_latlon)
+		self.reload_map_btn.clicked.connect(self._force_reload_basemap)
 
 		self.load_positions()
 
@@ -497,6 +501,19 @@ class PositionManagerWindow(QMainWindow):
 		if span > 250:
 			return 16
 		return 17
+
+	def _force_reload_basemap(self):
+		"""Evict all PMW basemap cache entries and re-fetch from network."""
+		self._basemap_mem_cache.clear()
+		try:
+			with self.engine.begin() as conn:
+				conn.execute(text("DELETE FROM mapimagecache WHERE zoom = -2 AND colormap = 'posmgr'"))
+			logger.debug("PMW: cleared basemap cache from DB")
+		except Exception as e:
+			logger.warning(f"PMW: could not clear basemap cache from DB: {e} ({type(e)})")
+		self._cancel_basemap_thread("force_reload")
+		self._queued_basemap_request = None
+		self._refresh_basemap_for_current_view(target_zoom=self._current_basemap_zoom)
 
 	def _refresh_basemap_for_current_view(self, target_zoom: int | None = None):
 		bounds = self._current_view_bounds()
@@ -1463,6 +1480,10 @@ class MainWindow(QMainWindow):
 		self._show_all_start_end_points = False
 		self._start_end_overlay_artists: list[Any] = []
 		self._start_end_overlay_labels: list[Any] = []
+		self._start_end_overlay_data: list[dict[str, Any]] = []
+		self._mw_full_bounds: tuple[float, float, float, float] | None = None
+		self._mw_current_fileids: list[int] = []
+		self._mw_last_metric: str = 'speedobdkmh'
 		self._initial_trips_thread: QThread | None = None
 		self._initial_trips_worker: TripListWorker | None = None
 		self._active_threads: set[QThread] = set()
@@ -1475,6 +1496,7 @@ class MainWindow(QMainWindow):
 		splitter = QSplitter(Qt.Orientation.Horizontal)
 		self.table = QTableView()
 		self.map_canvas = MapCanvas()
+		self.map_canvas.mpl_connect("pick_event", self._on_map_pick)
 		self.timeseries_canvas = TimeSeriesCanvas()
 		logger.debug(f"Resolved torqlogs columns: {self._resolved_torqlogs_columns}")
 
@@ -1511,6 +1533,26 @@ class MainWindow(QMainWindow):
 		zoom_layout.addWidget(self.dot_size_slider)
 		zoom_layout.addWidget(self.dot_size_value_label)
 		zoom_layout.addWidget(self.toggle_all_start_end_btn)
+		self._mw_zoom_in_btn = QPushButton("Zoom in")
+		self._mw_zoom_in_btn.setFixedHeight(24)
+		self._mw_zoom_in_btn.setFixedWidth(68)
+		self._mw_zoom_in_btn.clicked.connect(self._mw_zoom_in)
+		self._mw_zoom_out_btn = QPushButton("Zoom out")
+		self._mw_zoom_out_btn.setFixedHeight(24)
+		self._mw_zoom_out_btn.setFixedWidth(72)
+		self._mw_zoom_out_btn.clicked.connect(self._mw_zoom_out)
+		self._mw_zoom_full_btn = QPushButton("Full")
+		self._mw_zoom_full_btn.setFixedHeight(24)
+		self._mw_zoom_full_btn.setFixedWidth(44)
+		self._mw_zoom_full_btn.clicked.connect(self._mw_zoom_full)
+		zoom_layout.addWidget(self._mw_zoom_in_btn)
+		zoom_layout.addWidget(self._mw_zoom_out_btn)
+		zoom_layout.addWidget(self._mw_zoom_full_btn)
+		self._mw_reload_map_btn = QPushButton("Reload map")
+		self._mw_reload_map_btn.setFixedHeight(24)
+		self._mw_reload_map_btn.setFixedWidth(84)
+		self._mw_reload_map_btn.clicked.connect(self._mw_force_reload_basemap)
+		zoom_layout.addWidget(self._mw_reload_map_btn)
 		zoom_layout.addStretch()
 		zoom_layout.setSpacing(10)
 		zoom_layout.setContentsMargins(10, 3, 10, 3)
@@ -1759,6 +1801,7 @@ class MainWindow(QMainWindow):
 				logger.error(f"Failed to remove start/end overlay label: {e} ({type(e)})")
 		self._start_end_overlay_artists = []
 		self._start_end_overlay_labels = []
+		self._start_end_overlay_data = []
 
 	def _load_selected_file_start_end_points(self, fileids: list[int]) -> list[dict[str, Any]]:
 		if not fileids:
@@ -1849,8 +1892,9 @@ class MainWindow(QMainWindow):
 			color = "limegreen" if pos_type == "start" else "darkorange"
 			alpha = 1.0 if is_selected_file else 0.55
 			size = 90 if is_selected_file else 48
-			artist = self.map_canvas.ax.scatter([x], [y], s=size, c=color, marker="D", edgecolors="black", linewidths=0.5, alpha=alpha, zorder=4)
+			artist = self.map_canvas.ax.scatter([x], [y], s=size, c=color, marker="D", edgecolors="black", linewidths=0.5, alpha=alpha, zorder=4, picker=8)
 			self._start_end_overlay_artists.append(artist)
+			self._start_end_overlay_data.append(dict(point))
 			label_artist = self.map_canvas.ax.annotate(
 				full_label,
 				(x, y),
@@ -2346,6 +2390,9 @@ class MainWindow(QMainWindow):
 			xmin, xmax, ymin, ymax = bounds
 			self.map_canvas.ax.set_xlim(xmin, xmax)
 			self.map_canvas.ax.set_ylim(ymin, ymax)
+			self._mw_full_bounds = bounds
+			self._mw_current_fileids = list(fileids)
+			self._mw_last_metric = selected_metric
 
 		self._overlay_start_end_points(fileids, bounds)
 
@@ -2695,6 +2742,109 @@ class MainWindow(QMainWindow):
 			logger.warning(f"Thread '{name}' did not stop in time; terminating")
 			thread.terminate()
 			thread.wait(1000)
+
+	def _mw_force_reload_basemap(self):
+		"""Evict DB cache for the current trip selection and re-fetch basemap from network."""
+		if not self._mw_current_fileids:
+			return
+		files_part = ",".join(str(fid) for fid in sorted(self._mw_current_fileids))
+		pattern = f"{self._map_cache_version}|%{files_part}"
+		try:
+			with self.engine.begin() as conn:
+				conn.execute(
+					text("DELETE FROM mapimagecache WHERE selection_key LIKE :pattern"),
+					{"pattern": pattern},
+				)
+			logger.debug(f"MW: cleared map cache for fileids={self._mw_current_fileids}")
+		except Exception as e:
+			logger.warning(f"MW: could not clear map cache from DB: {e} ({type(e)})")
+		self.refresh_plot()
+
+	def _mw_zoom_in(self):
+		ax = self.map_canvas.ax
+		x0, x1 = ax.get_xlim()
+		y0, y1 = ax.get_ylim()
+		cx = (x0 + x1) / 2.0
+		cy = (y0 + y1) / 2.0
+		span_x = (x1 - x0) * 0.65
+		span_y = (y1 - y0) * 0.65
+		new_half_x = max(span_x, 1.0) / 2.0
+		new_half_y = max(span_y, 1.0) / 2.0
+		ax.set_xlim(cx - new_half_x, cx + new_half_x)
+		ax.set_ylim(cy - new_half_y, cy + new_half_y)
+		self.map_canvas.draw_idle()
+
+	def _mw_zoom_out(self):
+		ax = self.map_canvas.ax
+		x0, x1 = ax.get_xlim()
+		y0, y1 = ax.get_ylim()
+		cx = (x0 + x1) / 2.0
+		cy = (y0 + y1) / 2.0
+		new_half_x = (x1 - x0) * 0.725
+		new_half_y = (y1 - y0) * 0.725
+		if self._mw_full_bounds:
+			bx0, bx1, by0, by1 = self._mw_full_bounds
+			max_half_x = (bx1 - bx0) * 1.0
+			max_half_y = (by1 - by0) * 1.0
+			new_half_x = min(new_half_x, max_half_x)
+			new_half_y = min(new_half_y, max_half_y)
+		ax.set_xlim(cx - new_half_x, cx + new_half_x)
+		ax.set_ylim(cy - new_half_y, cy + new_half_y)
+		self.map_canvas.draw_idle()
+
+	def _mw_zoom_full(self):
+		if not self._mw_full_bounds:
+			return
+		xmin, xmax, ymin, ymax = self._mw_full_bounds
+		ax = self.map_canvas.ax
+		ax.set_xlim(xmin, xmax)
+		ax.set_ylim(ymin, ymax)
+		self.map_canvas.draw_idle()
+
+	def _on_map_pick(self, event):
+		if event.artist not in self._start_end_overlay_artists:
+			return
+		try:
+			idx = self._start_end_overlay_artists.index(event.artist)
+		except ValueError:
+			return
+		if idx >= len(self._start_end_overlay_data):
+			return
+		point = self._start_end_overlay_data[idx]
+		pos_type = str(point.get("pos_type", ""))
+		pos_id = int(point.get("pos_id", 0))
+		current_label = str(point.get("label", "") or "")
+		prefix = "S" if pos_type == "start" else "E"
+		new_label, ok = QInputDialog.getText(
+			self,
+			f"Edit label — {prefix}{pos_id}",
+			f"Label for {pos_type} point #{pos_id}:",
+			QLineEdit.EchoMode.Normal,
+			current_label,
+		)
+		if not ok:
+			return
+		if self._save_start_end_label(pos_type, pos_id, new_label):
+			point["label"] = new_label.strip()
+			rows = sorted(set(index.row() for index in self.table.selectionModel().selectedRows()))
+			if rows:
+				self._plot_refresh_timer.start(50)
+
+	def _save_start_end_label(self, pos_type: str, pos_id: int, label: str) -> bool:
+		table = "startpos" if pos_type == "start" else "endpos"
+		id_col = "startid" if pos_type == "start" else "endid"
+		label_value: str | None = label.strip() or None
+		try:
+			with self.engine.begin() as conn:
+				conn.execute(
+					text(f"UPDATE {table} SET label = :label WHERE {id_col} = :pos_id"),
+					{"label": label_value, "pos_id": pos_id},
+				)
+			logger.debug(f"Saved label for {pos_type} #{pos_id}: '{label_value}'")
+			return True
+		except Exception as e:
+			logger.error(f"Failed to save label for {pos_type} #{pos_id}: {e} ({type(e)})")
+			return False
 
 	def closeEvent(self, event: QCloseEvent):
 		self._shutdown_thread(self._basemap_thread, "basemap")
