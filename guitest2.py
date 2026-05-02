@@ -14,12 +14,12 @@ from PySide6.QtWidgets import (
 	QApplication, QMainWindow, QTableView, QVBoxLayout, QWidget, QSplitter,
 	QHBoxLayout, QLabel, QComboBox, QFrame, QListWidget, QListWidgetItem,
 	QScrollArea, QFileDialog, QMessageBox, QSlider, QLineEdit, QPushButton,
-	QFormLayout, QSpinBox, QDoubleSpinBox, QInputDialog
+	QFormLayout, QSpinBox, QDoubleSpinBox, QInputDialog, QCompleter
 )
 from PySide6.QtWidgets import QCheckBox
 from PySide6.QtGui import QFont, QAction
 from PySide6.QtWidgets import QAbstractItemView
-from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex, QPersistentModelIndex, QTimer, QObject, Signal, QThread, QItemSelectionModel
+from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex, QPersistentModelIndex, QTimer, QObject, Signal, QThread, QItemSelectionModel, QStringListModel
 from PySide6.QtGui import QCloseEvent
 from sqlalchemy import create_engine, text, inspect
 from sqlalchemy.orm import sessionmaker
@@ -317,10 +317,21 @@ class PositionManagerWindow(QMainWindow):
 		self._active_threads: set[QThread] = set()
 		self._basemap_status_artist = None
 		self._restore_after_reload: dict[str, Any] | None = None
-		self._skip_sort_once = False
 		self._min_zoom_span_m = 25.0
 		self._current_basemap_zoom = 8
 		self._min_count_filter = 0
+		self._current_sort_column: int = -1
+		self._current_sort_order: Qt.SortOrder = Qt.SortOrder.AscendingOrder
+		self._applying_sort: bool = False
+		self._label_filter_active: bool = False
+		self._label_filter_text: str = ""
+		self._hide_labeled_active: bool = False
+		self._updating_selection: bool = False
+		self._pending_pick_call: tuple[list[int], bool] | None = None
+		self._pick_debounce_timer: QTimer = QTimer(self)
+		self._pick_debounce_timer.setSingleShot(True)
+		self._pick_debounce_timer.setInterval(80)
+		self._pick_debounce_timer.timeout.connect(self._flush_pending_pick)
 		self.df_positions = pd.DataFrame(
 			columns=["pos_type", "pos_id", "latitude", "longitude", "count", "label", "x", "y"]
 		)
@@ -372,6 +383,21 @@ class PositionManagerWindow(QMainWindow):
 		self.min_count_filter_spin.setToolTip("Only show rows with count >= this value")
 		self.label_edit = QLineEdit()
 		self.label_edit.setPlaceholderText("Location label")
+		self._label_completer = QCompleter([], self)
+		self._label_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+		self._label_completer.setFilterMode(Qt.MatchFlag.MatchContains)
+		self.label_edit.setCompleter(self._label_completer)
+		self.label_filter_chk = QCheckBox("Filter table by label")
+		self.label_filter_edit = QLineEdit()
+		self.label_filter_edit.setPlaceholderText("Text to match (empty = has any label)")
+		self.label_filter_edit.setEnabled(False)
+		_label_filter_row = QWidget()
+		_label_filter_layout = QHBoxLayout(_label_filter_row)
+		_label_filter_layout.setContentsMargins(0, 0, 0, 0)
+		self.hide_labeled_chk = QCheckBox("Hide labeled")
+		_label_filter_layout.addWidget(self.hide_labeled_chk)
+		_label_filter_layout.addWidget(self.label_filter_chk)
+		_label_filter_layout.addWidget(self.label_filter_edit, 1)
 		self.show_labeled_points_chk = QCheckBox("Show points with labels")
 		self.show_labeled_points_chk.setChecked(True)
 		form.addRow("Type", self.pos_type_combo)
@@ -381,6 +407,7 @@ class PositionManagerWindow(QMainWindow):
 		form.addRow("Count", self.count_spin)
 		form.addRow("Min count (table)", self.min_count_filter_spin)
 		form.addRow("Label", self.label_edit)
+		form.addRow("Label filter", _label_filter_row)
 		form.addRow("Map", self.show_labeled_points_chk)
 		editor_layout.addLayout(form)
 
@@ -437,6 +464,11 @@ class PositionManagerWindow(QMainWindow):
 		self.toggle_labels_btn.toggled.connect(self._on_toggle_labels)
 		self.sort_similar_btn.clicked.connect(self._sort_table_by_similar_latlon)
 		self.reload_map_btn.clicked.connect(self._force_reload_basemap)
+		self.positions_table.horizontalHeader().sortIndicatorChanged.connect(self._on_sort_indicator_changed)
+		self.hide_labeled_chk.toggled.connect(self._on_label_filter_changed)
+		self.label_filter_chk.toggled.connect(self._on_label_filter_changed)
+		self.label_filter_edit.textChanged.connect(self._on_label_filter_changed)
+		self.label_edit.returnPressed.connect(self._on_label_return_pressed)
 
 		self.load_positions()
 
@@ -737,7 +769,7 @@ class PositionManagerWindow(QMainWindow):
 			try:
 				ctx.add_basemap(self.map_ax, crs="EPSG:3857")
 				self._set_basemap_status(f"Basemap unavailable; showing points only: {error}")
-				self.map_canvas.draw()
+				self.map_canvas.draw_idle()
 			except Exception as sync_err:
 				logger.warning(f"PositionManager sync basemap fallback failed: {sync_err} ({type(sync_err)})")
 				self.map_canvas.draw_idle()
@@ -749,7 +781,7 @@ class PositionManagerWindow(QMainWindow):
 			except Exception as e:
 				logger.error(f"Failed to remove previous basemap artist: {e} ({type(e)})")
 		self._basemap_artist = self.map_ax.imshow(img, extent=ext, interpolation="bilinear", zorder=0)
-		self.map_canvas.draw()
+		self.map_canvas.draw_idle()
 
 	def _draw_basemap_from_bytes(self, image_bytes: bytes, ext: tuple[float, float, float, float]):
 		img = mpimg.imread(io.BytesIO(image_bytes), format="png")
@@ -758,17 +790,29 @@ class PositionManagerWindow(QMainWindow):
 	def _set_table_model(self):
 		filtered_df = self.df_positions
 		if self._min_count_filter > 0 and not self.df_positions.empty:
-			filtered_df = self.df_positions[self.df_positions["count"] >= self._min_count_filter]
+			filtered_df = filtered_df[filtered_df["count"] >= self._min_count_filter]
+		if self._hide_labeled_active and not filtered_df.empty:
+			filtered_df = filtered_df[filtered_df["label"].astype(str).str.strip() == ""]
+		if self._label_filter_active and not filtered_df.empty:
+			if self._label_filter_text:
+				mask = filtered_df["label"].astype(str).str.contains(
+					self._label_filter_text, case=False, na=False, regex=False
+				)
+				filtered_df = filtered_df[mask]
+			else:
+				filtered_df = filtered_df[filtered_df["label"].astype(str).str.strip() != ""]
 		self._table_model = PositionTableModel(filtered_df)
 		self.positions_table.setModel(self._table_model)
 		self.positions_table.horizontalHeader().setStretchLastSection(True)
-		if self._skip_sort_once:
-			self.positions_table.setSortingEnabled(False)
-			self._skip_sort_once = False
-		else:
-			self.positions_table.setSortingEnabled(True)
+		self.positions_table.setSortingEnabled(True)
 		self.positions_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
 		self.positions_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+		if self._current_sort_column >= 0:
+			self._applying_sort = True
+			try:
+				self.positions_table.sortByColumn(self._current_sort_column, self._current_sort_order)
+			finally:
+				self._applying_sort = False
 		if self.positions_table.selectionModel() is not None:
 			self.positions_table.selectionModel().selectionChanged.connect(self._on_table_selection_changed)
 
@@ -777,6 +821,34 @@ class PositionManagerWindow(QMainWindow):
 		self._set_table_model()
 		if self._selected_row_indices:
 			self._select_rows_by_indices(self._selected_row_indices, select_table=True, zoom_to_points=False)
+
+	def _on_sort_indicator_changed(self, logical_index: int, order: Qt.SortOrder) -> None:
+		if self._applying_sort:
+			return
+		self._current_sort_column = logical_index
+		self._current_sort_order = order
+
+	def _on_label_filter_changed(self) -> None:
+		self._hide_labeled_active = self.hide_labeled_chk.isChecked()
+		self._label_filter_active = self.label_filter_chk.isChecked()
+		self._label_filter_text = self.label_filter_edit.text().strip()
+		self.label_filter_edit.setEnabled(self._label_filter_active)
+		self._set_table_model()
+		if self._selected_row_indices:
+			self._select_rows_by_indices(self._selected_row_indices, select_table=True, zoom_to_points=False)
+
+	def _update_label_completer(self) -> None:
+		labels = sorted(set(
+			str(v) for v in self.df_positions["label"].dropna()
+			if str(v).strip()
+		))
+		self._label_completer.setModel(QStringListModel(labels, self._label_completer))
+
+	def _on_label_return_pressed(self) -> None:
+		if self._selected_row_indices:
+			self.apply_label_to_selected()
+		elif self._selected_row_index is not None:
+			self.save_entry()
 
 	def _on_toggle_labeled_points(self, checked: bool):
 		self._show_labeled_points = bool(checked)
@@ -885,6 +957,7 @@ class PositionManagerWindow(QMainWindow):
 		self._selected_row_indices = []
 		self._clear_selection_markers()
 		self._set_table_model()
+		self._update_label_completer()
 		self._plot_positions()
 
 		restore_state = self._restore_after_reload
@@ -1004,7 +1077,7 @@ class PositionManagerWindow(QMainWindow):
 			# hundreds of tiles for a continent-wide view.
 			self._refresh_basemap_for_current_view()
 		# Draw points immediately; basemap can arrive later.
-		self.map_canvas.draw()
+		self.map_canvas.draw_idle()
 
 	def _on_pick_point(self, event):
 		artist = event.artist
@@ -1021,17 +1094,31 @@ class PositionManagerWindow(QMainWindow):
 		mouse_key = str(getattr(getattr(event, "mouseevent", None), "key", "") or "").lower()
 		replace_selection = mouse_key in ("alt", "meta")
 		if replace_selection:
-			self._select_rows_by_indices([row_index], select_table=True, zoom_to_points=True)
+			pending_rows, pending_zoom = [row_index], True
 		elif row_index in self._selected_row_indices and len(self._selected_row_indices) > 1:
-			rows = [r for r in self._selected_row_indices if r != row_index]
-			self._select_rows_by_indices(rows, select_table=True, zoom_to_points=False)
+			pending_rows, pending_zoom = [r for r in self._selected_row_indices if r != row_index], False
 		elif row_index in self._selected_row_indices:
-			self._select_rows_by_indices([row_index], select_table=True, zoom_to_points=True)
+			pending_rows, pending_zoom = [row_index], True
 		else:
-			rows = list(dict.fromkeys(self._selected_row_indices + [row_index]))
-			self._select_rows_by_indices(rows, select_table=True, zoom_to_points=(len(rows) == 1))
+			pending_rows = list(dict.fromkeys(self._selected_row_indices + [row_index]))
+			pending_zoom = len(pending_rows) == 1
+		# Debounce rapid picks: store the latest args and restart an 80 ms timer so that
+		# only the last click in a fast sequence triggers a selection update + map zoom.
+		self._pending_pick_call = (pending_rows, pending_zoom)
+		self._pick_debounce_timer.start()
+
+	def _flush_pending_pick(self):
+		if self._pending_pick_call is None:
+			return
+		rows, zoom = self._pending_pick_call
+		self._pending_pick_call = None
+		self._select_rows_by_indices(rows, select_table=True, zoom_to_points=zoom)
 
 	def _on_table_selection_changed(self, selected, deselected):
+		# Ignore selection-changed signals that we ourselves triggered while updating the
+		# table inside _select_rows_by_indices — prevents a re-entrant cascade.
+		if self._updating_selection:
+			return
 		if self.positions_table.selectionModel() is None or self._table_model is None:
 			return
 		rows = self.positions_table.selectionModel().selectedRows()
@@ -1122,6 +1209,9 @@ class PositionManagerWindow(QMainWindow):
 		tmp["_src"] = tmp.index
 		tmp.sort_values(by=["lat_bucket", "lon_bucket", "latitude", "longitude"], inplace=True, kind="mergesort")
 		self._table_model.set_view_order([int(v) for v in tmp["_src"].tolist()])
+		# Custom sort — clear column-sort tracking so it isn't inadvertently restored.
+		self._current_sort_column = -1
+		self.positions_table.horizontalHeader().setSortIndicator(-1, Qt.SortOrder.AscendingOrder)
 		if self._selected_row_indices:
 			self._select_rows_by_indices(self._selected_row_indices, select_table=True, zoom_to_points=False)
 
@@ -1152,16 +1242,20 @@ class PositionManagerWindow(QMainWindow):
 
 		if select_table and self.positions_table.selectionModel() is not None and self._table_model is not None:
 			selection_model = self.positions_table.selectionModel()
-			selection_model.clearSelection()
-			for idx, source_row in enumerate(clean_rows):
-				view_row = self._table_model.view_row_for_source_row(source_row)
-				if view_row is None:
-					continue
-				model_index = self.positions_table.model().index(view_row, 0)
-				flags = QItemSelectionModel.SelectionFlag.Select | QItemSelectionModel.SelectionFlag.Rows
-				selection_model.select(model_index, flags)
-				if idx == 0:
-					self.positions_table.scrollTo(model_index)
+			self._updating_selection = True
+			try:
+				selection_model.clearSelection()
+				for idx, source_row in enumerate(clean_rows):
+					view_row = self._table_model.view_row_for_source_row(source_row)
+					if view_row is None:
+						continue
+					model_index = self.positions_table.model().index(view_row, 0)
+					flags = QItemSelectionModel.SelectionFlag.Select | QItemSelectionModel.SelectionFlag.Rows
+					selection_model.select(model_index, flags)
+					if idx == 0:
+						self.positions_table.scrollTo(model_index)
+			finally:
+				self._updating_selection = False
 
 		rows_data = []
 		for ridx in clean_rows:
@@ -1313,7 +1407,6 @@ class PositionManagerWindow(QMainWindow):
 				for r in rows_data
 			],
 		}
-		self._skip_sort_once = True
 		# QMessageBox.information(self, "Updated", f"Applied label to {len(rows_data)} selected points.")
 		self.load_positions()
 
@@ -1364,7 +1457,6 @@ class PositionManagerWindow(QMainWindow):
 			"zoom": self._current_basemap_zoom,
 			"selected_keys": [{"pos_type": pos_type, "pos_id": pos_id}],
 		}
-		self._skip_sort_once = True
 		# QMessageBox.information(self, "Saved", "Position entry saved.")
 		self.load_positions()
 
