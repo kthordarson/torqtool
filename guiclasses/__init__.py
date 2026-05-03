@@ -1,14 +1,28 @@
-from .map_canvas import MapCanvas
-from .time_series_canvas import TimeSeriesCanvas
-from .basemap_worker import BasemapWorker
-from .trip_list_worker import TripListWorker
-from .position_table_model import PositionTableModel
-from .position_load_worker import PositionLoadWorker
-from .position_manager_window import PositionManagerWindow
-from .main_window import MainWindow
-from .start_end_window import StartEndWindow
-from .app_tabs_window import AppTabsWindow
-from .pandas_model import PandasModel
+from importlib import import_module
+
+_LAZY_EXPORTS = {
+	"MapCanvas": "guiclasses.map_canvas",
+	"TimeSeriesCanvas": "guiclasses.time_series_canvas",
+	"BasemapWorker": "guiclasses.basemap_worker",
+	"TripListWorker": "guiclasses.trip_list_worker",
+	"PositionTableModel": "guiclasses.position_table_model",
+	"PositionLoadWorker": "guiclasses.position_load_worker",
+	"PositionManagerWindow": "guiclasses.position_manager_window",
+	"MainWindow": "guiclasses.main_window",
+	"StartEndWindow": "guiclasses.start_end_window",
+	"AppTabsWindow": "guiclasses.app_tabs_window",
+	"PandasModel": "guiclasses.pandas_model",
+}
+
+
+def __getattr__(name: str):
+	module_name = _LAZY_EXPORTS.get(name)
+	if module_name is None:
+		raise AttributeError(f"module 'guiclasses' has no attribute '{name}'")
+	module = import_module(module_name)
+	value = getattr(module, name)
+	globals()[name] = value
+	return value
 
 __all__ = [
 	"MapCanvas",

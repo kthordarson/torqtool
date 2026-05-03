@@ -104,7 +104,7 @@ class MainWindow(QMainWindow):
 
 		# Zoom control
 		zoom_widget = QWidget()
-		zoom_layout = QHBoxLayout(zoom_widget)
+		main_layout = QHBoxLayout(zoom_widget)
 		zoom_label = QLabel("Zoom:")
 		self.zoom_combo = QComboBox()
 		zoom_levels = [str(z) for z in range(10, 19)]
@@ -129,12 +129,12 @@ class MainWindow(QMainWindow):
 		self.dot_size_slider.valueChanged.connect(self.on_dot_size_changed)
 		self.dot_size_value_label = QLabel("1.00x")
 		self.dot_size_value_label.setFixedWidth(44)
-		zoom_layout.addWidget(zoom_label)
-		zoom_layout.addWidget(self.zoom_combo)
-		zoom_layout.addWidget(dot_size_label)
-		zoom_layout.addWidget(self.dot_size_slider)
-		zoom_layout.addWidget(self.dot_size_value_label)
-		zoom_layout.addWidget(self.toggle_all_start_end_btn)
+		main_layout.addWidget(zoom_label)
+		main_layout.addWidget(self.zoom_combo)
+		main_layout.addWidget(dot_size_label)
+		main_layout.addWidget(self.dot_size_slider)
+		main_layout.addWidget(self.dot_size_value_label)
+		main_layout.addWidget(self.toggle_all_start_end_btn)
 		self._mw_zoom_in_btn = QPushButton("Z in")
 		self._mw_zoom_in_btn.setFixedHeight(24)
 		self._mw_zoom_in_btn.setFixedWidth(68)
@@ -147,19 +147,19 @@ class MainWindow(QMainWindow):
 		self._mw_zoom_full_btn.setFixedHeight(24)
 		self._mw_zoom_full_btn.setFixedWidth(44)
 		self._mw_zoom_full_btn.clicked.connect(self._mw_zoom_full)
-		zoom_layout.addWidget(self._mw_zoom_in_btn)
-		zoom_layout.addWidget(self._mw_zoom_out_btn)
-		zoom_layout.addWidget(self._mw_zoom_full_btn)
+		main_layout.addWidget(self._mw_zoom_in_btn)
+		main_layout.addWidget(self._mw_zoom_out_btn)
+		main_layout.addWidget(self._mw_zoom_full_btn)
 		self._mw_reload_map_btn = QPushButton("Reload map")
 		self._mw_reload_map_btn.setFixedHeight(24)
 		self._mw_reload_map_btn.setFixedWidth(84)
 		self._mw_reload_map_btn.clicked.connect(self._mw_force_reload_basemap)
-		zoom_layout.addWidget(self._mw_reload_map_btn)
+		main_layout.addWidget(self._mw_reload_map_btn)
 		sample_label = QLabel("Pts %:")
 		self.sample_percent_spin = QSpinBox()
 		self.sample_percent_spin.setRange(1, 100)
 		self.sample_percent_spin.setValue(self._point_sample_percent)
-		self.sample_percent_spin.setFixedWidth(56)
+		self.sample_percent_spin.setFixedWidth(72)
 		self.sample_percent_spin.setToolTip("Approximate percentage of torqlogs points to render")
 		self.sample_percent_spin.valueChanged.connect(self._on_sampling_changed)
 		self.sample_refresh_btn = QPushButton("Refresh")
@@ -169,26 +169,26 @@ class MainWindow(QMainWindow):
 		self.bounds_padding_spin = QSpinBox()
 		self.bounds_padding_spin.setRange(1, 30)
 		self.bounds_padding_spin.setValue(int(self._bounds_padding_ratio * 100))
-		self.bounds_padding_spin.setFixedWidth(56)
+		self.bounds_padding_spin.setFixedWidth(72)
 		self.bounds_padding_spin.setToolTip("Padding around trip bounds before fetching basemap")
 		self.bounds_padding_spin.valueChanged.connect(self._on_bounds_padding_changed)
 		font_label = QLabel("font:")
 		self.trip_table_font_spin = QSpinBox()
 		self.trip_table_font_spin.setRange(6, 14)
 		self.trip_table_font_spin.setValue(self._trip_table_font_size)
-		self.trip_table_font_spin.setFixedWidth(48)
+		self.trip_table_font_spin.setFixedWidth(72)
 		self.trip_table_font_spin.valueChanged.connect(self._on_trip_table_font_size_changed)
-		zoom_layout.addWidget(sample_label)
-		zoom_layout.addWidget(self.sample_percent_spin)
-		zoom_layout.addWidget(self.sample_refresh_btn)
-		zoom_layout.addWidget(padding_label)
-		zoom_layout.addWidget(self.bounds_padding_spin)
-		zoom_layout.addWidget(font_label)
-		zoom_layout.addWidget(self.trip_table_font_spin)
-		zoom_layout.addStretch()
-		zoom_layout.setSpacing(10)
-		zoom_layout.setContentsMargins(10, 3, 10, 3)
-		zoom_widget.setMaximumHeight(35)
+		main_layout.addWidget(sample_label)
+		main_layout.addWidget(self.sample_percent_spin)
+		main_layout.addWidget(self.sample_refresh_btn)
+		main_layout.addWidget(padding_label)
+		main_layout.addWidget(self.bounds_padding_spin)
+		main_layout.addWidget(font_label)
+		main_layout.addWidget(self.trip_table_font_spin)
+		main_layout.addStretch()
+		main_layout.setSpacing(6)
+		main_layout.setContentsMargins(6, 2, 6, 2)
+		zoom_widget.setMaximumHeight(31)
 
 		# Metric list (replaces QComboBox)
 		metric_panel = QWidget()
@@ -232,6 +232,7 @@ class MainWindow(QMainWindow):
 
 		# Right panel: plots on top, metric list + stats below, zoom at bottom
 		right_panel = QWidget()
+		self.right_panel = right_panel
 		right_layout = QVBoxLayout(right_panel)
 		right_layout.setContentsMargins(0, 0, 0, 0)
 		right_layout.setSpacing(2)
@@ -293,6 +294,8 @@ class MainWindow(QMainWindow):
 		self.left_tabs = QTabWidget()
 		self.left_tabs.setDocumentMode(True)
 		self.left_tabs.setTabPosition(QTabWidget.TabPosition.North)
+		self.left_tabs.setMinimumWidth(0)
+		self.left_tabs.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
 
 		trip_filter_bar = QWidget()
 		trip_filter_layout = QHBoxLayout(trip_filter_bar)
@@ -335,19 +338,23 @@ class MainWindow(QMainWindow):
 		trips_tab_layout = QVBoxLayout(trips_tab)
 		trips_tab_layout.setContentsMargins(2, 2, 2, 2)
 		trips_tab_layout.setSpacing(2)
-		trips_tab_layout.addWidget(trip_filter_bar)
 		trips_tab_layout.addWidget(self.table)
+		trips_tab_layout.addWidget(trip_filter_bar)
 		self.left_tabs.addTab(trips_tab, "Trips")
 
 		self._positions_tab_container = QWidget()
 		self._positions_tab_layout = QVBoxLayout(self._positions_tab_container)
 		self._positions_tab_layout.setContentsMargins(0, 0, 0, 0)
 		self._positions_tab_layout.setSpacing(0)
+		self._positions_tab_container.setMinimumWidth(0)
+		self._positions_tab_container.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
 
 		self._start_end_tab_container = QWidget()
 		self._start_end_tab_layout = QVBoxLayout(self._start_end_tab_container)
 		self._start_end_tab_layout.setContentsMargins(0, 0, 0, 0)
 		self._start_end_tab_layout.setSpacing(0)
+		self._start_end_tab_container.setMinimumWidth(0)
+		self._start_end_tab_container.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
 
 		self.left_tabs.addTab(self._start_end_tab_container, "Start/End")
 		self.left_tabs.addTab(self._positions_tab_container, "Positions")
@@ -463,6 +470,8 @@ class MainWindow(QMainWindow):
 		if embedded is None:
 			return
 		embedded.setParent(self._positions_tab_container)
+		embedded.setMinimumSize(0, 0)
+		embedded.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
 		self._positions_tab_layout.addWidget(embedded)
 		embedded.show()
 		self._position_manager_embedded_widget = embedded
@@ -480,6 +489,8 @@ class MainWindow(QMainWindow):
 		if embedded is None:
 			return
 		embedded.setParent(self._start_end_tab_container)
+		embedded.setMinimumSize(0, 0)
+		embedded.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
 		self._start_end_tab_layout.addWidget(embedded)
 		embedded.show()
 		self._start_end_embedded_widget = embedded
@@ -1108,10 +1119,15 @@ class MainWindow(QMainWindow):
 		self._plot_refresh_timer.start(120)
 
 	def _on_left_tab_changed(self, index: int):
+		# Hide right panel (trip map + metric plot) when on Positions tab.
+		if hasattr(self, "right_panel") and self.right_panel is not None:
+			self.right_panel.setVisible(index != 2)
 		if hasattr(self, "main_splitter") and self.main_splitter is not None:
 			sizes = self.main_splitter.sizes()
-			if len(sizes) >= 2 and sizes[0] > 500:
-				self.main_splitter.setSizes([420, max(700, sizes[1])])
+			if len(sizes) >= 2:
+				total = max(1, sizes[0] + sizes[1])
+				if index == 0:
+					self.main_splitter.setSizes([320, max(900, total - 320)])
 		# Keep metric panel in sync when returning to Trips tab.
 		if index == 0:
 			rows = sorted(set(idx.row() for idx in self.table.selectionModel().selectedRows())) if self.table.selectionModel() is not None else []
@@ -1348,7 +1364,8 @@ class MainWindow(QMainWindow):
 		self.map_canvas.ax.clear()
 		cmap_name = cast(str, ctx.get("colormap_name", self._current_colormap))
 		cmap = plt.colormaps[cmap_name]
-		cycle_length = 10 if cmap_name in ["tab10", "viridis", "plasma", "inferno", "magma"] else 9
+		fileids = cast(list[int], ctx.get("fileids", []))
+		fileid_color_map = self._build_fileid_color_map(fileids, cmap_name)
 
 		all_x: list[float] = []
 		all_y: list[float] = []
@@ -1357,13 +1374,14 @@ class MainWindow(QMainWindow):
 			y_vals = cast(list[float], trip.get("y", []))
 			if not x_vals or not y_vals:
 				continue
+			fileid = int(trip.get("fileid", -1))
 			all_x.extend(x_vals)
 			all_y.extend(y_vals)
 			self.map_canvas.ax.scatter(
 				x_vals,
 				y_vals,
 				s=max(1.0, 5.0 * self._dot_size_scale),
-				c=[cmap(idx % cycle_length)],
+				c=[fileid_color_map.get(fileid, cmap(idx % self._colormap_cycle_length(cmap_name)))],
 				alpha=0.65,
 				zorder=2,
 			)
@@ -1374,9 +1392,9 @@ class MainWindow(QMainWindow):
 			self.map_canvas.ax.set_xlim(xmin, xmax)
 			self.map_canvas.ax.set_ylim(ymin, ymax)
 			self._mw_full_bounds = bounds
-			self._mw_current_fileids = cast(list[int], ctx.get("fileids", []))
+			self._mw_current_fileids = fileids
 			self._mw_last_metric = "preview"
-			self._overlay_start_end_points(cast(list[int], ctx.get("fileids", [])), bounds)
+			self._overlay_start_end_points(fileids, bounds)
 
 		self.map_canvas.ax.set_title("Trip Map - loading paths preview")
 		self.map_canvas.ax.set_xlabel("Longitude")
@@ -1427,18 +1445,7 @@ class MainWindow(QMainWindow):
 		self.map_canvas.ax.clear()
 
 		cmap = plt.colormaps[colormap_name]
-		if colormap_name in ['tab10']:
-			cycle_length = 10
-		elif colormap_name in ['tab20', 'tab20b', 'tab20c']:
-			cycle_length = 20
-		elif colormap_name in ['Set1']:
-			cycle_length = 9
-		elif colormap_name in ['Set2', 'Dark2', 'Pastel2']:
-			cycle_length = 8
-		elif colormap_name in ['Set3', 'Pastel1']:
-			cycle_length = 12
-		else:
-			cycle_length = 10
+		fileid_color_map = self._build_fileid_color_map(fileids, colormap_name)
 
 		plots = []
 		for idx, trip in enumerate(trips):
@@ -1448,19 +1455,13 @@ class MainWindow(QMainWindow):
 			if not x_vals or not y_vals:
 				continue
 			sizes = (speed_vals.clip(lower=1, upper=50) * self._dot_size_scale).clip(lower=1, upper=200)
-			base_color = cmap(idx % cycle_length)
-			speed_abs_max = float(speed_vals.abs().max())
-			colors = [(
-				max(0.0, min(1.0, base_color[0] + 0.5 * (v / speed_abs_max if speed_abs_max > 0 else 0))),
-				max(0.0, min(1.0, base_color[1] + 0.5 * (v / speed_abs_max if speed_abs_max > 0 else 0))),
-				max(0.0, min(1.0, base_color[2] + 0.5 * (v / speed_abs_max if speed_abs_max > 0 else 0))),
-				base_color[3],
-			) for v in speed_vals]
+			fileid = int(trip.get("fileid", -1))
+			base_color = fileid_color_map.get(fileid, cmap(idx % self._colormap_cycle_length(colormap_name)))
 			sc = self.map_canvas.ax.scatter(
 				x_vals,
 				y_vals,
 				s=sizes,
-				c=colors,
+				c=[base_color],
 				label=f"fileid {int(trip.get('fileid', -1))}",
 				zorder=2,
 			)
@@ -1492,7 +1493,7 @@ class MainWindow(QMainWindow):
 		self.map_canvas.ax.set_xlabel("Longitude")
 		self.map_canvas.ax.set_ylabel("Latitude")
 		self.map_canvas.draw_idle()
-		self._update_timeseries_plot(fileids, selected_metrics, colormap_name)
+		self._update_timeseries_plot(fileids, selected_metrics, colormap_name, fileid_color_map)
 		self._update_stats_panel(fileids, all_metric_values, all_x, all_y, selected_metric)
 
 	def _on_async_plot_data_progress(self, request_id: int, done: int, total: int):
@@ -1819,6 +1820,25 @@ class MainWindow(QMainWindow):
 			logger.debug(f"Could not evaluate short-trip zoom policy: {e} ({type(e)})")
 		return fallback_zoom
 
+	@staticmethod
+	def _colormap_cycle_length(colormap_name: str) -> int:
+		if colormap_name in ['tab10']:
+			return 10
+		if colormap_name in ['tab20', 'tab20b', 'tab20c']:
+			return 20
+		if colormap_name in ['Set1']:
+			return 9
+		if colormap_name in ['Set2', 'Dark2', 'Pastel2']:
+			return 8
+		if colormap_name in ['Set3', 'Pastel1']:
+			return 12
+		return 10
+
+	def _build_fileid_color_map(self, fileids: list[int], colormap_name: str) -> dict[int, tuple[float, float, float, float]]:
+		cmap = plt.colormaps[colormap_name]
+		cycle_length = self._colormap_cycle_length(colormap_name)
+		return {int(fileid): cmap(idx % cycle_length) for idx, fileid in enumerate(fileids)}
+
 	def _plot_for_rows(self, rows):
 		fileids = self._get_selected_fileids(rows)
 		if not fileids:
@@ -1843,21 +1863,8 @@ class MainWindow(QMainWindow):
 
 		# Get selected colormap
 		cmap = plt.colormaps[colormap_name]
+		fileid_color_map = self._build_fileid_color_map(fileids, colormap_name)
 		logger.debug(f"Using colormap: {colormap_name}")
-
-		# Calculate colormap cycle length based on colormap type
-		if colormap_name in ['tab10']:
-			cycle_length = 10
-		elif colormap_name in ['tab20', 'tab20b', 'tab20c']:
-			cycle_length = 20
-		elif colormap_name in ['Set1']:
-			cycle_length = 9
-		elif colormap_name in ['Set2', 'Dark2', 'Pastel2']:
-			cycle_length = 8
-		elif colormap_name in ['Set3', 'Pastel1']:
-			cycle_length = 12
-		else:
-			cycle_length = 10
 
 		plots = []
 		all_x: list[float] = []
@@ -1882,14 +1889,8 @@ class MainWindow(QMainWindow):
 				continue
 
 			sizes = (speed_vals.clip(lower=1, upper=50) * self._dot_size_scale).clip(lower=1, upper=200)
-			base_color = cmap(idx % cycle_length)
-			speed_abs_max = float(speed_vals.abs().max())
-			colors = [(
-				max(0.0, min(1.0, base_color[0] + 0.5 * (v / speed_abs_max if speed_abs_max > 0 else 0))),
-				max(0.0, min(1.0, base_color[1] + 0.5 * (v / speed_abs_max if speed_abs_max > 0 else 0))),
-				max(0.0, min(1.0, base_color[2] + 0.5 * (v / speed_abs_max if speed_abs_max > 0 else 0))),
-				base_color[3]) for v in speed_vals]
-			sc = self.map_canvas.ax.scatter(x_vals, y_vals, s=sizes, c=colors, label=f"fileid {fileid}", zorder=2)
+			base_color = fileid_color_map.get(int(fileid), cmap(idx % self._colormap_cycle_length(colormap_name)))
+			sc = self.map_canvas.ax.scatter(x_vals, y_vals, s=sizes, c=[base_color], label=f"fileid {fileid}", zorder=2)
 			plots.append(sc)
 
 		logger.debug(f"Plotted {len(plots)} trips on map for fileids: {len(fileids)}")
@@ -1926,7 +1927,7 @@ class MainWindow(QMainWindow):
 		self.map_canvas.draw_idle()
 		if self.args.debug:
 			logger.debug(f"Map plot updated for fileids={fileids}, metric='{selected_metric}' with {len(all_x)} points")
-		self._update_timeseries_plot(fileids, selected_metrics, colormap_name)
+		self._update_timeseries_plot(fileids, selected_metrics, colormap_name, fileid_color_map)
 		if self.args.debug:
 			logger.debug(f"Timeseries plot updated for fileids={fileids}, metrics={selected_metrics}")
 		self._update_stats_panel(fileids, all_metric_values, all_x, all_y, selected_metric)
@@ -2035,7 +2036,13 @@ class MainWindow(QMainWindow):
 
 		self.stats_label.setText(stats_text)
 
-	def _update_timeseries_plot(self, fileids: list[int], metric_names: list[str], colormap_name: str):
+	def _update_timeseries_plot(
+		self,
+		fileids: list[int],
+		metric_names: list[str],
+		colormap_name: str,
+		fileid_color_map: dict[int, tuple[float, float, float, float]] | None = None,
+	):
 		"""Draw one or more metrics over time for selected trips."""
 		ax = self.timeseries_canvas.ax
 		ax.clear()
@@ -2049,16 +2056,17 @@ class MainWindow(QMainWindow):
 			return
 		ax.set_axis_on()
 		cmap = plt.colormaps[colormap_name]
-		cycle_length = 9 if colormap_name in ['Set1'] else (8 if colormap_name in ['Set2', 'Dark2'] else 10)
-		# Line styles cycle across trips when multiple trips are shown
+		cycle_length = self._colormap_cycle_length(colormap_name)
 		linestyles = ['-', '--', ':', '-.']
 		multi_metric = len(metric_names) > 1
 		multi_trip = len(fileids) > 1
+		if fileid_color_map is None:
+			fileid_color_map = self._build_fileid_color_map(fileids, colormap_name)
 		use_progress_axis = multi_trip
 		has_datetime_x = False
 
 		has_data = False
-		# Color index cycles per metric so each metric gets a distinct color
+		# For multi-trip plots, keep one stable color per fileid across map and timeseries.
 		for m_idx, metric_name in enumerate(metric_names):
 			for t_idx, fileid in enumerate(fileids):
 				if self.args.debug:
@@ -2099,8 +2107,12 @@ class MainWindow(QMainWindow):
 						x_vals = list(range(len(metric_vals)))
 				if not x_vals:
 					continue
-				color = cmap(m_idx % cycle_length)
-				lstyle = linestyles[t_idx % len(linestyles)] if multi_trip else '-'
+				if multi_trip:
+					color = fileid_color_map.get(int(fileid), cmap(t_idx % cycle_length))
+					lstyle = linestyles[m_idx % len(linestyles)] if multi_metric else '-'
+				else:
+					color = cmap(m_idx % cycle_length)
+					lstyle = '-'
 				_, display_name, unit = categorize_metric(metric_name)
 				if multi_metric and multi_trip:
 					label = f"{display_name} / trip {fileid}"
