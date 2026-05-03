@@ -1,4 +1,3 @@
-import pandas as pd
 from loguru import logger
 from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex, QPersistentModelIndex
 

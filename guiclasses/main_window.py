@@ -7,7 +7,7 @@ from shapely.geometry import Point
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
 from loguru import logger
-from sqlalchemy import create_engine, text, inspect
+from sqlalchemy import text, inspect
 from sqlalchemy.orm import sessionmaker
 from PySide6.QtWidgets import (
 	QMainWindow, QTableView, QVBoxLayout, QWidget, QSplitter,
@@ -17,7 +17,6 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QFont, QAction, QCloseEvent
 from PySide6.QtCore import Qt, QTimer, QThread, QItemSelectionModel
 
-from datamodels import database_init
 from schemas import dataschema
 from metric_analysis import categorize_metric, get_analysis_suggestion, group_metrics_by_category
 from .map_canvas import MapCanvas
