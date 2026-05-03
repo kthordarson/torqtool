@@ -9,6 +9,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import sessionmaker
 from loguru import logger
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
 	QMainWindow,
 	QWidget,
@@ -19,6 +20,7 @@ from PySide6.QtWidgets import (
 	QComboBox,
 	QTableView,
 	QAbstractItemView,
+	QPushButton,
 )
 
 from .pandas_model import PandasModel
@@ -37,24 +39,33 @@ class StartEndWindow(QMainWindow):
 		self._grouped_df = pd.DataFrame()
 		self._group_to_fileids: dict[str, list[int]] = {}
 		self._active_fileids: list[int] = []
+		self._table_font_size = max(6, min(14, int(getattr(parent, "_trip_table_font_size", 8)))) if parent is not None else 8
 		self.Session = sessionmaker(bind=self.engine)
 		self.session = self.Session()
 
 		central = QWidget()
 		main_layout = QVBoxLayout(central)
 
-		top_row = QHBoxLayout()
+		top_row_widget = QWidget()
+		top_row = QHBoxLayout(top_row_widget)
+		top_row.setContentsMargins(1, 1, 1, 1)
+		top_row.setSpacing(4)
 		top_row.addWidget(QLabel("Group by:"))
 		self.group_mode_combo = QComboBox()
 		self.group_mode_combo.addItem("Start + End pair", "pair")
 		self.group_mode_combo.addItem("Start position", "start")
 		self.group_mode_combo.addItem("End position", "end")
+		self.group_mode_combo.setFixedWidth(170)
 		self.group_mode_combo.currentIndexChanged.connect(self._on_group_mode_changed)
 		top_row.addWidget(self.group_mode_combo)
+		self.plot_selected_btn = QPushButton("Plot selected")
+		self.plot_selected_btn.setFixedHeight(24)
+		self.plot_selected_btn.clicked.connect(self._plot_selected_groups)
+		top_row.addWidget(self.plot_selected_btn)
 		top_row.addStretch()
 		self.stats_label = QLabel("No group selected")
 		top_row.addWidget(self.stats_label)
-		main_layout.addLayout(top_row)
+		top_row_widget.setMaximumHeight(30)
 
 		splitter = QSplitter(Qt.Orientation.Horizontal)
 		self.groups_table = QTableView()
@@ -62,6 +73,14 @@ class StartEndWindow(QMainWindow):
 		self.groups_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
 		self.groups_table.setSortingEnabled(True)
 		self.groups_table.verticalHeader().setVisible(False)
+		self.groups_table.setFont(QFont("Monospace", self._table_font_size))
+
+		left_panel = QWidget()
+		left_layout = QVBoxLayout(left_panel)
+		left_layout.setContentsMargins(2, 2, 2, 2)
+		left_layout.setSpacing(2)
+		left_layout.addWidget(self.groups_table)
+		left_layout.addWidget(top_row_widget)
 
 		plot_panel = QWidget()
 		plot_layout = QVBoxLayout(plot_panel)
@@ -71,13 +90,45 @@ class StartEndWindow(QMainWindow):
 		self.canvas = FigureCanvas(self.fig)
 		plot_layout.addWidget(self.canvas)
 
-		splitter.addWidget(self.groups_table)
+		splitter.addWidget(left_panel)
 		splitter.addWidget(plot_panel)
 		splitter.setSizes([420, 780])
 		main_layout.addWidget(splitter)
 
 		self.setCentralWidget(central)
 		self.load_data()
+
+	def set_table_font_size(self, value: int):
+		self._table_font_size = max(6, min(14, int(value)))
+		self.groups_table.setFont(QFont("Monospace", self._table_font_size))
+
+	def _plot_selected_groups(self):
+		if self.groups_table.selectionModel() is None or self._grouped_df.empty:
+			self._plot_for_fileids([])
+			return
+		selection_model = self.groups_table.selectionModel()
+		rows = selection_model.selectedRows()
+		if not rows:
+			rows = selection_model.selectedIndexes()
+		if not rows and self.groups_table.currentIndex().isValid():
+			rows = [self.groups_table.currentIndex()]
+		if not rows:
+			self._plot_for_fileids([])
+			return
+		fileids: list[int] = []
+		for row in rows:
+			group_index = self.groups_table.model().index(int(row.row()), 0)
+			group_name = str(self.groups_table.model().data(group_index, Qt.ItemDataRole.DisplayRole) or "")
+			if not group_name:
+				continue
+			fileids.extend(self._group_to_fileids.get(group_name, []))
+		if not fileids:
+			for row in rows:
+				view_idx = int(row.row())
+				if 0 <= view_idx < len(self._grouped_df.index):
+					group_name = str(self._grouped_df.iloc[view_idx]["group"])
+					fileids.extend(self._group_to_fileids.get(group_name, []))
+		self._plot_for_fileids(sorted(set(fileids)))
 
 	def load_data(self) -> None:
 		query = text(

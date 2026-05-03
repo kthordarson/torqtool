@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtGui import QFont, QAction, QCloseEvent
 from PySide6.QtCore import Qt, QTimer, QThread, QItemSelectionModel
+from PySide6.QtWidgets import QHeaderView
 
 from schemas import dataschema
 from metric_analysis import categorize_metric, get_analysis_suggestion, group_metrics_by_category
@@ -77,6 +78,8 @@ class MainWindow(QMainWindow):
 		self._active_threads: set[QThread] = set()
 		self._position_manager_window: PositionManagerWindow | None = None
 		self._start_end_window: StartEndWindow | None = None
+		self._position_manager_embedded_widget: QWidget | None = None
+		self._start_end_embedded_widget: QWidget | None = None
 		self._positions_tab_container: QWidget | None = None
 		self._start_end_tab_container: QWidget | None = None
 		self._positions_tab_layout: QVBoxLayout | None = None
@@ -91,6 +94,7 @@ class MainWindow(QMainWindow):
 
 		# Set up UI
 		splitter = QSplitter(Qt.Orientation.Horizontal)
+		self.main_splitter = splitter
 		self.table = QTableView()
 		self.label_groups_table = QTableView()
 		self.map_canvas = MapCanvas()
@@ -131,11 +135,11 @@ class MainWindow(QMainWindow):
 		zoom_layout.addWidget(self.dot_size_slider)
 		zoom_layout.addWidget(self.dot_size_value_label)
 		zoom_layout.addWidget(self.toggle_all_start_end_btn)
-		self._mw_zoom_in_btn = QPushButton("Zoom in")
+		self._mw_zoom_in_btn = QPushButton("Z in")
 		self._mw_zoom_in_btn.setFixedHeight(24)
 		self._mw_zoom_in_btn.setFixedWidth(68)
 		self._mw_zoom_in_btn.clicked.connect(self._mw_zoom_in)
-		self._mw_zoom_out_btn = QPushButton("Zoom out")
+		self._mw_zoom_out_btn = QPushButton("Z out")
 		self._mw_zoom_out_btn.setFixedHeight(24)
 		self._mw_zoom_out_btn.setFixedWidth(72)
 		self._mw_zoom_out_btn.clicked.connect(self._mw_zoom_out)
@@ -151,24 +155,24 @@ class MainWindow(QMainWindow):
 		self._mw_reload_map_btn.setFixedWidth(84)
 		self._mw_reload_map_btn.clicked.connect(self._mw_force_reload_basemap)
 		zoom_layout.addWidget(self._mw_reload_map_btn)
-		sample_label = QLabel("Points %:")
+		sample_label = QLabel("Pts %:")
 		self.sample_percent_spin = QSpinBox()
 		self.sample_percent_spin.setRange(1, 100)
 		self.sample_percent_spin.setValue(self._point_sample_percent)
 		self.sample_percent_spin.setFixedWidth(56)
 		self.sample_percent_spin.setToolTip("Approximate percentage of torqlogs points to render")
 		self.sample_percent_spin.valueChanged.connect(self._on_sampling_changed)
-		self.sample_refresh_btn = QPushButton("Refresh points")
+		self.sample_refresh_btn = QPushButton("Refresh")
 		self.sample_refresh_btn.setFixedHeight(24)
 		self.sample_refresh_btn.clicked.connect(lambda: self._plot_refresh_timer.start(50))
-		padding_label = QLabel("Bounds %:")
+		padding_label = QLabel("Bds %:")
 		self.bounds_padding_spin = QSpinBox()
 		self.bounds_padding_spin.setRange(1, 30)
 		self.bounds_padding_spin.setValue(int(self._bounds_padding_ratio * 100))
 		self.bounds_padding_spin.setFixedWidth(56)
 		self.bounds_padding_spin.setToolTip("Padding around trip bounds before fetching basemap")
 		self.bounds_padding_spin.valueChanged.connect(self._on_bounds_padding_changed)
-		font_label = QLabel("Table font:")
+		font_label = QLabel("font:")
 		self.trip_table_font_spin = QSpinBox()
 		self.trip_table_font_spin.setRange(6, 14)
 		self.trip_table_font_spin.setValue(self._trip_table_font_size)
@@ -259,44 +263,36 @@ class MainWindow(QMainWindow):
 		label_tab = QWidget()
 		label_tab_layout = QVBoxLayout(label_tab)
 		label_tab_layout.setContentsMargins(2, 2, 2, 2)
+		label_tab_layout.setSpacing(2)
 		label_toolbar = QWidget()
 		label_toolbar_layout = QHBoxLayout(label_toolbar)
-		label_toolbar_layout.setContentsMargins(0, 0, 0, 0)
+		label_toolbar_layout.setContentsMargins(1, 1, 1, 1)
+		label_toolbar_layout.setSpacing(4)
 		label_toolbar_layout.addWidget(QLabel("Group by:"))
 		self.label_group_mode_combo = QComboBox()
 		self.label_group_mode_combo.addItem("Label (ignore type)", "label")
 		self.label_group_mode_combo.addItem("Start labels", "start")
 		self.label_group_mode_combo.addItem("End labels", "end")
+		self.label_group_mode_combo.setFixedWidth(170)
 		self.label_group_mode_combo.currentIndexChanged.connect(self._on_label_group_mode_changed)
 		self.select_trips_by_labels_btn = QPushButton("Select trips by labels")
+		self.select_trips_by_labels_btn.setFixedHeight(24)
 		self.select_trips_by_labels_btn.clicked.connect(self._select_torqtrips_for_selected_labels)
 		self.cancel_plot_load_btn = QPushButton("Cancel load")
 		self.cancel_plot_load_btn.setEnabled(False)
+		self.cancel_plot_load_btn.setFixedHeight(24)
 		self.cancel_plot_load_btn.clicked.connect(self._cancel_async_plot_load)
 		label_toolbar_layout.addWidget(self.label_group_mode_combo)
 		label_toolbar_layout.addWidget(self.select_trips_by_labels_btn)
 		label_toolbar_layout.addWidget(self.cancel_plot_load_btn)
 		label_toolbar_layout.addStretch()
-		label_tab_layout.addWidget(label_toolbar)
+		label_toolbar.setMaximumHeight(30)
 		label_tab_layout.addWidget(self.label_groups_table)
+		label_tab_layout.addWidget(label_toolbar)
 
 		self.left_tabs = QTabWidget()
 		self.left_tabs.setDocumentMode(True)
 		self.left_tabs.setTabPosition(QTabWidget.TabPosition.North)
-		self.left_tabs.addTab(self.table, "Trips")
-		self.left_tabs.addTab(label_tab, "Label groups")
-		self._positions_tab_container = QWidget()
-		self._positions_tab_layout = QVBoxLayout(self._positions_tab_container)
-		self._positions_tab_layout.setContentsMargins(0, 0, 0, 0)
-		self._positions_tab_layout.setSpacing(0)
-		self.left_tabs.addTab(self._positions_tab_container, "Positions")
-
-		self._start_end_tab_container = QWidget()
-		self._start_end_tab_layout = QVBoxLayout(self._start_end_tab_container)
-		self._start_end_tab_layout.setContentsMargins(0, 0, 0, 0)
-		self._start_end_tab_layout.setSpacing(0)
-		self.left_tabs.addTab(self._start_end_tab_container, "Start/End")
-		self.left_tabs.currentChanged.connect(self._on_left_tab_changed)
 
 		trip_filter_bar = QWidget()
 		trip_filter_layout = QHBoxLayout(trip_filter_bar)
@@ -335,6 +331,30 @@ class MainWindow(QMainWindow):
 		trip_filter_bar.setMaximumHeight(34)
 		trip_filter_bar.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
+		trips_tab = QWidget()
+		trips_tab_layout = QVBoxLayout(trips_tab)
+		trips_tab_layout.setContentsMargins(2, 2, 2, 2)
+		trips_tab_layout.setSpacing(2)
+		trips_tab_layout.addWidget(trip_filter_bar)
+		trips_tab_layout.addWidget(self.table)
+		self.left_tabs.addTab(trips_tab, "Trips")
+
+		self._positions_tab_container = QWidget()
+		self._positions_tab_layout = QVBoxLayout(self._positions_tab_container)
+		self._positions_tab_layout.setContentsMargins(0, 0, 0, 0)
+		self._positions_tab_layout.setSpacing(0)
+
+		self._start_end_tab_container = QWidget()
+		self._start_end_tab_layout = QVBoxLayout(self._start_end_tab_container)
+		self._start_end_tab_layout.setContentsMargins(0, 0, 0, 0)
+		self._start_end_tab_layout.setSpacing(0)
+
+		self.left_tabs.addTab(self._start_end_tab_container, "Start/End")
+		self.left_tabs.addTab(self._positions_tab_container, "Positions")
+		self.left_tabs.addTab(label_tab, "Label groups")
+
+		self.left_tabs.currentChanged.connect(self._on_left_tab_changed)
+
 		splitter.addWidget(self.left_tabs)
 		splitter.addWidget(right_panel)
 		splitter.setSizes([150, 600])  # Give more space to the map panel
@@ -343,13 +363,7 @@ class MainWindow(QMainWindow):
 		layout = QVBoxLayout(container)
 		layout.setContentsMargins(2, 2, 2, 2)
 		layout.setSpacing(2)
-		filter_body_splitter = QSplitter(Qt.Orientation.Vertical)
-		filter_body_splitter.addWidget(trip_filter_bar)
-		filter_body_splitter.addWidget(splitter)
-		filter_body_splitter.setCollapsible(0, False)
-		filter_body_splitter.setCollapsible(1, False)
-		filter_body_splitter.setSizes([30, 970])
-		layout.addWidget(filter_body_splitter)
+		layout.addWidget(splitter)
 		self.setCentralWidget(container)
 
 		# Render immediately, then hydrate data/metrics after first paint.
@@ -428,7 +442,7 @@ class MainWindow(QMainWindow):
 	def _open_start_end_window(self):
 		if hasattr(self, "left_tabs") and self.left_tabs is not None:
 			self._ensure_start_end_tab_embedded()
-			self.left_tabs.setCurrentIndex(3)
+			self.left_tabs.setCurrentIndex(1)
 			return
 		if self._start_end_window is None:
 			self._start_end_window = StartEndWindow(self.args, self.engine, self)
@@ -437,26 +451,38 @@ class MainWindow(QMainWindow):
 		self._start_end_window.activateWindow()
 
 	def _ensure_positions_tab_embedded(self):
-		if self._position_manager_window is not None:
+		if self._position_manager_embedded_widget is not None:
 			return
 		if self._positions_tab_layout is None or self._positions_tab_container is None:
 			return
-		self._position_manager_window = PositionManagerWindow(self.args, self.engine, self)
-		self._position_manager_window.setWindowFlag(Qt.WindowType.Widget, True)
-		self._position_manager_window.setParent(self._positions_tab_container)
-		self._positions_tab_layout.addWidget(self._position_manager_window)
-		self._position_manager_window.show()
+		if self._position_manager_window is None:
+			self._position_manager_window = PositionManagerWindow(self.args, self.engine, self)
+			if hasattr(self._position_manager_window, "set_table_font_size"):
+				self._position_manager_window.set_table_font_size(self._trip_table_font_size)
+		embedded = self._position_manager_window.takeCentralWidget()
+		if embedded is None:
+			return
+		embedded.setParent(self._positions_tab_container)
+		self._positions_tab_layout.addWidget(embedded)
+		embedded.show()
+		self._position_manager_embedded_widget = embedded
 
 	def _ensure_start_end_tab_embedded(self):
-		if self._start_end_window is not None:
+		if self._start_end_embedded_widget is not None:
 			return
 		if self._start_end_tab_layout is None or self._start_end_tab_container is None:
 			return
-		self._start_end_window = StartEndWindow(self.args, self.engine, self)
-		self._start_end_window.setWindowFlag(Qt.WindowType.Widget, True)
-		self._start_end_window.setParent(self._start_end_tab_container)
-		self._start_end_tab_layout.addWidget(self._start_end_window)
-		self._start_end_window.show()
+		if self._start_end_window is None:
+			self._start_end_window = StartEndWindow(self.args, self.engine, self)
+			if hasattr(self._start_end_window, "set_table_font_size"):
+				self._start_end_window.set_table_font_size(self._trip_table_font_size)
+		embedded = self._start_end_window.takeCentralWidget()
+		if embedded is None:
+			return
+		embedded.setParent(self._start_end_tab_container)
+		self._start_end_tab_layout.addWidget(embedded)
+		embedded.show()
+		self._start_end_embedded_widget = embedded
 
 	def _open_database(self):
 		path, _ = QFileDialog.getOpenFileName(self, "Open Database", "", "SQLite Database (*.db);;All Files (*)")
@@ -536,6 +562,10 @@ class MainWindow(QMainWindow):
 		self.table.setFont(font)
 		self.label_groups_table.setFont(font)
 		self.metric_table.setFont(QFont("Monospace", max(6, self._trip_table_font_size - 1)))
+		if self._position_manager_window is not None and hasattr(self._position_manager_window, "set_table_font_size"):
+			self._position_manager_window.set_table_font_size(self._trip_table_font_size)
+		if self._start_end_window is not None and hasattr(self._start_end_window, "set_table_font_size"):
+			self._start_end_window.set_table_font_size(self._trip_table_font_size)
 
 	def _safe_float_from_line_edit(self, edit: QLineEdit) -> float | None:
 		text_value = edit.text().strip()
@@ -772,8 +802,16 @@ class MainWindow(QMainWindow):
 		display_columns = ["label", "start_points", "end_points", "total_points", "total_count"]
 		self.label_groups_table_model = PandasModel(self._label_groups_df, display_columns=display_columns)
 		self.label_groups_table.setModel(self.label_groups_table_model)
-		self.label_groups_table.horizontalHeader().setStretchLastSection(True)
+		hdr = self.label_groups_table.horizontalHeader()
+		hdr.setStretchLastSection(False)
+		hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
 		self.label_groups_table.resizeColumnsToContents()
+		if self.label_groups_table.model() is not None:
+			self.label_groups_table.setColumnWidth(0, 140)
+			self.label_groups_table.setColumnWidth(1, 68)
+			self.label_groups_table.setColumnWidth(2, 68)
+			self.label_groups_table.setColumnWidth(3, 74)
+			self.label_groups_table.setColumnWidth(4, 74)
 		selection_model = self.label_groups_table.selectionModel()
 		if selection_model is not None:
 			selection_model.selectionChanged.connect(self._on_label_group_selection_changed)
@@ -797,7 +835,13 @@ class MainWindow(QMainWindow):
 		# Allow Ctrl/Shift multi-select so multiple trips can be plotted together.
 		self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
 		self.table.selectionModel().selectionChanged.connect(self.on_row_selected)
-		self.table.horizontalHeader().setStretchLastSection(True)
+		hdr = self.table.horizontalHeader()
+		hdr.setStretchLastSection(False)
+		hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+		self.table.setColumnWidth(0, 64)
+		self.table.setColumnWidth(1, 92)
+		self.table.setColumnWidth(2, 138)
+		self.table.setColumnWidth(3, 84)
 		logger.debug(f"Table model set with {len(df)} rows and {len(df.columns)} columns")
 
 	def _ensure_map_cache_schema(self):
@@ -899,14 +943,14 @@ class MainWindow(QMainWindow):
 			start_points = int((group["pos_type"] == "start").sum())
 			end_points = int((group["pos_type"] == "end").sum())
 			total_points = int(len(group))
-			total_count = float(group["count"].sum())
+			total_count = int(group["count"].sum())
 			rows.append(
 				{
 					"label": str(label),
 					"start_points": start_points,
 					"end_points": end_points,
 					"total_points": total_points,
-					"total_count": round(total_count, 2),
+					"total_count": total_count,
 				}
 			)
 
@@ -976,7 +1020,8 @@ class MainWindow(QMainWindow):
 			self._mw_full_bounds = bounds
 			self._mw_current_fileids = []
 			self._mw_last_metric = "labels"
-			self._start_async_basemap(bounds, int(self.zoom_combo.currentText()), [], self._current_colormap, "labels")
+			label_zoom = max(12, int(self.zoom_combo.currentText()))
+			self._start_async_basemap(bounds, label_zoom, [], self._current_colormap, "labels")
 
 		self.map_canvas.ax.legend(loc="best", fontsize=8)
 		self.map_canvas.ax.set_title(f"Start/End labels: {', '.join(labels[:3])}{'...' if len(labels) > 3 else ''}")
@@ -1063,14 +1108,18 @@ class MainWindow(QMainWindow):
 		self._plot_refresh_timer.start(120)
 
 	def _on_left_tab_changed(self, index: int):
+		if hasattr(self, "main_splitter") and self.main_splitter is not None:
+			sizes = self.main_splitter.sizes()
+			if len(sizes) >= 2 and sizes[0] > 500:
+				self.main_splitter.setSizes([420, max(700, sizes[1])])
 		# Keep metric panel in sync when returning to Trips tab.
 		if index == 0:
 			rows = sorted(set(idx.row() for idx in self.table.selectionModel().selectedRows())) if self.table.selectionModel() is not None else []
 			self._populate_metric_columns(self._get_selected_fileids(rows) if rows else None)
+		elif index == 1:
+			self._ensure_start_end_tab_embedded()
 		elif index == 2:
 			self._ensure_positions_tab_embedded()
-		elif index == 3:
-			self._ensure_start_end_tab_embedded()
 
 	def _on_initial_trips_error(self, error_message: str):
 		logger.error(error_message)

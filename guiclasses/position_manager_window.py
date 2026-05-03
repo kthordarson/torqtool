@@ -13,10 +13,10 @@ from sqlalchemy import text
 from PySide6.QtWidgets import (
 	QMainWindow, QWidget, QVBoxLayout, QSplitter, QHBoxLayout, QLabel,
 	QComboBox, QFrame, QTableView, QAbstractItemView, QLineEdit, QPushButton,
-	QFormLayout, QSpinBox, QDoubleSpinBox, QMessageBox, QCheckBox, QCompleter, QTabWidget,
+	QFormLayout, QSpinBox, QDoubleSpinBox, QMessageBox, QCheckBox, QCompleter, QTabWidget, QHeaderView,
 )
 from PySide6.QtCore import Qt, QTimer, QThread, QItemSelectionModel, QStringListModel
-from PySide6.QtGui import QCloseEvent
+from PySide6.QtGui import QCloseEvent, QFont
 
 from .basemap_worker import BasemapWorker
 from .position_load_worker import PositionLoadWorker
@@ -73,6 +73,7 @@ class PositionManagerWindow(QMainWindow):
 		self._updating_selection: bool = False
 		self._pending_pick_call: tuple[list[int], bool] | None = None
 		self._group_mode: str = "label"
+		self._table_font_size = max(6, min(14, int(getattr(parent, "_trip_table_font_size", 8)))) if parent is not None else 8
 		self._grouped_positions_df = pd.DataFrame(
 			columns=["label", "start_points", "end_points", "total_points", "total_count", "avg_latitude", "avg_longitude"]
 		)
@@ -92,7 +93,7 @@ class PositionManagerWindow(QMainWindow):
 
 		central = QWidget()
 		main_layout = QVBoxLayout(central)
-		splitter = QSplitter(Qt.Orientation.Horizontal)
+		h_splitter = QSplitter(Qt.Orientation.Horizontal)
 
 		left_panel = QWidget()
 		left_layout = QVBoxLayout(left_panel)
@@ -104,12 +105,15 @@ class PositionManagerWindow(QMainWindow):
 		left_layout.addWidget(self.map_toolbar)
 		left_layout.addWidget(self.map_canvas)
 
-		right_panel = QWidget()
-		right_layout = QVBoxLayout(right_panel)
+		table_panel = QWidget()
+		table_panel_layout = QVBoxLayout(table_panel)
+		table_panel_layout.setContentsMargins(2, 2, 2, 2)
+		table_panel_layout.setSpacing(2)
 
 		self.positions_table = QTableView()
 		self.positions_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
 		self.positions_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+		self.positions_table.setFont(QFont("Monospace", self._table_font_size))
 
 		grouped_tab = QWidget()
 		grouped_layout = QVBoxLayout(grouped_tab)
@@ -130,13 +134,14 @@ class PositionManagerWindow(QMainWindow):
 		self.grouped_positions_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
 		self.grouped_positions_table.setSortingEnabled(True)
 		self.grouped_positions_table.verticalHeader().setVisible(False)
+		self.grouped_positions_table.setFont(QFont("Monospace", self._table_font_size))
 		grouped_layout.addWidget(grouped_toolbar)
 		grouped_layout.addWidget(self.grouped_positions_table)
 
 		self.table_tabs = QTabWidget()
 		self.table_tabs.addTab(self.positions_table, "Positions")
 		self.table_tabs.addTab(grouped_tab, "Grouped labels")
-		right_layout.addWidget(self.table_tabs, stretch=6)
+		table_panel_layout.addWidget(self.table_tabs)
 
 		editor = QFrame()
 		editor_layout = QVBoxLayout(editor)
@@ -224,12 +229,19 @@ class PositionManagerWindow(QMainWindow):
 		button_row.addStretch()
 		editor_layout.addLayout(button_row)
 
-		right_layout.addWidget(editor, stretch=2)
+		right_stack = QSplitter(Qt.Orientation.Vertical)
+		right_stack.addWidget(left_panel)
+		right_stack.addWidget(editor)
+		right_stack.setCollapsible(0, False)
+		right_stack.setCollapsible(1, False)
+		right_stack.setSizes([680, 300])
 
-		splitter.addWidget(left_panel)
-		splitter.addWidget(right_panel)
-		splitter.setSizes([760, 480])
-		main_layout.addWidget(splitter)
+		h_splitter.addWidget(table_panel)
+		h_splitter.addWidget(right_stack)
+		h_splitter.setCollapsible(0, False)
+		h_splitter.setCollapsible(1, False)
+		h_splitter.setSizes([420, 1020])
+		main_layout.addWidget(h_splitter)
 		self.setCentralWidget(central)
 
 		self._pick_cid = self.map_canvas.mpl_connect("pick_event", self._on_pick_point)
@@ -253,6 +265,12 @@ class PositionManagerWindow(QMainWindow):
 		self.label_edit.returnPressed.connect(self._on_label_return_pressed)
 
 		self.load_positions()
+
+	def set_table_font_size(self, value: int):
+		self._table_font_size = max(6, min(14, int(value)))
+		font = QFont("Monospace", self._table_font_size)
+		self.positions_table.setFont(font)
+		self.grouped_positions_table.setFont(font)
 
 	@staticmethod
 	def _table_info(pos_type: str) -> tuple[str, str, str, str]:
@@ -593,7 +611,24 @@ class PositionManagerWindow(QMainWindow):
 		filtered_df = self._filtered_positions_df()
 		self._table_model = PositionTableModel(filtered_df)
 		self.positions_table.setModel(self._table_model)
-		self.positions_table.horizontalHeader().setStretchLastSection(True)
+		hdr = self.positions_table.horizontalHeader()
+		hdr.setStretchLastSection(False)
+		hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+		self.positions_table.resizeColumnsToContents()
+		if self.positions_table.model() is not None:
+			col_count = self.positions_table.model().columnCount()
+			if col_count > 0:
+				self.positions_table.setColumnWidth(0, 120)
+			if col_count > 1:
+				self.positions_table.setColumnWidth(1, 54)
+			if col_count > 2:
+				self.positions_table.setColumnWidth(2, 64)
+			if col_count > 3:
+				self.positions_table.setColumnWidth(3, 82)
+			if col_count > 4:
+				self.positions_table.setColumnWidth(4, 82)
+			if col_count > 5:
+				self.positions_table.setColumnWidth(5, 64)
 		self.positions_table.setSortingEnabled(True)
 		self.positions_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
 		self.positions_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
@@ -677,8 +712,17 @@ class PositionManagerWindow(QMainWindow):
 
 		model = PandasModel(self._grouped_positions_df)
 		self.grouped_positions_table.setModel(model)
-		self.grouped_positions_table.horizontalHeader().setStretchLastSection(True)
+		ghdr = self.grouped_positions_table.horizontalHeader()
+		ghdr.setStretchLastSection(False)
+		ghdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
 		self.grouped_positions_table.resizeColumnsToContents()
+		self.grouped_positions_table.setColumnWidth(0, 150)
+		self.grouped_positions_table.setColumnWidth(1, 72)
+		self.grouped_positions_table.setColumnWidth(2, 72)
+		self.grouped_positions_table.setColumnWidth(3, 78)
+		self.grouped_positions_table.setColumnWidth(4, 72)
+		self.grouped_positions_table.setColumnWidth(5, 96)
+		self.grouped_positions_table.setColumnWidth(6, 96)
 		if self.grouped_positions_table.selectionModel() is not None:
 			self.grouped_positions_table.selectionModel().selectionChanged.connect(self._on_grouped_selection_changed)
 

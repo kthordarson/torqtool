@@ -9,7 +9,7 @@ from utils import database_init
 from converter import get_args
 from guiclasses import PositionManagerWindow
 from guiclasses import StartEndWindow
-from guiclasses import AppTabsWindow
+from guiclasses import MainWindow
 
 from loguru import logger
 
@@ -30,7 +30,7 @@ if __name__ == "__main__":
 		engine = create_engine(dburl)
 		database_init(engine)
 		app = QApplication(sys.argv)
-		workspace = AppTabsWindow(args, engine)
+		workspace = MainWindow(args, engine)
 		workspace.showMaximized()
 		sys.exit(app.exec())
 	elif args.pos_manager:
@@ -50,10 +50,10 @@ if __name__ == "__main__":
 		window.showMaximized()
 		sys.exit(app.exec())
 	elif args.main_window:
-		logger.debug("Starting main tabbed workspace")
+		logger.debug("Starting main window")
 		engine = create_engine(dburl)
 		database_init(engine)
 		app = QApplication(sys.argv)
-		window = AppTabsWindow(args, engine)
+		window = MainWindow(args, engine)
 		window.showMaximized()
 		sys.exit(app.exec())

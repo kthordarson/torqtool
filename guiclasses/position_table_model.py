@@ -6,7 +6,15 @@ class PositionTableModel(QAbstractTableModel):
 	def __init__(self, source_df: pd.DataFrame):
 		super().__init__()
 		self._source = source_df
-		self._columns = ['pos_type', 'pos_id', 'latitude', 'longitude', 'count', 'label']
+		self._columns = ['label', 'pos_type', 'pos_id', 'latitude', 'longitude', 'count']
+		self._headers = {
+			'label': 'label',
+			'pos_type': 'type',
+			'pos_id': 'id',
+			'latitude': 'lat',
+			'longitude': 'lon',
+			'count': 'count',
+		}
 		self._view_order = list(source_df.index)
 
 	def rowCount(self, parent: QModelIndex | QPersistentModelIndex = QModelIndex()) -> int:
@@ -27,7 +35,8 @@ class PositionTableModel(QAbstractTableModel):
 		if role != Qt.ItemDataRole.DisplayRole:
 			return None
 		if orientation == Qt.Orientation.Horizontal:
-			return self._columns[section]
+			col = self._columns[section]
+			return self._headers.get(col, col)
 		return str(section)
 
 	def sort(self, column: int, order: Qt.SortOrder = Qt.SortOrder.AscendingOrder) -> None:
