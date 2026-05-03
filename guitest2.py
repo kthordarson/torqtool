@@ -14,8 +14,6 @@ def get_args(appname: str):
 
 if __name__ == "__main__":
 	logger.debug("Entrypoint started")
-	import matplotlib
-	matplotlib.use("QtAgg")
 	from PySide6.QtWidgets import QApplication
 	from sqlalchemy import create_engine
 	from utils import database_init

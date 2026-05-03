@@ -1,9 +1,9 @@
 from importlib import import_module
 
 _LAZY_EXPORTS = {
+	"FoliumMapView": "guiclasses.map_canvas",
 	"MapCanvas": "guiclasses.map_canvas",
 	"TimeSeriesCanvas": "guiclasses.time_series_canvas",
-	"BasemapWorker": "guiclasses.basemap_worker",
 	"TripListWorker": "guiclasses.trip_list_worker",
 	"PositionTableModel": "guiclasses.position_table_model",
 	"PositionLoadWorker": "guiclasses.position_load_worker",
@@ -25,9 +25,9 @@ def __getattr__(name: str):
 	return value
 
 __all__ = [
+	"FoliumMapView",
 	"MapCanvas",
 	"TimeSeriesCanvas",
-	"BasemapWorker",
 	"TripListWorker",
 	"PositionTableModel",
 	"PositionLoadWorker",
