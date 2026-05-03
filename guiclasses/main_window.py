@@ -1,11 +1,13 @@
 import io
+import json
+import time
 from typing import Any, cast
 import numpy as np
 import pandas as pd
-import geopandas as gpd
-from shapely.geometry import Point
+import folium
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
+import matplotlib.colors as mcolors
 from loguru import logger
 from sqlalchemy import text, inspect
 from sqlalchemy.orm import sessionmaker
@@ -20,15 +22,14 @@ from PySide6.QtWidgets import QHeaderView
 
 from schemas import dataschema
 from metric_analysis import categorize_metric, get_analysis_suggestion, group_metrics_by_category
-from .map_canvas import MapCanvas
+from .map_canvas import FoliumMapView
 from .time_series_canvas import TimeSeriesCanvas
-from .basemap_worker import BasemapWorker
 from .trip_list_worker import TripListWorker
 from .trip_plot_worker import TripPlotWorker
 from .position_manager_window import PositionManagerWindow
 from .start_end_window import StartEndWindow
 from .pandas_model import PandasModel
-from ._helpers import _normalize_col_name, format_duration
+from ._helpers import _normalize_col_name, format_duration, _ORPHAN_QTHREADS, _release_orphan_thread
 
 
 class MainWindow(QMainWindow):
@@ -48,19 +49,14 @@ class MainWindow(QMainWindow):
 		self._selection_stats_cache: dict[tuple[int, ...], tuple[dict, dict[str, dict[str, float]]]] = {}
 		self._map_cache_version = "v2"
 		self._current_colormap = 'Set1'
+		self._fill_map_panel = True
 		self._dot_size_scale = 1.0
 		self._plot_refresh_timer = QTimer(self)
 		self._plot_refresh_timer.setSingleShot(True)
 		self._plot_refresh_timer.timeout.connect(self.refresh_plot)
-		self._basemap_request_id = 0
-		self._basemap_request_context: dict[int, dict[str, object]] = {}
-		self._basemap_thread: QThread | None = None
-		self._basemap_worker: BasemapWorker | None = None
 		self._show_all_start_end_points = False
-		self._start_end_overlay_artists: list[Any] = []
-		self._start_end_overlay_labels: list[Any] = []
 		self._start_end_overlay_data: list[dict[str, Any]] = []
-		self._mw_full_bounds: tuple[float, float, float, float] | None = None
+		self._mw_full_bounds_latlon: tuple[float, float, float, float] | None = None
 		self._mw_current_fileids: list[int] = []
 		self._mw_last_metric: str = 'speedobdkmh'
 		self._metric_summary_cache: dict[tuple[int, ...], pd.DataFrame] = {}
@@ -75,7 +71,9 @@ class MainWindow(QMainWindow):
 		self._plot_data_request_id = 0
 		self._plot_async_threshold = 60
 		self._plot_request_context: dict[int, dict[str, Any]] = {}
+		self._preview_render_min_interval_s = 0.25
 		self._active_threads: set[QThread] = set()
+		self._closing = False
 		self._position_manager_window: PositionManagerWindow | None = None
 		self._start_end_window: StartEndWindow | None = None
 		self._position_manager_embedded_widget: QWidget | None = None
@@ -87,6 +85,8 @@ class MainWindow(QMainWindow):
 		self._all_trips_df = pd.DataFrame(columns=["id", "fileid", "trip_distance", "tripdate", "time", "trip_distance_sort", "tripdate_raw", "time_raw"])
 		self._trip_table_font_size = 8
 		self._point_sample_percent = 10
+		self._trip_row_count_cache: dict[int, int] = {}
+		self._sampling_target_points_per_trip = 12000
 		self._bounds_padding_ratio = 0.06
 		self.Session = sessionmaker(bind=self.engine)
 		self.session = self.Session()
@@ -97,14 +97,14 @@ class MainWindow(QMainWindow):
 		self.main_splitter = splitter
 		self.table = QTableView()
 		self.label_groups_table = QTableView()
-		self.map_canvas = MapCanvas()
-		self.map_canvas.mpl_connect("pick_event", self._on_map_pick)
+		self.map_canvas = FoliumMapView()
+		self.map_canvas.bridge.point_clicked.connect(self._on_map_point_clicked)
 		self.timeseries_canvas = TimeSeriesCanvas()
 		logger.debug(f"Resolved torqlogs columns: {self._resolved_torqlogs_columns}")
 
 		# Zoom control
 		zoom_widget = QWidget()
-		zoom_layout = QHBoxLayout(zoom_widget)
+		main_layout = QHBoxLayout(zoom_widget)
 		zoom_label = QLabel("Zoom:")
 		self.zoom_combo = QComboBox()
 		zoom_levels = [str(z) for z in range(10, 19)]
@@ -129,12 +129,12 @@ class MainWindow(QMainWindow):
 		self.dot_size_slider.valueChanged.connect(self.on_dot_size_changed)
 		self.dot_size_value_label = QLabel("1.00x")
 		self.dot_size_value_label.setFixedWidth(44)
-		zoom_layout.addWidget(zoom_label)
-		zoom_layout.addWidget(self.zoom_combo)
-		zoom_layout.addWidget(dot_size_label)
-		zoom_layout.addWidget(self.dot_size_slider)
-		zoom_layout.addWidget(self.dot_size_value_label)
-		zoom_layout.addWidget(self.toggle_all_start_end_btn)
+		main_layout.addWidget(zoom_label)
+		main_layout.addWidget(self.zoom_combo)
+		main_layout.addWidget(dot_size_label)
+		main_layout.addWidget(self.dot_size_slider)
+		main_layout.addWidget(self.dot_size_value_label)
+		main_layout.addWidget(self.toggle_all_start_end_btn)
 		self._mw_zoom_in_btn = QPushButton("Z in")
 		self._mw_zoom_in_btn.setFixedHeight(24)
 		self._mw_zoom_in_btn.setFixedWidth(68)
@@ -147,19 +147,19 @@ class MainWindow(QMainWindow):
 		self._mw_zoom_full_btn.setFixedHeight(24)
 		self._mw_zoom_full_btn.setFixedWidth(44)
 		self._mw_zoom_full_btn.clicked.connect(self._mw_zoom_full)
-		zoom_layout.addWidget(self._mw_zoom_in_btn)
-		zoom_layout.addWidget(self._mw_zoom_out_btn)
-		zoom_layout.addWidget(self._mw_zoom_full_btn)
+		main_layout.addWidget(self._mw_zoom_in_btn)
+		main_layout.addWidget(self._mw_zoom_out_btn)
+		main_layout.addWidget(self._mw_zoom_full_btn)
 		self._mw_reload_map_btn = QPushButton("Reload map")
 		self._mw_reload_map_btn.setFixedHeight(24)
 		self._mw_reload_map_btn.setFixedWidth(84)
 		self._mw_reload_map_btn.clicked.connect(self._mw_force_reload_basemap)
-		zoom_layout.addWidget(self._mw_reload_map_btn)
+		main_layout.addWidget(self._mw_reload_map_btn)
 		sample_label = QLabel("Pts %:")
 		self.sample_percent_spin = QSpinBox()
 		self.sample_percent_spin.setRange(1, 100)
 		self.sample_percent_spin.setValue(self._point_sample_percent)
-		self.sample_percent_spin.setFixedWidth(56)
+		self.sample_percent_spin.setFixedWidth(72)
 		self.sample_percent_spin.setToolTip("Approximate percentage of torqlogs points to render")
 		self.sample_percent_spin.valueChanged.connect(self._on_sampling_changed)
 		self.sample_refresh_btn = QPushButton("Refresh")
@@ -169,26 +169,26 @@ class MainWindow(QMainWindow):
 		self.bounds_padding_spin = QSpinBox()
 		self.bounds_padding_spin.setRange(1, 30)
 		self.bounds_padding_spin.setValue(int(self._bounds_padding_ratio * 100))
-		self.bounds_padding_spin.setFixedWidth(56)
-		self.bounds_padding_spin.setToolTip("Padding around trip bounds before fetching basemap")
+		self.bounds_padding_spin.setFixedWidth(72)
+		self.bounds_padding_spin.setToolTip("Padding around trip bounds")
 		self.bounds_padding_spin.valueChanged.connect(self._on_bounds_padding_changed)
 		font_label = QLabel("font:")
 		self.trip_table_font_spin = QSpinBox()
 		self.trip_table_font_spin.setRange(6, 14)
 		self.trip_table_font_spin.setValue(self._trip_table_font_size)
-		self.trip_table_font_spin.setFixedWidth(48)
+		self.trip_table_font_spin.setFixedWidth(72)
 		self.trip_table_font_spin.valueChanged.connect(self._on_trip_table_font_size_changed)
-		zoom_layout.addWidget(sample_label)
-		zoom_layout.addWidget(self.sample_percent_spin)
-		zoom_layout.addWidget(self.sample_refresh_btn)
-		zoom_layout.addWidget(padding_label)
-		zoom_layout.addWidget(self.bounds_padding_spin)
-		zoom_layout.addWidget(font_label)
-		zoom_layout.addWidget(self.trip_table_font_spin)
-		zoom_layout.addStretch()
-		zoom_layout.setSpacing(10)
-		zoom_layout.setContentsMargins(10, 3, 10, 3)
-		zoom_widget.setMaximumHeight(35)
+		main_layout.addWidget(sample_label)
+		main_layout.addWidget(self.sample_percent_spin)
+		main_layout.addWidget(self.sample_refresh_btn)
+		main_layout.addWidget(padding_label)
+		main_layout.addWidget(self.bounds_padding_spin)
+		main_layout.addWidget(font_label)
+		main_layout.addWidget(self.trip_table_font_spin)
+		main_layout.addStretch()
+		main_layout.setSpacing(6)
+		main_layout.setContentsMargins(6, 2, 6, 2)
+		zoom_widget.setMaximumHeight(31)
 
 		# Metric list (replaces QComboBox)
 		metric_panel = QWidget()
@@ -227,11 +227,42 @@ class MainWindow(QMainWindow):
 		stats_scroll = QScrollArea()
 		stats_scroll.setWidget(self.stats_label)
 		stats_scroll.setWidgetResizable(True)
-		stats_layout.addWidget(stats_title)
-		stats_layout.addWidget(stats_scroll)
+		stats_left_panel = QWidget()
+		stats_left_layout = QVBoxLayout(stats_left_panel)
+		stats_left_layout.setContentsMargins(0, 0, 0, 0)
+		stats_left_layout.setSpacing(2)
+		stats_left_layout.addWidget(stats_title)
+		stats_left_layout.addWidget(stats_scroll)
+
+		all_metrics_title = QLabel("All Metrics")
+		all_metrics_title_font = QFont()
+		all_metrics_title_font.setPointSize(9)
+		all_metrics_title_font.setBold(True)
+		all_metrics_title.setFont(all_metrics_title_font)
+		self.all_metrics_table = QTableView()
+		self.all_metrics_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+		self.all_metrics_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+		self.all_metrics_table.setSortingEnabled(True)
+		self.all_metrics_table.verticalHeader().setVisible(False)
+		self.all_metrics_table.setFont(QFont("Monospace", 7))
+		self._all_metrics_df = pd.DataFrame(columns=["metric", "min", "avg", "max"])
+		self._set_all_metrics_table_model(self._all_metrics_df)
+		stats_right_panel = QWidget()
+		stats_right_layout = QVBoxLayout(stats_right_panel)
+		stats_right_layout.setContentsMargins(0, 0, 0, 0)
+		stats_right_layout.setSpacing(2)
+		stats_right_layout.addWidget(all_metrics_title)
+		stats_right_layout.addWidget(self.all_metrics_table)
+
+		stats_content_splitter = QSplitter(Qt.Orientation.Horizontal)
+		stats_content_splitter.addWidget(stats_left_panel)
+		stats_content_splitter.addWidget(stats_right_panel)
+		stats_content_splitter.setSizes([430, 310])
+		stats_layout.addWidget(stats_content_splitter)
 
 		# Right panel: plots on top, metric list + stats below, zoom at bottom
 		right_panel = QWidget()
+		self.right_panel = right_panel
 		right_layout = QVBoxLayout(right_panel)
 		right_layout.setContentsMargins(0, 0, 0, 0)
 		right_layout.setSpacing(2)
@@ -293,30 +324,21 @@ class MainWindow(QMainWindow):
 		self.left_tabs = QTabWidget()
 		self.left_tabs.setDocumentMode(True)
 		self.left_tabs.setTabPosition(QTabWidget.TabPosition.North)
+		self.left_tabs.setMinimumWidth(0)
+		self.left_tabs.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
 
-		trip_filter_bar = QWidget()
-		trip_filter_layout = QHBoxLayout(trip_filter_bar)
-		trip_filter_layout.setContentsMargins(2, 1, 2, 1)
-		trip_filter_layout.setSpacing(4)
-		trip_filter_layout.addWidget(QLabel("Distance km:"))
 		self.trip_distance_min_filter = QLineEdit()
 		self.trip_distance_min_filter.setPlaceholderText("min")
 		self.trip_distance_min_filter.setFixedWidth(52)
 		self.trip_distance_max_filter = QLineEdit()
 		self.trip_distance_max_filter.setPlaceholderText("max")
 		self.trip_distance_max_filter.setFixedWidth(52)
-		trip_filter_layout.addWidget(self.trip_distance_min_filter)
-		trip_filter_layout.addWidget(self.trip_distance_max_filter)
-		trip_filter_layout.addWidget(QLabel("Trip date:"))
 		self.trip_date_filter = QLineEdit()
 		self.trip_date_filter.setPlaceholderText("YYYY-MM-DD or text")
 		self.trip_date_filter.setFixedWidth(118)
-		trip_filter_layout.addWidget(self.trip_date_filter)
-		trip_filter_layout.addWidget(QLabel("Time min:"))
 		self.trip_time_filter = QLineEdit()
 		self.trip_time_filter.setPlaceholderText("seconds")
 		self.trip_time_filter.setFixedWidth(64)
-		trip_filter_layout.addWidget(self.trip_time_filter)
 		self.trip_filters_apply_btn = QPushButton("Apply")
 		self.trip_filters_clear_btn = QPushButton("Clear")
 		self.trip_filters_apply_btn.clicked.connect(self._apply_trip_filters)
@@ -325,29 +347,59 @@ class MainWindow(QMainWindow):
 		self.trip_distance_max_filter.returnPressed.connect(self._apply_trip_filters)
 		self.trip_date_filter.returnPressed.connect(self._apply_trip_filters)
 		self.trip_time_filter.returnPressed.connect(self._apply_trip_filters)
-		trip_filter_layout.addWidget(self.trip_filters_apply_btn)
-		trip_filter_layout.addWidget(self.trip_filters_clear_btn)
-		trip_filter_layout.addStretch()
-		trip_filter_bar.setMaximumHeight(34)
+
+		trip_filter_row1 = QWidget()
+		trip_filter_row1_layout = QHBoxLayout(trip_filter_row1)
+		trip_filter_row1_layout.setContentsMargins(2, 1, 2, 1)
+		trip_filter_row1_layout.setSpacing(4)
+		trip_filter_row1_layout.addWidget(QLabel("Distance km:"))
+		trip_filter_row1_layout.addWidget(self.trip_distance_min_filter)
+		trip_filter_row1_layout.addWidget(self.trip_distance_max_filter)
+		trip_filter_row1_layout.addWidget(QLabel("Trip date:"))
+		trip_filter_row1_layout.addWidget(self.trip_date_filter)
+		trip_filter_row1_layout.addStretch()
+		trip_filter_row1.setMaximumHeight(28)
+
+		trip_filter_row2 = QWidget()
+		trip_filter_row2_layout = QHBoxLayout(trip_filter_row2)
+		trip_filter_row2_layout.setContentsMargins(2, 1, 2, 1)
+		trip_filter_row2_layout.setSpacing(4)
+		trip_filter_row2_layout.addWidget(QLabel("Time min:"))
+		trip_filter_row2_layout.addWidget(self.trip_time_filter)
+		trip_filter_row2_layout.addWidget(self.trip_filters_apply_btn)
+		trip_filter_row2_layout.addWidget(self.trip_filters_clear_btn)
+		trip_filter_row2_layout.addStretch()
+		trip_filter_row2.setMaximumHeight(28)
+
+		trip_filter_bar = QWidget()
+		trip_filter_bar_layout = QVBoxLayout(trip_filter_bar)
+		trip_filter_bar_layout.setContentsMargins(0, 0, 0, 0)
+		trip_filter_bar_layout.setSpacing(1)
+		trip_filter_bar_layout.addWidget(trip_filter_row1)
+		trip_filter_bar_layout.addWidget(trip_filter_row2)
 		trip_filter_bar.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
 		trips_tab = QWidget()
 		trips_tab_layout = QVBoxLayout(trips_tab)
 		trips_tab_layout.setContentsMargins(2, 2, 2, 2)
 		trips_tab_layout.setSpacing(2)
-		trips_tab_layout.addWidget(trip_filter_bar)
 		trips_tab_layout.addWidget(self.table)
+		trips_tab_layout.addWidget(trip_filter_bar)
 		self.left_tabs.addTab(trips_tab, "Trips")
 
 		self._positions_tab_container = QWidget()
 		self._positions_tab_layout = QVBoxLayout(self._positions_tab_container)
 		self._positions_tab_layout.setContentsMargins(0, 0, 0, 0)
 		self._positions_tab_layout.setSpacing(0)
+		self._positions_tab_container.setMinimumWidth(0)
+		self._positions_tab_container.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
 
 		self._start_end_tab_container = QWidget()
 		self._start_end_tab_layout = QVBoxLayout(self._start_end_tab_container)
 		self._start_end_tab_layout.setContentsMargins(0, 0, 0, 0)
 		self._start_end_tab_layout.setSpacing(0)
+		self._start_end_tab_container.setMinimumWidth(0)
+		self._start_end_tab_container.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
 
 		self.left_tabs.addTab(self._start_end_tab_container, "Start/End")
 		self.left_tabs.addTab(self._positions_tab_container, "Positions")
@@ -357,7 +409,7 @@ class MainWindow(QMainWindow):
 
 		splitter.addWidget(self.left_tabs)
 		splitter.addWidget(right_panel)
-		splitter.setSizes([150, 600])  # Give more space to the map panel
+		splitter.setSizes([150, 600])
 
 		container = QWidget()
 		layout = QVBoxLayout(container)
@@ -412,6 +464,12 @@ class MainWindow(QMainWindow):
 			action.triggered.connect(lambda checked, name=cmap_name: self._set_colormap(name))
 			colormap_menu.addAction(action)
 			self._colormap_actions[cmap_name] = action
+		view_menu.addSeparator()
+		self._fill_map_panel_action = QAction("Fill &Trip Map Panel", self)
+		self._fill_map_panel_action.setCheckable(True)
+		self._fill_map_panel_action.setChecked(self._fill_map_panel)
+		self._fill_map_panel_action.toggled.connect(self._set_fill_map_panel)
+		view_menu.addAction(self._fill_map_panel_action)
 
 		# Cache menu
 		cache_menu = menu_bar.addMenu("&Cache")
@@ -463,6 +521,8 @@ class MainWindow(QMainWindow):
 		if embedded is None:
 			return
 		embedded.setParent(self._positions_tab_container)
+		embedded.setMinimumSize(0, 0)
+		embedded.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
 		self._positions_tab_layout.addWidget(embedded)
 		embedded.show()
 		self._position_manager_embedded_widget = embedded
@@ -476,13 +536,13 @@ class MainWindow(QMainWindow):
 			self._start_end_window = StartEndWindow(self.args, self.engine, self)
 			if hasattr(self._start_end_window, "set_table_font_size"):
 				self._start_end_window.set_table_font_size(self._trip_table_font_size)
-		embedded = self._start_end_window.takeCentralWidget()
-		if embedded is None:
-			return
-		embedded.setParent(self._start_end_tab_container)
-		self._start_end_tab_layout.addWidget(embedded)
-		embedded.show()
-		self._start_end_embedded_widget = embedded
+		left_panel = self._start_end_window.left_panel
+		left_panel.setParent(self._start_end_tab_container)
+		left_panel.setMinimumSize(0, 0)
+		left_panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+		self._start_end_tab_layout.addWidget(left_panel)
+		left_panel.show()
+		self._start_end_embedded_widget = left_panel
 
 	def _open_database(self):
 		path, _ = QFileDialog.getOpenFileName(self, "Open Database", "", "SQLite Database (*.db);;All Files (*)")
@@ -530,13 +590,14 @@ class MainWindow(QMainWindow):
 			action.setChecked(name == colormap_name)
 		self._plot_refresh_timer.start(200)
 
+	def _set_fill_map_panel(self, enabled: bool):
+		self._fill_map_panel = bool(enabled)
+		self._plot_refresh_timer.start(50)
+
 	def on_zoom_changed(self, zoom_level):
-		"""Called when user changes map zoom"""
-		# Debounce zoom updates to avoid blocking UI with repeated basemap fetches.
 		self._plot_refresh_timer.start(300)
 
 	def on_dot_size_changed(self, value: int):
-		"""Called when user adjusts map dot size multiplier."""
 		self._dot_size_scale = float(value) / 100.0
 		self.dot_size_value_label.setText(f"{self._dot_size_scale:.2f}x")
 		self._plot_refresh_timer.start(120)
@@ -545,10 +606,70 @@ class MainWindow(QMainWindow):
 		pct = max(1, min(100, int(self._point_sample_percent)))
 		return max(1, int(round(100.0 / float(pct))))
 
+	def _load_trip_row_count(self, fileid: int) -> int:
+		cached = self._trip_row_count_cache.get(int(fileid))
+		if cached is not None:
+			return int(cached)
+		count = 0
+		try:
+			q = text(
+				"""
+				SELECT COALESCE(sent_rows, 0)
+				FROM torqfiles
+				WHERE fileid = :fileid
+				LIMIT 1
+				"""
+			)
+			with self.engine.connect() as conn:
+				row = conn.execute(q, {"fileid": int(fileid)}).first()
+			if row and row[0] is not None:
+				count = max(0, int(row[0]))
+		except Exception as e:
+			logger.error(f"Could not load torqfiles.sent_rows for fileid={fileid}: {e} ({type(e)})")
+		if count <= 0:
+			try:
+				cq = text(
+					"""
+					SELECT COUNT(*)
+					FROM torqlogs
+					WHERE fileid = :fileid
+					"""
+				)
+				with self.engine.connect() as conn:
+					value = conn.execute(cq, {"fileid": int(fileid)}).scalar()
+				if value is not None:
+					count = max(0, int(value))
+			except Exception as e:
+				logger.warning(f"Could not count torqlogs rows for fileid={fileid}: {e} ({type(e)})")
+				count = 0
+		self._trip_row_count_cache[int(fileid)] = int(count)
+		return int(count)
+
+	def _adaptive_sample_step(self, row_count: int, base_step: int | None = None) -> int:
+		step = max(1, int(base_step if base_step is not None else self._sample_step()))
+		rows = max(0, int(row_count))
+		if rows <= 0:
+			return step
+		max_points = max(1000, int(self._sampling_target_points_per_trip))
+		if rows // step > max_points:
+			step = max(step, int(np.ceil(rows / float(max_points))))
+		return max(1, int(step))
+
+	def _sample_step_for_fileid(self, fileid: int) -> int:
+		row_count = self._load_trip_row_count(int(fileid))
+		return self._adaptive_sample_step(row_count)
+
+	def _sampling_cache_token(self, fileids: list[int]) -> str:
+		if not fileids:
+			return f"base={self._sample_step()}"
+		parts = [f"{int(fid)}:{self._sample_step_for_fileid(int(fid))}" for fid in sorted(fileids)]
+		return "|".join(parts)
+
 	def _on_sampling_changed(self, value: int):
 		self._point_sample_percent = max(1, min(100, int(value)))
 		self._trip_plot_cache.clear()
 		self._trip_geo_cache.clear()
+		self._trip_row_count_cache.clear()
 		self._plot_refresh_timer.start(100)
 
 	def _on_bounds_padding_changed(self, value: int):
@@ -573,7 +694,8 @@ class MainWindow(QMainWindow):
 			return None
 		try:
 			return float(text_value)
-		except ValueError:
+		except ValueError as e:
+			logger.warning(f"Could not parse float from '{text_value}': {e}")
 			return None
 
 	def _apply_trip_filters(self, auto_select_latest: bool = False):
@@ -607,10 +729,10 @@ class MainWindow(QMainWindow):
 		self.trip_distance_max_filter.clear()
 		self.trip_date_filter.clear()
 		self.trip_time_filter.clear()
+		self._trip_row_count_cache.clear()
 		self._apply_trip_filters(auto_select_latest=False)
 
 	def on_metric_selection_changed(self):
-		"""Called when user changes the metric selection in the list."""
 		if self._get_selected_metrics():
 			self._plot_refresh_timer.start(200)
 
@@ -618,42 +740,6 @@ class MainWindow(QMainWindow):
 		self._show_all_start_end_points = bool(checked)
 		self.toggle_all_start_end_btn.setText("All points on" if checked else "All points off")
 		self._plot_refresh_timer.start(120)
-
-	@staticmethod
-	def _lonlat_to_web_mercator(lon: float, lat: float) -> tuple[float, float]:
-		lat_clamped = max(-85.05112878, min(85.05112878, float(lat)))
-		x = float(lon) * 20037508.34 / 180.0
-		y = np.log(np.tan(np.pi / 4.0 + np.deg2rad(lat_clamped) / 2.0)) * 6378137.0
-		return float(x), float(y)
-
-	@staticmethod
-	def _web_mercator_to_lonlat(x: float, y: float) -> tuple[float, float]:
-		lon = (float(x) / 20037508.34) * 180.0
-		lat = np.rad2deg(2.0 * np.arctan(np.exp(float(y) / 6378137.0)) - np.pi / 2.0)
-		return float(lon), float(lat)
-
-	def _clear_start_end_overlays(self):
-		for artist in self._start_end_overlay_artists:
-			if artist is None or getattr(artist, "axes", None) is None:
-				continue
-			try:
-				artist.remove()
-			except NotImplementedError as e:
-				logger.debug(f"Start/end overlay artist already detached during redraw: {e} ({type(e)})")
-			except Exception as e:
-				logger.error(f"Failed to remove start/end overlay artist: {e} ({type(e)})")
-		for lbl in self._start_end_overlay_labels:
-			if lbl is None or getattr(lbl, "axes", None) is None:
-				continue
-			try:
-				lbl.remove()
-			except NotImplementedError as e:
-				logger.debug(f"Start/end overlay label already detached during redraw: {e} ({type(e)})")
-			except Exception as e:
-				logger.error(f"Failed to remove start/end overlay label: {e} ({type(e)})")
-		self._start_end_overlay_artists = []
-		self._start_end_overlay_labels = []
-		self._start_end_overlay_data = []
 
 	def _load_selected_file_start_end_points(self, fileids: list[int]) -> list[dict[str, Any]]:
 		if not fileids:
@@ -682,87 +768,104 @@ class MainWindow(QMainWindow):
 			result.append(dict(row))
 		return result
 
-	def _load_visible_start_end_points(self, bounds_mercator: tuple[float, float, float, float]) -> list[dict[str, Any]]:
-		xmin, xmax, ymin, ymax = bounds_mercator
-		lon_min, lat_min = self._web_mercator_to_lonlat(xmin, ymin)
-		lon_max, lat_max = self._web_mercator_to_lonlat(xmax, ymax)
-		lat_lo, lat_hi = (min(lat_min, lat_max), max(lat_min, lat_max))
-		lon_lo, lon_hi = (min(lon_min, lon_max), max(lon_min, lon_max))
+	def _load_visible_start_end_points_latlon(
+		self, bounds_latlon: tuple[float, float, float, float]
+	) -> list[dict]:
+		lat_min, lon_min, lat_max, lon_max = bounds_latlon
 		q = text(
 			"""
 			SELECT 'start' AS pos_type, startid AS pos_id, latstart AS lat, lonstart AS lon, label
-			FROM startpos
-			WHERE latstart BETWEEN :lat_lo AND :lat_hi
-			  AND lonstart BETWEEN :lon_lo AND :lon_hi
+			FROM startpos WHERE latstart BETWEEN :lat_lo AND :lat_hi AND lonstart BETWEEN :lon_lo AND :lon_hi
 			UNION ALL
 			SELECT 'end' AS pos_type, endid AS pos_id, latend AS lat, lonend AS lon, label
-			FROM endpos
-			WHERE latend BETWEEN :lat_lo AND :lat_hi
-			  AND lonend BETWEEN :lon_lo AND :lon_hi
+			FROM endpos WHERE latend BETWEEN :lat_lo AND :lat_hi AND lonend BETWEEN :lon_lo AND :lon_hi
 			"""
 		)
 		with self.engine.connect() as conn:
-			rows = conn.execute(q, {
-				"lat_lo": lat_lo,
-				"lat_hi": lat_hi,
-				"lon_lo": lon_lo,
-				"lon_hi": lon_hi,
-			}).mappings().all()
-		return [dict(r) for r in rows if r.get("lat") is not None and r.get("lon") is not None and r.get("pos_id") is not None]
+			rows = conn.execute(q, {"lat_lo": lat_min, "lat_hi": lat_max, "lon_lo": lon_min, "lon_hi": lon_max}).mappings().all()
+		return [dict(r) for r in rows if r.get("lat") is not None and r.get("lon") is not None]
 
-	def _overlay_start_end_points(self, fileids: list[int], bounds_mercator: tuple[float, float, float, float] | None):
-		self._clear_start_end_overlays()
+	def _overlay_start_end_points(
+		self, m: folium.Map, fileids: list[int], bounds_latlon: tuple[float, float, float, float] | None
+	) -> None:
 		selected_points = self._load_selected_file_start_end_points(fileids)
-		all_points: list[dict[str, Any]] = []
-		if self._show_all_start_end_points and bounds_mercator is not None:
-			all_points = self._load_visible_start_end_points(bounds_mercator)
+		all_points: list[dict] = []
+		if self._show_all_start_end_points and bounds_latlon is not None:
+			all_points = self._load_visible_start_end_points_latlon(bounds_latlon)
 
 		seen: set[tuple[str, int]] = set()
-		merged: list[tuple[dict[str, Any], bool]] = []
+		merged: list[tuple[dict, bool]] = []
 		for p in selected_points:
 			key = (str(p.get("pos_type", "")), int(p.get("pos_id", 0)))
-			if key in seen:
-				continue
-			seen.add(key)
-			merged.append((p, True))
+			if key not in seen:
+				seen.add(key)
+				merged.append((p, True))
 		for p in all_points:
 			key = (str(p.get("pos_type", "")), int(p.get("pos_id", 0)))
-			if key in seen:
-				continue
-			seen.add(key)
-			merged.append((p, False))
+			if key not in seen:
+				seen.add(key)
+				merged.append((p, False))
 
+		self._start_end_overlay_data = []
+		features: list[dict] = []
 		for point, is_selected_file in merged:
 			lat = float(point.get("lat", 0.0))
 			lon = float(point.get("lon", 0.0))
-			x, y = self._lonlat_to_web_mercator(lon, lat)
 			pos_type = str(point.get("pos_type", ""))
 			pos_id = int(point.get("pos_id", 0))
 			label_text = str(point.get("label", "")).strip()
 			prefix = "S" if pos_type == "start" else "E"
 			full_label = f"{prefix}{pos_id}: {label_text}" if label_text else f"{prefix}{pos_id}"
-			color = "limegreen" if pos_type == "start" else "darkorange"
-			alpha = 1.0 if is_selected_file else 0.55
-			size = 90 if is_selected_file else 48
-			artist = self.map_canvas.ax.scatter([x], [y], s=size, c=color, marker="D", edgecolors="black", linewidths=0.5, alpha=alpha, zorder=4, picker=8)
-			self._start_end_overlay_artists.append(artist)
+			color = "green" if pos_type == "start" else "orange"
+			size = 9 if is_selected_file else 5
+			opacity = 1.0 if is_selected_file else 0.55
+			features.append({
+				"type": "Feature",
+				"geometry": {"type": "Point", "coordinates": [lon, lat]},
+				"properties": {
+					"pos_type": pos_type,
+					"pos_id": pos_id,
+					"lat": lat,
+					"lon": lon,
+					"label": label_text,
+					"tooltip": full_label,
+					"color": color,
+					"radius": size,
+					"fillOpacity": opacity,
+				},
+			})
 			self._start_end_overlay_data.append(dict(point))
-			label_artist = self.map_canvas.ax.annotate(
-				full_label,
-				(x, y),
-				xytext=(3, -10),
-				textcoords="offset points",
-				ha="left",
-				va="top",
-				fontsize=7,
-				color="black",
-				bbox={"boxstyle": "round,pad=0.12", "facecolor": "white", "alpha": 0.6, "edgecolor": "none"},
-				zorder=5,
+
+		if features:
+			on_each_feature = (
+				"function(feature, layer) {"
+				"  layer.on('click', function(e) {"
+				"    e.originalEvent.stopPropagation();"
+				"    var p = feature.properties;"
+				"    var d = JSON.stringify({pos_type: p.pos_type, pos_id: p.pos_id, lat: p.lat, lon: p.lon, label: p.label});"
+				"    new QWebChannel(qt.webChannelTransport, function(ch) {"
+				"      ch.objects.bridge.on_point_clicked(d);"
+				"    });"
+				"  });"
+				"}"
 			)
-			self._start_end_overlay_labels.append(label_artist)
+			folium.GeoJson(
+				{"type": "FeatureCollection", "features": features},
+				marker=folium.CircleMarker(radius=6, fill=True),
+				style_function=lambda f: {
+					"fillColor": f["properties"]["color"],
+					"color": f["properties"]["color"],
+					"radius": f["properties"]["radius"],
+					"weight": 1,
+					"fill": True,
+					"fillOpacity": f["properties"]["fillOpacity"],
+				},
+				tooltip=folium.GeoJsonTooltip(fields=["tooltip"], aliases=[""]),
+				name="start_end_points",
+				on_each_feature=on_each_feature,
+			).add_to(m)
 
 	def _get_selected_metrics(self) -> list[str]:
-		"""Return all currently selected metric names from the metric table."""
 		selection_model = self.metric_table.selectionModel()
 		if selection_model is None or self._metric_df.empty:
 			return []
@@ -774,7 +877,6 @@ class MainWindow(QMainWindow):
 		return result
 
 	def _get_selected_metric(self) -> str:
-		"""Return the first selected metric (used for map coloring)."""
 		metrics = self._get_selected_metrics()
 		if metrics:
 			return metrics[0]
@@ -796,6 +898,21 @@ class MainWindow(QMainWindow):
 		selection_model = self.metric_table.selectionModel()
 		if selection_model is not None:
 			selection_model.selectionChanged.connect(lambda *_: self.on_metric_selection_changed())
+
+	def _set_all_metrics_table_model(self, df: pd.DataFrame):
+		self._all_metrics_df = df.reset_index(drop=True)
+		display_columns = ["metric", "min", "avg", "max"]
+		self.all_metrics_table_model = PandasModel(self._all_metrics_df, display_columns=display_columns)
+		self.all_metrics_table.setModel(self.all_metrics_table_model)
+		hdr = self.all_metrics_table.horizontalHeader()
+		hdr.setStretchLastSection(False)
+		hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+		self.all_metrics_table.resizeColumnsToContents()
+		if self.all_metrics_table.model() is not None:
+			self.all_metrics_table.setColumnWidth(0, 186)
+			self.all_metrics_table.setColumnWidth(1, 68)
+			self.all_metrics_table.setColumnWidth(2, 68)
+			self.all_metrics_table.setColumnWidth(3, 68)
 
 	def _set_label_groups_table_model(self, df: pd.DataFrame):
 		self._label_groups_df = df.reset_index(drop=True)
@@ -832,7 +949,6 @@ class MainWindow(QMainWindow):
 		self.table.setFont(font)
 		self.table.setSortingEnabled(True)
 		self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-		# Allow Ctrl/Shift multi-select so multiple trips can be plotted together.
 		self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
 		self.table.selectionModel().selectionChanged.connect(self.on_row_selected)
 		hdr = self.table.horizontalHeader()
@@ -983,7 +1099,7 @@ class MainWindow(QMainWindow):
 				selected_labels.append(str(self._label_groups_df.iloc[row]["label"]))
 		return selected_labels
 
-	def _plot_label_groups_on_map(self, labels: list[str]):
+	def _plot_label_groups_on_map(self, labels: list[str]) -> None:
 		if not labels or self._start_end_points_df.empty:
 			return
 
@@ -995,39 +1111,35 @@ class MainWindow(QMainWindow):
 		if points.empty:
 			return
 
-		points["x"] = points.apply(lambda r: self._lonlat_to_web_mercator(float(r["lon"]), float(r["lat"]))[0], axis=1)
-		points["y"] = points.apply(lambda r: self._lonlat_to_web_mercator(float(r["lon"]), float(r["lat"]))[1], axis=1)
+		all_lat = pd.to_numeric(points["lat"], errors="coerce").dropna().tolist()
+		all_lon = pd.to_numeric(points["lon"], errors="coerce").dropna().tolist()
+		if not all_lat:
+			return
 
-		self._clear_start_end_overlays()
-		self.map_canvas.ax.clear()
-		self.timeseries_canvas.ax.clear()
-		self.timeseries_canvas.draw_idle()
+		bounds = self._compute_plot_bounds_latlon(all_lat, all_lon)
+		lat_min, lon_min, lat_max, lon_max = bounds or (min(all_lat), min(all_lon), max(all_lat), max(all_lon))
+		clat = (lat_min + lat_max) / 2
+		clon = (lon_min + lon_max) / 2
+		m = folium.Map(location=[clat, clon], zoom_start=int(self.zoom_combo.currentText()))
+		m.fit_bounds([[lat_min, lon_min], [lat_max, lon_max]])
 
-		start_points = points[points["pos_type"] == "start"]
-		end_points = points[points["pos_type"] == "end"]
-		if not start_points.empty:
-			self.map_canvas.ax.scatter(start_points["x"], start_points["y"], s=42, c="limegreen", marker="o", alpha=0.75, label="start", zorder=2)
-		if not end_points.empty:
-			self.map_canvas.ax.scatter(end_points["x"], end_points["y"], s=42, c="darkorange", marker="^", alpha=0.75, label="end", zorder=2)
+		start_pts = points[points["pos_type"] == "start"]
+		end_pts = points[points["pos_type"] == "end"]
+		for _, r in start_pts.iterrows():
+			folium.CircleMarker([float(r["lat"]), float(r["lon"])], radius=6, color="green",
+								fill=True, fill_color="green", fill_opacity=0.75).add_to(m)
+		for _, r in end_pts.iterrows():
+			folium.CircleMarker([float(r["lat"]), float(r["lon"])], radius=6, color="orange",
+								fill=True, fill_color="orange", fill_opacity=0.75).add_to(m)
 
-		all_x = points["x"].tolist()
-		all_y = points["y"].tolist()
-		bounds = self._compute_plot_bounds(all_x, all_y)
 		if bounds:
-			xmin, xmax, ymin, ymax = bounds
-			self.map_canvas.ax.set_xlim(xmin, xmax)
-			self.map_canvas.ax.set_ylim(ymin, ymax)
-			self._mw_full_bounds = bounds
+			self._mw_full_bounds_latlon = bounds
 			self._mw_current_fileids = []
 			self._mw_last_metric = "labels"
-			label_zoom = max(12, int(self.zoom_combo.currentText()))
-			self._start_async_basemap(bounds, label_zoom, [], self._current_colormap, "labels")
 
-		self.map_canvas.ax.legend(loc="best", fontsize=8)
-		self.map_canvas.ax.set_title(f"Start/End labels: {', '.join(labels[:3])}{'...' if len(labels) > 3 else ''}")
-		self.map_canvas.ax.set_xlabel("Longitude")
-		self.map_canvas.ax.set_ylabel("Latitude")
-		self.map_canvas.draw_idle()
+		self.map_canvas.display_map(m)
+		self.timeseries_canvas.ax.clear()
+		self.timeseries_canvas.draw_idle()
 		self.stats_label.setText(f"Selected labels: {len(labels)}\nPoints shown: {len(points)}")
 
 	def _select_torqtrips_for_selected_labels(self):
@@ -1074,9 +1186,15 @@ class MainWindow(QMainWindow):
 			QMessageBox.information(self, "No matches", "No trips match the selected labels.")
 			return
 
+		self._select_trips_by_fileids(sorted(fileids), "No visible trips match the selected labels.")
+
+	def _select_trips_by_fileids(self, fileids: list[int], no_visible_message: str) -> bool:
+		if not fileids:
+			return False
+
 		selection_model = self.table.selectionModel()
 		if selection_model is None:
-			return
+			return False
 
 		table_df = self.df_trips.reset_index(drop=True)
 		matching_rows = [
@@ -1085,8 +1203,8 @@ class MainWindow(QMainWindow):
 			if fid in fileids
 		]
 		if not matching_rows:
-			QMessageBox.information(self, "No matches", "No visible trips match the selected labels.")
-			return
+			QMessageBox.information(self, "No matches", no_visible_message)
+			return False
 
 		self._suppress_trip_selection_handler = True
 		selection_model.blockSignals(True)
@@ -1106,13 +1224,17 @@ class MainWindow(QMainWindow):
 		selected_fileids = self._get_selected_fileids(matching_rows)
 		self._populate_metric_columns(selected_fileids if selected_fileids else None)
 		self._plot_refresh_timer.start(120)
+		return True
 
 	def _on_left_tab_changed(self, index: int):
+		if hasattr(self, "right_panel") and self.right_panel is not None:
+			self.right_panel.setVisible(index != 2)
 		if hasattr(self, "main_splitter") and self.main_splitter is not None:
 			sizes = self.main_splitter.sizes()
-			if len(sizes) >= 2 and sizes[0] > 500:
-				self.main_splitter.setSizes([420, max(700, sizes[1])])
-		# Keep metric panel in sync when returning to Trips tab.
+			if len(sizes) >= 2:
+				total = max(1, sizes[0] + sizes[1])
+				if index == 0:
+					self.main_splitter.setSizes([320, max(900, total - 320)])
 		if index == 0:
 			rows = sorted(set(idx.row() for idx in self.table.selectionModel().selectedRows())) if self.table.selectionModel() is not None else []
 			self._populate_metric_columns(self._get_selected_fileids(rows) if rows else None)
@@ -1237,8 +1359,6 @@ class MainWindow(QMainWindow):
 		return [str(name) for name in summary_df["name"].tolist()]
 
 	def refresh_plot(self):
-		"""Refresh the current plot with selected rows"""
-		# Get currently selected rows and replot
 		rows = sorted(set(index.row() for index in self.table.selectionModel().selectedRows()))
 		if rows:
 			logger.debug(f"refresh_plot triggered with {len(rows)} selected row(s): {rows[:5]}{'...' if len(rows) > 5 else ''}")
@@ -1249,8 +1369,12 @@ class MainWindow(QMainWindow):
 
 	def _start_async_plot_for_rows(self, rows: list[int]):
 		fileids = self._get_selected_fileids(rows)
+		self._start_async_plot_for_fileids(fileids)
+
+	def _start_async_plot_for_fileids(self, fileids: list[int]):
 		if not fileids:
 			self.stats_label.setText("No trip selected")
+			self._set_all_metrics_table_model(pd.DataFrame(columns=["metric", "min", "avg", "max"]))
 			return
 
 		selected_metrics = self._get_selected_metrics()
@@ -1279,6 +1403,9 @@ class MainWindow(QMainWindow):
 			"selected_metric": selected_metric,
 			"colormap_name": self._current_colormap,
 			"preview_trips": {},
+			"last_preview_render_ts": 0.0,
+			"last_preview_render_done": 0,
+			"preview_render_min_interval_s": float(self._preview_render_min_interval_s),
 		}
 
 		sample_step = self._sample_step()
@@ -1319,70 +1446,64 @@ class MainWindow(QMainWindow):
 		self._active_threads.add(thread)
 		thread.start()
 
-	def _on_async_plot_preview(self, request_id: int, payload: object):
+	def _on_async_plot_preview(self, request_id: int, payload: object) -> None:
 		if request_id != self._plot_data_request_id:
 			return
 		ctx = self._plot_request_context.get(request_id)
 		if not ctx:
 			return
 
-		preview_payload = cast(dict[str, Any], payload)
-		trip_payload = cast(dict[str, Any] | None, preview_payload.get("trip"))
+		from typing import cast as _cast
+		preview_payload = _cast(dict, payload)
+		trip_payload = _cast(dict | None, preview_payload.get("trip"))
 		done = int(preview_payload.get("done", 0) or 0)
 		total = int(preview_payload.get("total", 0) or 0)
 
-		preview_trips = cast(dict[int, dict[str, Any]], ctx.get("preview_trips", {}))
+		preview_trips = _cast(dict, ctx.get("preview_trips", {}))
 		if trip_payload:
 			fid = int(trip_payload.get("fileid", -1))
 			if fid >= 0:
 				preview_trips[fid] = {
 					"fileid": fid,
-					"x": list(trip_payload.get("x", [])),
-					"y": list(trip_payload.get("y", [])),
+					"lat": list(trip_payload.get("lat", [])),
+					"lon": list(trip_payload.get("lon", [])),
+					"speed": [],
 				}
 
 		if not preview_trips:
-			self.stats_label.setText(f"Loading trip paths... ({done}/{max(1, total)})")
+			self.stats_label.setText(f"Loading trip paths... ({done}/{max(1,total)})")
 			return
 
-		self.map_canvas.ax.clear()
-		cmap_name = cast(str, ctx.get("colormap_name", self._current_colormap))
-		cmap = plt.colormaps[cmap_name]
-		cycle_length = 10 if cmap_name in ["tab10", "viridis", "plasma", "inferno", "magma"] else 9
+		# QWebEngine can emit SharedImage mailbox errors when HTML is replaced too frequently.
+		# Throttle interim preview redraws while still rendering the final preview frame.
+		is_final_preview = done >= max(1, total)
+		last_preview_render_ts = float(ctx.get("last_preview_render_ts", 0.0) or 0.0)
+		last_preview_render_done = int(ctx.get("last_preview_render_done", 0) or 0)
+		preview_render_min_interval_s = float(ctx.get("preview_render_min_interval_s", 0.25) or 0.25)
+		now = time.monotonic()
+		should_render_preview = is_final_preview
+		if not should_render_preview:
+			if last_preview_render_ts <= 0.0:
+				should_render_preview = True
+			elif done > last_preview_render_done and (now - last_preview_render_ts) >= preview_render_min_interval_s:
+				should_render_preview = True
+		if not should_render_preview:
+			self.stats_label.setText(f"Loading trip paths... ({done}/{max(1,total)})")
+			return
 
-		all_x: list[float] = []
-		all_y: list[float] = []
-		for idx, trip in enumerate(preview_trips.values()):
-			x_vals = cast(list[float], trip.get("x", []))
-			y_vals = cast(list[float], trip.get("y", []))
-			if not x_vals or not y_vals:
-				continue
-			all_x.extend(x_vals)
-			all_y.extend(y_vals)
-			self.map_canvas.ax.scatter(
-				x_vals,
-				y_vals,
-				s=max(1.0, 5.0 * self._dot_size_scale),
-				c=[cmap(idx % cycle_length)],
-				alpha=0.65,
-				zorder=2,
-			)
-
-		bounds = self._compute_plot_bounds(all_x, all_y)
-		if bounds:
-			xmin, xmax, ymin, ymax = bounds
-			self.map_canvas.ax.set_xlim(xmin, xmax)
-			self.map_canvas.ax.set_ylim(ymin, ymax)
-			self._mw_full_bounds = bounds
-			self._mw_current_fileids = cast(list[int], ctx.get("fileids", []))
-			self._mw_last_metric = "preview"
-			self._overlay_start_end_points(cast(list[int], ctx.get("fileids", [])), bounds)
-
-		self.map_canvas.ax.set_title("Trip Map - loading paths preview")
-		self.map_canvas.ax.set_xlabel("Longitude")
-		self.map_canvas.ax.set_ylabel("Latitude")
-		self.map_canvas.draw_idle()
-		self.stats_label.setText(f"Loading trip paths... ({done}/{max(1, total)})")
+		fileids = _cast(list, ctx.get("fileids", []))
+		colormap_name = _cast(str, ctx.get("colormap_name", self._current_colormap))
+		trip_list = list(preview_trips.values())
+		m, bounds = self._build_trip_folium_map(trip_list, fileids, colormap_name)
+		if m is not None:
+			if bounds:
+				self._mw_full_bounds_latlon = bounds
+				self._mw_current_fileids = fileids
+			self._overlay_start_end_points(m, fileids, bounds)
+			self.map_canvas.display_map(m)
+		ctx["last_preview_render_ts"] = now
+		ctx["last_preview_render_done"] = done
+		self.stats_label.setText(f"Loading trip paths... ({done}/{max(1,total)})")
 
 	def _cancel_async_plot_load(self):
 		thread = self._plot_data_thread
@@ -1394,7 +1515,7 @@ class MainWindow(QMainWindow):
 			self.stats_label.setText("Cancelling background load...")
 		self.cancel_plot_load_btn.setEnabled(False)
 
-	def _on_async_plot_data_loaded(self, request_id: int, payload: object):
+	def _on_async_plot_data_loaded(self, request_id: int, payload: object) -> None:
 		if request_id != self._plot_data_request_id:
 			return
 		self.cancel_plot_load_btn.setEnabled(False)
@@ -1402,98 +1523,43 @@ class MainWindow(QMainWindow):
 		if not ctx:
 			return
 
-		data = cast(dict[str, Any], payload)
-		trips = cast(list[dict[str, Any]], data.get("trips", []))
-		all_x = cast(list[float], data.get("all_x", []))
-		all_y = cast(list[float], data.get("all_y", []))
-		all_metric_values = cast(list[float], data.get("all_metric_values", []))
+		from typing import cast as _cast
+		data = _cast(dict, payload)
+		trips = _cast(list, data.get("trips", []))
+		all_lat = _cast(list, data.get("all_lat", []))
+		all_lon = _cast(list, data.get("all_lon", []))
+		all_metric_values = _cast(list, data.get("all_metric_values", []))
 
-		fileids = cast(list[int], ctx["fileids"])
-		selected_metrics = cast(list[str], ctx["selected_metrics"])
-		selected_metric = cast(str, ctx["selected_metric"])
-		colormap_name = cast(str, ctx["colormap_name"])
+		fileids = _cast(list, ctx["fileids"])
+		selected_metrics = _cast(list, ctx["selected_metrics"])
+		selected_metric = _cast(str, ctx["selected_metric"])
+		colormap_name = _cast(str, ctx["colormap_name"])
 
 		for item in trips:
 			fid = int(item.get("fileid", -1))
 			if fid >= 0:
 				self._trip_plot_cache[(fid, selected_metric)] = {
-					"x": list(item.get("x", [])),
-					"y": list(item.get("y", [])),
+					"lat": list(item.get("lat", [])),
+					"lon": list(item.get("lon", [])),
 					"speed": list(item.get("speed", [])),
 					"time": list(item.get("time", [])),
 				}
 
-		self._clear_start_end_overlays()
-		self.map_canvas.ax.clear()
+		fileid_color_map = self._build_fileid_color_map(fileids, colormap_name)
+		m, bounds = self._build_trip_folium_map(trips, fileids, colormap_name)
 
-		cmap = plt.colormaps[colormap_name]
-		if colormap_name in ['tab10']:
-			cycle_length = 10
-		elif colormap_name in ['tab20', 'tab20b', 'tab20c']:
-			cycle_length = 20
-		elif colormap_name in ['Set1']:
-			cycle_length = 9
-		elif colormap_name in ['Set2', 'Dark2', 'Pastel2']:
-			cycle_length = 8
-		elif colormap_name in ['Set3', 'Pastel1']:
-			cycle_length = 12
+		if m is not None:
+			self._overlay_start_end_points(m, fileids, bounds)
+			if bounds:
+				self._mw_full_bounds_latlon = bounds
+				self._mw_current_fileids = list(fileids)
+				self._mw_last_metric = selected_metric
+			self.map_canvas.display_map(m)
 		else:
-			cycle_length = 10
+			self.map_canvas.show_empty("No GPS data")
 
-		plots = []
-		for idx, trip in enumerate(trips):
-			x_vals = cast(list[float], trip.get("x", []))
-			y_vals = cast(list[float], trip.get("y", []))
-			speed_vals = pd.to_numeric(pd.Series(trip.get("speed", [])), errors='coerce').fillna(0)
-			if not x_vals or not y_vals:
-				continue
-			sizes = (speed_vals.clip(lower=1, upper=50) * self._dot_size_scale).clip(lower=1, upper=200)
-			base_color = cmap(idx % cycle_length)
-			speed_abs_max = float(speed_vals.abs().max())
-			colors = [(
-				max(0.0, min(1.0, base_color[0] + 0.5 * (v / speed_abs_max if speed_abs_max > 0 else 0))),
-				max(0.0, min(1.0, base_color[1] + 0.5 * (v / speed_abs_max if speed_abs_max > 0 else 0))),
-				max(0.0, min(1.0, base_color[2] + 0.5 * (v / speed_abs_max if speed_abs_max > 0 else 0))),
-				base_color[3],
-			) for v in speed_vals]
-			sc = self.map_canvas.ax.scatter(
-				x_vals,
-				y_vals,
-				s=sizes,
-				c=colors,
-				label=f"fileid {int(trip.get('fileid', -1))}",
-				zorder=2,
-			)
-			plots.append(sc)
-
-		bounds = self._compute_plot_bounds(all_x, all_y)
-		effective_zoom = self._base_zoom_for_selection(fileids, int(self.zoom_combo.currentText()))
-		cached_payload: tuple[bytes, tuple[float, float, float, float]] | None = None
-		if bounds:
-			effective_zoom = self._effective_basemap_zoom(bounds, effective_zoom)
-			cached_payload = self._load_cached_map_image(fileids, effective_zoom, colormap_name, selected_metric)
-			xmin, xmax, ymin, ymax = bounds
-			self.map_canvas.ax.set_xlim(xmin, xmax)
-			self.map_canvas.ax.set_ylim(ymin, ymax)
-			self._mw_full_bounds = bounds
-			self._mw_current_fileids = list(fileids)
-			self._mw_last_metric = selected_metric
-
-		self._overlay_start_end_points(fileids, bounds)
-
-		if plots and cached_payload:
-			cached_img, cached_ext = cached_payload
-			img = mpimg.imread(io.BytesIO(cached_img), format='png')
-			self.map_canvas.ax.imshow(img, extent=cached_ext, interpolation='bilinear', zorder=0)
-		elif plots and bounds:
-			self._start_async_basemap(bounds, effective_zoom, fileids, colormap_name, selected_metric)
-
-		self.map_canvas.ax.set_title(f"Trip Map - {selected_metric}")
-		self.map_canvas.ax.set_xlabel("Longitude")
-		self.map_canvas.ax.set_ylabel("Latitude")
-		self.map_canvas.draw_idle()
-		self._update_timeseries_plot(fileids, selected_metrics, colormap_name)
-		self._update_stats_panel(fileids, all_metric_values, all_x, all_y, selected_metric)
+		self._update_timeseries_plot(fileids, selected_metrics, colormap_name, fileid_color_map)
+		self._update_stats_panel(fileids, all_metric_values, all_lat, all_lon, selected_metric)
 
 	def _on_async_plot_data_progress(self, request_id: int, done: int, total: int):
 		if request_id != self._plot_data_request_id:
@@ -1535,44 +1601,42 @@ class MainWindow(QMainWindow):
 			return None
 
 		time_select = f', "{time_col}" AS metric_time' if time_col else ''
-		order_col = f'"{time_col}"' if time_col else 'id'
-		sample_where = " AND MOD(id, :sample_step) = 0" if self._sample_step() > 1 else ""
+		order_expr = f'"{time_col}", id' if time_col else 'id'
+		sample_step = self._sample_step_for_fileid(fileid)
 		q = text(
-			f'SELECT "{lon_col}" AS longitude, "{lat_col}" AS latitude{time_select} '
-			f'FROM torqlogs WHERE fileid = :fileid{sample_where} ORDER BY {order_col}'
+			f'''
+			WITH ordered AS (
+				SELECT "{lon_col}" AS longitude, "{lat_col}" AS latitude{time_select},
+					ROW_NUMBER() OVER (ORDER BY {order_expr}) AS rn
+				FROM torqlogs
+				WHERE fileid = :fileid
+					AND "{lon_col}" IS NOT NULL
+					AND "{lat_col}" IS NOT NULL
+			)
+			SELECT longitude, latitude{', metric_time' if time_col else ''}
+			FROM ordered
+			WHERE (:sample_step <= 1) OR ((rn - 1) % :sample_step = 0)
+			ORDER BY rn
+			'''
 		)
-		params: dict[str, Any] = {"fileid": int(fileid)}
-		if self._sample_step() > 1:
-			params["sample_step"] = int(self._sample_step())
+		params: dict[str, Any] = {"fileid": int(fileid), "sample_step": int(sample_step)}
 		try:
 			df_geo = pd.read_sql(q, self.engine, params=params)
 		except Exception as e:
 			logger.error(f"Failed to load geo data for trip fileid={fileid}: {e} ({type(e)})")
 			df_geo = pd.DataFrame()
 		if df_geo.empty:
-			payload = {"x": [], "y": [], "time": []}
+			payload = {"lat": [], "lon": [], "time": []}
 			self._trip_geo_cache[fileid] = payload
 			return payload
 
-		try:
-			gdf = gpd.GeoDataFrame(
-				df_geo,
-				geometry=[Point(xy) for xy in zip(df_geo['longitude'], df_geo['latitude'])],
-				crs="EPSG:4326",
-			).to_crs(epsg=3857)
-		except KeyError as e:
-			logger.error(f"Missing expected geo columns in trip data: {e} fileid={fileid}")
-			return None
-
+		lat_vals = pd.to_numeric(df_geo["latitude"], errors="coerce").tolist()
+		lon_vals = pd.to_numeric(df_geo["longitude"], errors="coerce").tolist()
 		time_values: list = []
 		if 'metric_time' in df_geo.columns:
 			time_values = pd.to_datetime(df_geo['metric_time'], errors='coerce').tolist()
 
-		payload = {
-			"x": gdf.geometry.x.tolist(),
-			"y": gdf.geometry.y.tolist(),
-			"time": time_values,
-		}
+		payload = {"lat": lat_vals, "lon": lon_vals, "time": time_values}
 		self._trip_geo_cache[fileid] = payload
 		return payload
 
@@ -1587,145 +1651,72 @@ class MainWindow(QMainWindow):
 				logger.warning(f"No geo data available for trip fileid={fileid}, cannot load plot data for metric '{metric_name}'")
 			return None
 
+		lat_col = self._resolved_torqlogs_columns.get('latitude')
+		lon_col = self._resolved_torqlogs_columns.get('longitude')
+		if not (lat_col and lon_col):
+			return None
+
 		speed_col_name = self._resolve_actual_torqlogs_column(metric_name)
 		time_col = (self._resolve_actual_torqlogs_column('gpstime')
 					or self._resolve_actual_torqlogs_column('devicetime'))
 		if not speed_col_name:
 			return None
 
-		time_order = f' ORDER BY "{time_col}"' if time_col else ' ORDER BY id'
-		sample_where = " AND MOD(id, :sample_step) = 0" if self._sample_step() > 1 else ""
+		order_expr = f'"{time_col}", id' if time_col else 'id'
+		sample_step = self._sample_step_for_fileid(fileid)
 		q = text(
-			f'SELECT "{speed_col_name}" AS selectedmetric '
-			f'FROM torqlogs WHERE fileid = :fileid{sample_where}{time_order}'
+			f'''
+			WITH ordered AS (
+				SELECT "{speed_col_name}" AS selectedmetric,
+					ROW_NUMBER() OVER (ORDER BY {order_expr}) AS rn
+				FROM torqlogs
+				WHERE fileid = :fileid
+					AND "{lon_col}" IS NOT NULL
+					AND "{lat_col}" IS NOT NULL
+			)
+			SELECT selectedmetric
+			FROM ordered
+			WHERE (:sample_step <= 1) OR ((rn - 1) % :sample_step = 0)
+			ORDER BY rn
+			'''
 		)
-		params: dict[str, Any] = {"fileid": int(fileid)}
-		if self._sample_step() > 1:
-			params["sample_step"] = int(self._sample_step())
+		params: dict[str, Any] = {"fileid": int(fileid), "sample_step": int(sample_step)}
 		df_part = pd.read_sql(q, self.engine, params=params)
 		if df_part.empty:
-			self._trip_plot_cache[cache_key] = {"x": [], "y": [], "speed": [], "time": []}
+			self._trip_plot_cache[cache_key] = {"lat": [], "lon": [], "speed": [], "time": []}
 			return self._trip_plot_cache[cache_key]
 		speed_series = pd.to_numeric(df_part['selectedmetric'], errors='coerce').fillna(0)
 
-		x_vals = geo_payload["x"]
-		y_vals = geo_payload["y"]
+		lat_vals = geo_payload["lat"]
+		lon_vals = geo_payload["lon"]
 		time_values = geo_payload["time"]
-		points = min(len(x_vals), len(y_vals), len(speed_series))
+		points = min(len(lat_vals), len(lon_vals), len(speed_series))
 		if time_values:
 			points = min(points, len(time_values))
 
 		payload: dict[str, list] = {
-			"x": x_vals[:points],
-			"y": y_vals[:points],
+			"lat": lat_vals[:points],
+			"lon": lon_vals[:points],
 			"speed": speed_series.tolist()[:points],
 			"time": time_values[:points] if time_values else [],
 		}
 		self._trip_plot_cache[cache_key] = payload
-		logger.debug(f"Loaded trip plot data for fileid={fileid}, metric_name={metric_name}, points={len(payload['x'])}")
+		logger.debug(f"Loaded trip plot data for fileid={fileid}, metric_name={metric_name}, points={len(payload['lat'])}")
 		return payload
 
 	def _selection_key(self, fileids: list[int], metric_name: str) -> str:
 		return (
-			f"{self._map_cache_version}|metric={metric_name}|sample={self._sample_step()}|"
+			f"{self._map_cache_version}|metric={metric_name}|sample={self._sampling_cache_token(fileids)}|"
 			+ ",".join(str(fid) for fid in sorted(fileids))
 		)
-
-	def _basemap_selection_key(self, fileids: list[int]) -> str:
-		# Basemap tiles are independent of metric and colormap for a fixed trip selection/zoom.
-		return f"{self._map_cache_version}|basemap|sample={self._sample_step()}|" + ",".join(str(fid) for fid in sorted(fileids))
 
 	def _timeseries_selection_key(self, fileids: list[int], metric_names: list[str]) -> str:
 		metrics_part = ",".join(metric_names)
 		files_part = ",".join(str(fid) for fid in sorted(fileids))
-		return f"{self._map_cache_version}|timeseries|sample={self._sample_step()}|metrics={metrics_part}|{files_part}"
+		return f"{self._map_cache_version}|timeseries|sample={self._sampling_cache_token(fileids)}|metrics={metrics_part}|{files_part}"
 
 	def _cache_fileid(self, fileids: list[int]) -> int | None:
 		return int(fileids[0]) if len(fileids) == 1 else None
-
-	def _load_cached_map_image(self, fileids: list[int], zoom: int, colormap: str, metric_name: str) -> tuple[bytes, tuple[float, float, float, float]] | None:
-		selection_key = self._selection_key(fileids, metric_name)
-		basemap_key = self._basemap_selection_key(fileids)
-		q = text(
-			"""
-			SELECT image_png, ext_west, ext_east, ext_south, ext_north
-			FROM mapimagecache
-			WHERE (
-				(selection_key = :selection_key AND zoom = :zoom AND colormap = :colormap)
-				OR
-				(selection_key = :basemap_key AND zoom = :zoom)
-			)
-			ORDER BY CASE WHEN selection_key = :selection_key AND colormap = :colormap THEN 0 ELSE 1 END
-			LIMIT 1
-			"""
-		)
-		with self.engine.connect() as conn:
-			row = conn.execute(q, {
-				"selection_key": selection_key,
-				"basemap_key": basemap_key,
-				"zoom": zoom,
-				"colormap": colormap,
-			}).first()
-		if row and all(v is not None for v in row[1:5]):
-			return row[0], (float(row[1]), float(row[2]), float(row[3]), float(row[4]))
-		return None
-
-	def _save_cached_map_image(self, fileids: list[int], zoom: int, colormap: str, metric_name: str, ext: tuple[float, float, float, float]):
-		selection_key = self._selection_key(fileids, metric_name)
-		basemap_key = self._basemap_selection_key(fileids)
-		fileid = self._cache_fileid(fileids)
-		ext_west, ext_east, ext_south, ext_north = ext
-		buf = io.BytesIO()
-		# Cache only the basemap raster; scatter/labels are redrawn dynamically.
-		self.map_canvas.ax.figure.canvas.draw_idle()
-		img_artists = self.map_canvas.ax.images
-		if not img_artists:
-			return
-		arr = img_artists[0].get_array()
-		if arr is None:
-			return
-		mpimg.imsave(buf, arr, format='png')
-		image_bytes = buf.getvalue()
-		upsert_sql = text(
-			"""
-			INSERT INTO mapimagecache (fileid, selection_key, zoom, colormap, image_png, ext_west, ext_east, ext_south, ext_north, created_at, updated_at)
-			VALUES (:fileid, :selection_key, :zoom, :colormap, :image_png, :ext_west, :ext_east, :ext_south, :ext_north, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-			ON CONFLICT(selection_key, zoom, colormap)
-			DO UPDATE SET
-				fileid = excluded.fileid,
-				image_png = excluded.image_png,
-				ext_west = excluded.ext_west,
-				ext_east = excluded.ext_east,
-				ext_south = excluded.ext_south,
-				ext_north = excluded.ext_north,
-				updated_at = CURRENT_TIMESTAMP
-			"""
-		)
-		with self.engine.begin() as conn:
-			conn.execute(upsert_sql, {
-				"fileid": fileid,
-				"selection_key": selection_key,
-				"zoom": zoom,
-				"colormap": colormap,
-				"image_png": image_bytes,
-				"ext_west": ext_west,
-				"ext_east": ext_east,
-				"ext_south": ext_south,
-				"ext_north": ext_north,
-			})
-			# Also store a metric/colormap-agnostic basemap entry for cross-metric reuse.
-			conn.execute(upsert_sql, {
-				"fileid": fileid,
-				"selection_key": basemap_key,
-				"zoom": zoom,
-				"colormap": "basemap",
-				"image_png": image_bytes,
-				"ext_west": ext_west,
-				"ext_east": ext_east,
-				"ext_south": ext_south,
-				"ext_north": ext_north,
-			})
-		logger.debug(f"Saved cached map image for selection_key={selection_key}, zoom={zoom}, colormap={colormap}")
 
 	def _load_cached_timeseries_image(self, fileids: list[int], metric_names: list[str], colormap: str) -> bytes | None:
 		selection_key = self._timeseries_selection_key(fileids, metric_names)
@@ -1775,57 +1766,115 @@ class MainWindow(QMainWindow):
 				"ext_north": None,
 			})
 
-	def _compute_plot_bounds(self, all_x: list[float], all_y: list[float]) -> tuple[float, float, float, float] | None:
-		if not all_x or not all_y:
+	def _compute_plot_bounds_latlon(
+		self, all_lat: list[float], all_lon: list[float]
+	) -> tuple[float, float, float, float] | None:
+		if not all_lat or not all_lon:
 			return None
-		xmin = min(all_x)
-		xmax = max(all_x)
-		ymin = min(all_y)
-		ymax = max(all_y)
+		lat_min, lat_max = min(all_lat), max(all_lat)
+		lon_min, lon_max = min(all_lon), max(all_lon)
+		dlat = max(0.001, lat_max - lat_min)
+		dlon = max(0.001, lon_max - lon_min)
+		pad_lat = dlat * self._bounds_padding_ratio
+		pad_lon = dlon * self._bounds_padding_ratio
+		return (lat_min - pad_lat, lon_min - pad_lon, lat_max + pad_lat, lon_max + pad_lon)
 
-		dx = max(1.0, xmax - xmin)
-		dy = max(1.0, ymax - ymin)
-		pad_x = dx * self._bounds_padding_ratio
-		pad_y = dy * self._bounds_padding_ratio
-		return (xmin - pad_x, xmax + pad_x, ymin - pad_y, ymax + pad_y)
+	@staticmethod
+	def _colormap_cycle_length(colormap_name: str) -> int:
+		if colormap_name in ['tab10']:
+			return 10
+		if colormap_name in ['tab20', 'tab20b', 'tab20c']:
+			return 20
+		if colormap_name in ['Set1']:
+			return 9
+		if colormap_name in ['Set2', 'Dark2', 'Pastel2']:
+			return 8
+		if colormap_name in ['Set3', 'Pastel1']:
+			return 12
+		return 10
 
-	def _effective_basemap_zoom(self, bounds: tuple[float, float, float, float], base_zoom: int) -> int:
-		"""Increase basemap zoom automatically for short trip extents to reduce blur."""
-		xmin, xmax, ymin, ymax = bounds
-		span = max(1.0, xmax - xmin, ymax - ymin)
-		boost = 0
-		if span <= 1_500:
-			boost = 4
-		elif span <= 3_000:
-			boost = 3
-		elif span <= 7_000:
-			boost = 2
-		elif span <= 15_000:
-			boost = 1
-		# Respect current user-selected zoom as baseline, but improve detail for tight bounds.
-		return max(1, min(18, base_zoom + boost))
+	def _build_fileid_color_map(self, fileids: list[int], colormap_name: str) -> dict[int, tuple[float, float, float, float]]:
+		cmap = plt.colormaps[colormap_name]
+		cycle_length = self._colormap_cycle_length(colormap_name)
+		return {int(fileid): cmap(idx % cycle_length) for idx, fileid in enumerate(fileids)}
 
-	def _base_zoom_for_selection(self, fileids: list[int], fallback_zoom: int) -> int:
-		if not fileids or self._all_trips_df.empty:
-			return fallback_zoom
-		try:
-			subset = self._all_trips_df[self._all_trips_df["fileid"].isin(fileids)]
-			if subset.empty:
-				return fallback_zoom
-			distances = pd.to_numeric(subset["trip_distance_sort"], errors="coerce").dropna()
-			if not distances.empty and bool((distances <= 10_000.0).all()):
-				return max(fallback_zoom, 12)
-		except Exception as e:
-			logger.debug(f"Could not evaluate short-trip zoom policy: {e} ({type(e)})")
-		return fallback_zoom
+	def _build_trip_folium_map(
+		self,
+		trip_data_list: list[dict],
+		fileids: list[int],
+		colormap_name: str,
+	) -> tuple[folium.Map | None, tuple[float, float, float, float] | None]:
+		all_lat: list[float] = []
+		all_lon: list[float] = []
+		speed_vals = []
+		for item in trip_data_list:
+			all_lat.extend(item.get("lat", []))
+			all_lon.extend(item.get("lon", []))
+		if not all_lat:
+			return None, None
+
+		bounds = self._compute_plot_bounds_latlon(all_lat, all_lon)
+		if bounds is None:
+			return None, None
+		lat_min, lon_min, lat_max, lon_max = bounds
+		clat = (lat_min + lat_max) / 2
+		clon = (lon_min + lon_max) / 2
+
+		m = folium.Map(location=[clat, clon], zoom_start=int(self.zoom_combo.currentText()))
+		m.fit_bounds([[lat_min, lon_min], [lat_max, lon_max]])
+
+		cmap = plt.colormaps[colormap_name]
+		fileid_color_map = self._build_fileid_color_map(fileids, colormap_name)
+
+		for idx, item in enumerate(trip_data_list):
+			lat_vals = item.get("lat", [])
+			lon_vals = item.get("lon", [])
+			speed_vals = item.get("speed", [])
+			fileid = int(item.get("fileid", -1))
+			if not lat_vals:
+				continue
+			base_rgba = fileid_color_map.get(fileid, cmap(idx % self._colormap_cycle_length(colormap_name)))
+			base_hex = mcolors.to_hex(base_rgba)
+			features = []
+			for i in range(len(lat_vals)):
+				spd = float(speed_vals[i]) if i < len(speed_vals) else 0.0
+				radius = max(2.0, min(8.0, spd / 10.0 * self._dot_size_scale + 1.0))
+				features.append({
+					"type": "Feature",
+					"geometry": {"type": "Point", "coordinates": [lon_vals[i], lat_vals[i]]},
+					"properties": {"color": base_hex, "radius": radius},
+				})
+			layer = folium.GeoJson(
+				{"type": "FeatureCollection", "features": features},
+				marker=folium.CircleMarker(radius=4, fill=True),
+				style_function=lambda f: {
+					"fillColor": f["properties"]["color"],
+					"color": f["properties"]["color"],
+					"radius": f["properties"]["radius"],
+					"weight": 0,
+					"fill": True,
+					"fillOpacity": 0.65,
+				},
+				name=f"Trip {fileid}",
+			)
+			layer.add_to(m)
+		if self.args.debug:
+			if len(speed_vals) > 0:
+				logger.debug(f"Added trip fileid={fileid} to map with {len(lat_vals)} points, base color {base_hex}, radius range [{max(2.0, min(8.0, min(speed_vals) / 10.0 * self._dot_size_scale + 2.0)):.1f}, {max(2.0, min(8.0, max(speed_vals) / 10.0 * self._dot_size_scale + 2.0)):.1f}]")
+			else:
+				logger.debug(f"Added trip fileid={fileid} to map with {len(lat_vals)} points, base color {base_hex}, no speed data for radius scaling")
+		return m, bounds
 
 	def _plot_for_rows(self, rows):
 		fileids = self._get_selected_fileids(rows)
+		self._plot_for_fileids(fileids)
+
+	def _plot_for_fileids(self, fileids: list[int]):
 		if not fileids:
 			self.stats_label.setText("No trip selected")
+			self._set_all_metrics_table_model(pd.DataFrame(columns=["metric", "min", "avg", "max"]))
 			return
 
-		base_zoom = self._base_zoom_for_selection(fileids, int(self.zoom_combo.currentText()))
 		colormap_name = self._current_colormap
 		selected_metrics = self._get_selected_metrics()
 		if not selected_metrics:
@@ -1835,106 +1884,58 @@ class MainWindow(QMainWindow):
 			self.stats_label.setText("No valid metrics available for plotting")
 			return
 		selected_metric = selected_metrics[0]
-		cached_payload: tuple[bytes, tuple[float, float, float, float]] | None = None
 
-		# Remove overlay artists before clearing axes so remove() has valid artist owners.
-		self._clear_start_end_overlays()
-		self.map_canvas.ax.clear()
-
-		# Get selected colormap
-		cmap = plt.colormaps[colormap_name]
-		logger.debug(f"Using colormap: {colormap_name}")
-
-		# Calculate colormap cycle length based on colormap type
-		if colormap_name in ['tab10']:
-			cycle_length = 10
-		elif colormap_name in ['tab20', 'tab20b', 'tab20c']:
-			cycle_length = 20
-		elif colormap_name in ['Set1']:
-			cycle_length = 9
-		elif colormap_name in ['Set2', 'Dark2', 'Pastel2']:
-			cycle_length = 8
-		elif colormap_name in ['Set3', 'Pastel1']:
-			cycle_length = 12
-		else:
-			cycle_length = 10
-
-		plots = []
-		all_x: list[float] = []
-		all_y: list[float] = []
+		fileid_color_map = self._build_fileid_color_map(fileids, colormap_name)
+		trip_data_list: list[dict] = []
 		all_metric_values: list[float] = []
-		for idx, fileid in enumerate(fileids):
+
+		for fileid in fileids:
 			if self.args.debug:
-				logger.debug(f"Processing fileid={fileid} ({idx + 1}/{len(fileids)}) for metric='{selected_metric}'")
+				logger.debug(f"Processing fileid={fileid} for metric='{selected_metric}'")
 			plot_data = self._load_trip_plot_data(fileid, selected_metric)
 			if not plot_data:
 				if self.args.debug:
 					logger.warning(f"No plot data for fileid={fileid}, metric={selected_metric}")
 				continue
+			trip_data_list.append({
+				"fileid": fileid,
+				"lat": plot_data["lat"],
+				"lon": plot_data["lon"],
+				"speed": plot_data["speed"],
+				"time": plot_data.get("time", []),
+			})
+			all_metric_values.extend(plot_data["speed"])
 
-			x_vals = plot_data["x"]
-			y_vals = plot_data["y"]
-			all_x.extend(x_vals)
-			all_y.extend(y_vals)
-			speed_vals = pd.to_numeric(pd.Series(plot_data["speed"]), errors='coerce').fillna(0)
-			all_metric_values.extend(speed_vals.tolist())
-			if len(x_vals) == 0:
-				continue
+		if not trip_data_list:
+			self.map_canvas.show_empty("No GPS data for selected trips")
+			return
 
-			sizes = (speed_vals.clip(lower=1, upper=50) * self._dot_size_scale).clip(lower=1, upper=200)
-			base_color = cmap(idx % cycle_length)
-			speed_abs_max = float(speed_vals.abs().max())
-			colors = [(
-				max(0.0, min(1.0, base_color[0] + 0.5 * (v / speed_abs_max if speed_abs_max > 0 else 0))),
-				max(0.0, min(1.0, base_color[1] + 0.5 * (v / speed_abs_max if speed_abs_max > 0 else 0))),
-				max(0.0, min(1.0, base_color[2] + 0.5 * (v / speed_abs_max if speed_abs_max > 0 else 0))),
-				base_color[3]) for v in speed_vals]
-			sc = self.map_canvas.ax.scatter(x_vals, y_vals, s=sizes, c=colors, label=f"fileid {fileid}", zorder=2)
-			plots.append(sc)
+		m, bounds = self._build_trip_folium_map(trip_data_list, fileids, colormap_name)
+		if m is None:
+			self.map_canvas.show_empty("No GPS data")
+			return
 
-		logger.debug(f"Plotted {len(plots)} trips on map for fileids: {len(fileids)}")
-		bounds = self._compute_plot_bounds(all_x, all_y)
-		effective_zoom = base_zoom
-		if bounds:
-			effective_zoom = self._effective_basemap_zoom(bounds, base_zoom)
-			cached_payload = self._load_cached_map_image(fileids, effective_zoom, colormap_name, selected_metric)
-			if effective_zoom != base_zoom:
-				logger.debug(
-					f"Adaptive basemap zoom: base={base_zoom}, effective={effective_zoom}, "
-					f"metric={selected_metric}, fileids={fileids}"
-				)
-		if bounds:
-			xmin, xmax, ymin, ymax = bounds
-			self.map_canvas.ax.set_xlim(xmin, xmax)
-			self.map_canvas.ax.set_ylim(ymin, ymax)
-			self._mw_full_bounds = bounds
-			self._mw_current_fileids = list(fileids)
-			self._mw_last_metric = selected_metric
+		self._overlay_start_end_points(m, fileids, bounds)
+		self._mw_full_bounds_latlon = bounds
+		self._mw_current_fileids = list(fileids)
+		self._mw_last_metric = selected_metric
+		self.map_canvas.display_map(m)
 
-		self._overlay_start_end_points(fileids, bounds)
+		all_lat = [v for item in trip_data_list for v in item["lat"]]
+		all_lon = [v for item in trip_data_list for v in item["lon"]]
+		self._update_timeseries_plot(fileids, selected_metrics, colormap_name, fileid_color_map)
+		self._update_stats_panel(fileids, all_metric_values, all_lat, all_lon, selected_metric)
 
-		if plots and cached_payload:
-			cached_img, cached_ext = cached_payload
-			img = mpimg.imread(io.BytesIO(cached_img), format='png')
-			self.map_canvas.ax.imshow(img, extent=cached_ext, interpolation='bilinear', zorder=0)
-		elif plots:
-			if bounds:
-				self._start_async_basemap(bounds, effective_zoom, fileids, colormap_name, selected_metric)
-		self.map_canvas.ax.set_title(f"Trip Map - {selected_metric}")
-		self.map_canvas.ax.set_xlabel("Longitude")
-		self.map_canvas.ax.set_ylabel("Latitude")
-		self.map_canvas.draw_idle()
-		if self.args.debug:
-			logger.debug(f"Map plot updated for fileids={fileids}, metric='{selected_metric}' with {len(all_x)} points")
-		self._update_timeseries_plot(fileids, selected_metrics, colormap_name)
-		if self.args.debug:
-			logger.debug(f"Timeseries plot updated for fileids={fileids}, metrics={selected_metrics}")
-		self._update_stats_panel(fileids, all_metric_values, all_x, all_y, selected_metric)
-		if self.args.debug:
-			logger.debug(f"Stats panel updated for fileids={fileids}, metric='{selected_metric}'")
+	def _plot_for_start_end_fileids(self, fileids: list[int]) -> None:
+		if not fileids:
+			return
+		self._populate_metric_columns(fileids)
+		if len(fileids) >= self._plot_async_threshold:
+			self._start_async_plot_for_fileids(fileids)
+		else:
+			self._plot_for_fileids(fileids)
 
 	def _load_trip_metadata(self, fileids: list[int]) -> dict:
-		"""Load trip metadata from torqfiles table."""
 		if not fileids:
 			return {}
 
@@ -1951,9 +1952,8 @@ class MainWindow(QMainWindow):
 
 	def _format_trip_stats(self, fileids: list[int], trip_count: int, point_count: int,
 		metric_name: str, metric_min: float, metric_avg: float, metric_max: float,
-		all_x: list[float], all_y: list[float], trip_info: dict,
+		all_lat: list[float], all_lon: list[float], trip_info: dict,
 		all_metric_stats: dict | None = None) -> str:
-		"""Format comprehensive trip stats with all metric min/max/avg."""
 		W = 52
 		lines: list[str] = []
 
@@ -1961,7 +1961,6 @@ class MainWindow(QMainWindow):
 		lines.append(f"TRIP SUMMARY  — {trip_count} trip(s), {point_count} pts")
 		lines.append("═" * W)
 
-		# Trip metadata & date
 		if trip_info:
 			total_distance = sum(row.get('trip_distance', 0) or 0 for row in trip_info.values())
 			total_duration = sum(row.get('trip_duration', 0) or 0 for row in trip_info.values())
@@ -1979,7 +1978,6 @@ class MainWindow(QMainWindow):
 				avg_spd = (total_distance / 1000) / (total_duration / 3600)
 				lines.append(f"Avg spd:  {avg_spd:.1f} km/h")
 
-		# Selected metric summary
 		category, display_name, unit = categorize_metric(metric_name)
 		unit_str = f" {unit}" if unit else ""
 		lines.append(f"\n{'─' * W}")
@@ -1988,37 +1986,44 @@ class MainWindow(QMainWindow):
 		suggestion = get_analysis_suggestion(category)
 		lines.append(f"  [{suggestion['analysis_type']}]  {suggestion['visualization']}")
 
-		# All metrics grouped by category
-		if all_metric_stats:
-			grouped = group_metrics_by_category(list(all_metric_stats.keys()))
-			lines.append(f"\n{'─' * W}")
-			lines.append("ALL METRICS  (min / avg / max):")
-			for cat, cat_metrics in grouped.items():
-				cat_lines: list[str] = []
-				for disp, u, orig in cat_metrics:
-					stats = all_metric_stats.get(orig)
-					if stats:
-						u_s = f" {u}" if u else ""
-						cat_lines.append(
-							f"  {disp:<28s}  "
-							f"{stats['min']:.1f}/{stats['avg']:.1f}/{stats['max']:.1f}{u_s}"
-						)
-				if cat_lines:
-					lines.append(f"\n{cat.value}:")
-					lines.extend(cat_lines)
-
 		lines.append("\n" + "═" * W)
 		return "\n".join(lines)
 
-	def _update_stats_panel(self, fileids: list[int], metric_values: list[float], all_x: list[float], all_y: list[float], metric_name: str):
+	def _build_all_metrics_table_df(self, all_metric_stats: dict | None) -> pd.DataFrame:
+		if not all_metric_stats:
+			return pd.DataFrame(columns=["metric", "min", "avg", "max"])
+
+		rows: list[dict[str, Any]] = []
+		grouped = group_metrics_by_category(list(all_metric_stats.keys()))
+		for _, cat_metrics in grouped.items():
+			for display_name, unit, original_metric in cat_metrics:
+				stats = all_metric_stats.get(original_metric)
+				if not stats:
+					continue
+				metric_label = f"{display_name} ({unit})" if unit else display_name
+				rows.append(
+					{
+						"metric": metric_label,
+						"min": round(float(stats.get("min", 0.0)), 2),
+						"avg": round(float(stats.get("avg", 0.0)), 2),
+						"max": round(float(stats.get("max", 0.0)), 2),
+					}
+				)
+
+		table_df = pd.DataFrame(rows, columns=["metric", "min", "avg", "max"])
+		if not table_df.empty:
+			table_df.sort_values(by="metric", inplace=True)
+			table_df.reset_index(drop=True, inplace=True)
+		return table_df
+
+	def _update_stats_panel(self, fileids: list[int], metric_values: list[float], all_lat: list[float], all_lon: list[float], metric_name: str):
 		trip_count = len(fileids)
-		point_count = len(all_x)
+		point_count = len(all_lat)
 		metric_series = pd.Series(metric_values, dtype="float64") if metric_values else pd.Series(dtype="float64")
 		metric_min = float(metric_series.min()) if not metric_series.empty else 0.0
 		metric_avg = float(metric_series.mean()) if not metric_series.empty else 0.0
 		metric_max = float(metric_series.max()) if not metric_series.empty else 0.0
 
-		# Selection-level metadata and aggregate stats are expensive; cache by selected fileids.
 		selection_key = tuple(sorted(fileids))
 		if selection_key in self._selection_stats_cache:
 			trip_info, all_metric_stats = self._selection_stats_cache[selection_key]
@@ -2027,16 +2032,21 @@ class MainWindow(QMainWindow):
 			all_metric_stats = self._load_all_metric_stats(fileids)
 			self._selection_stats_cache[selection_key] = (trip_info, all_metric_stats)
 
-		# Build stats text with trip info, metrics, and suggestions
 		stats_text = self._format_trip_stats(
 			fileids, trip_count, point_count, metric_name,
-			metric_min, metric_avg, metric_max, all_x, all_y, trip_info, all_metric_stats
+			metric_min, metric_avg, metric_max, all_lat, all_lon, trip_info, all_metric_stats
 		)
 
 		self.stats_label.setText(stats_text)
+		self._set_all_metrics_table_model(self._build_all_metrics_table_df(all_metric_stats))
 
-	def _update_timeseries_plot(self, fileids: list[int], metric_names: list[str], colormap_name: str):
-		"""Draw one or more metrics over time for selected trips."""
+	def _update_timeseries_plot(
+		self,
+		fileids: list[int],
+		metric_names: list[str],
+		colormap_name: str,
+		fileid_color_map: dict[int, tuple[float, float, float, float]] | None = None,
+	):
 		ax = self.timeseries_canvas.ax
 		ax.clear()
 		cached_img = self._load_cached_timeseries_image(fileids, metric_names, colormap_name)
@@ -2049,16 +2059,16 @@ class MainWindow(QMainWindow):
 			return
 		ax.set_axis_on()
 		cmap = plt.colormaps[colormap_name]
-		cycle_length = 9 if colormap_name in ['Set1'] else (8 if colormap_name in ['Set2', 'Dark2'] else 10)
-		# Line styles cycle across trips when multiple trips are shown
+		cycle_length = self._colormap_cycle_length(colormap_name)
 		linestyles = ['-', '--', ':', '-.']
 		multi_metric = len(metric_names) > 1
 		multi_trip = len(fileids) > 1
+		if fileid_color_map is None:
+			fileid_color_map = self._build_fileid_color_map(fileids, colormap_name)
 		use_progress_axis = multi_trip
 		has_datetime_x = False
 
 		has_data = False
-		# Color index cycles per metric so each metric gets a distinct color
 		for m_idx, metric_name in enumerate(metric_names):
 			for t_idx, fileid in enumerate(fileids):
 				if self.args.debug:
@@ -2070,7 +2080,6 @@ class MainWindow(QMainWindow):
 					continue
 				time_vals = plot_data.get('time') or []
 				metric_vals = list(plot_data['speed'])
-				# Fall back to sequential index when timestamps are unavailable or all-NaT.
 				use_time = bool(time_vals) and any(t is not None and not pd.isna(t) for t in time_vals[:10])
 				if use_progress_axis:
 					if use_time:
@@ -2087,7 +2096,6 @@ class MainWindow(QMainWindow):
 					metric_vals = metric_clean
 				else:
 					if use_time:
-						# Drop rows where the timestamp is NaT to avoid matplotlib ConversionError.
 						pairs = [(t, v) for t, v in zip(time_vals, metric_vals)
 								 if t is not None and not pd.isna(t)]
 						if pairs:
@@ -2099,8 +2107,12 @@ class MainWindow(QMainWindow):
 						x_vals = list(range(len(metric_vals)))
 				if not x_vals:
 					continue
-				color = cmap(m_idx % cycle_length)
-				lstyle = linestyles[t_idx % len(linestyles)] if multi_trip else '-'
+				if multi_trip:
+					color = fileid_color_map.get(int(fileid), cmap(t_idx % cycle_length))
+					lstyle = linestyles[m_idx % len(linestyles)] if multi_metric else '-'
+				else:
+					color = cmap(m_idx % cycle_length)
+					lstyle = '-'
 				_, display_name, unit = categorize_metric(metric_name)
 				if multi_metric and multi_trip:
 					label = f"{display_name} / trip {fileid}"
@@ -2139,7 +2151,6 @@ class MainWindow(QMainWindow):
 		self.timeseries_canvas.draw_idle()
 
 	def _get_torqlogs_numeric_columns(self) -> set[str]:
-		"""Return the set of actual torqlogs column names that have a numeric DB type."""
 		inspector = inspect(self.engine)
 		numeric_type_prefixes = (
 			'int', 'float', 'real', 'double', 'numeric', 'decimal',
@@ -2153,7 +2164,6 @@ class MainWindow(QMainWindow):
 		return numeric_cols
 
 	def _load_all_metric_stats(self, fileids: list[int]) -> dict[str, dict[str, float]]:
-		"""Load min/avg/max for all available metrics for the selected fileids."""
 		if not fileids:
 			return {}
 		metric_columns = self._get_metric_columns_with_valid_data()
@@ -2200,168 +2210,33 @@ class MainWindow(QMainWindow):
 					logger.warning(f"Error processing stats for metric '{metric}': {e} ({type(e)})")
 			return result
 		except Exception as e:
-			logger.warning(f"Could not load all metric stats: {e}")
+			logger.warning(f"Could not load all metric stats: {e} ({type(e)})")
 			return {}
 
-	def _start_async_basemap(self, bounds: tuple[float, float, float, float], zoom: int, fileids: list[int], colormap_name: str, metric_name: str):
-		xmin, xmax, ymin, ymax = bounds
-		if xmax <= xmin or ymax <= ymin:
-			return
-
-		self._basemap_request_id += 1
-		request_id = self._basemap_request_id
-		self._basemap_request_context[request_id] = {
-			"fileids": fileids,
-			"zoom": zoom,
-			"colormap": colormap_name,
-			"metric": metric_name,
-		}
-
-		thread = QThread()
-		worker = BasemapWorker((xmin, xmax, ymin, ymax), zoom, request_id)
-		worker.moveToThread(thread)
-
-		thread.started.connect(worker.run)
-		worker.finished.connect(self._on_basemap_loaded)
-		worker.error.connect(self._on_basemap_error)
-		worker.finished.connect(thread.quit)
-		worker.error.connect(thread.quit)
-		thread.finished.connect(worker.deleteLater)
-		thread.finished.connect(thread.deleteLater)
-		thread.finished.connect(lambda t=thread: self._active_threads.discard(t))
-
-		self._basemap_worker = worker
-		self._basemap_thread = thread
-		self._active_threads.add(thread)
-		if self.args.debug:
-			logger.debug(f'{self} starting basemapworker {thread} active threads: {len(self._active_threads)}) request_id={request_id} with bounds=({xmin}, {ymin}, {xmax}, {ymax}) and zoom={zoom}')
-
-		# logger.debug(f"{self} Starting basemap worker thread for request_id={request_id} with bounds=({xmin}, {ymin}, {xmax}, {ymax}) and zoom={zoom}")
-		thread.start()
-
-	def _on_basemap_loaded(self, img, ext, request_id: int):
-		try:
-			if request_id != self._basemap_request_id:
-				return
-		except Exception as e:
-			logger.error(f"Error in basemap loaded handler: {e} ({type(e)})")
-			return
-		self.map_canvas.ax.imshow(img, extent=ext, interpolation='bilinear', zorder=0)
-		self.map_canvas.draw_idle()
-		ctx = self._basemap_request_context.get(request_id)
-		if ctx:
-			a, b, c, d = ext
-			ext_typed: tuple[float, float, float, float] = (float(a), float(b), float(c), float(d))
-			self._save_cached_map_image(
-				cast(list[int], ctx["fileids"]),
-				cast(int, ctx["zoom"]),
-				cast(str, ctx["colormap"]),
-				cast(str, ctx["metric"]),
-				ext_typed,
-			)
-			self._basemap_request_context.pop(request_id, None)
-
-	def _on_basemap_error(self, err: str, request_id: int):
-		try:
-			if request_id != self._basemap_request_id:
-				return
-		except Exception as e:
-			logger.error(f"Error in basemap error handler: {e} ({type(e)}) error: {err} request_id: {request_id}")
-			return
-		self._basemap_request_context.pop(request_id, None)
-		# Tile/network failures should not break UI interaction.
-		print(f"{self} Basemap load failed: {err} (request_id={request_id}) current_id={self._basemap_request_id}")
-
-	def _shutdown_thread(self, thread: QThread | None, name: str):
-		if thread is None:
-			return
-		try:
-			if not thread.isRunning():
-				return
-		except RuntimeError as e:
-			logger.error(f"RuntimeError checking thread.isRunning() for '{name}': {e} ({type(e)})")
-			return
-		if thread.currentThread() is thread:
-			return
-		logger.debug(f"Stopping thread '{name}'")
-		thread.requestInterruption()
-		thread.quit()
-		if not thread.wait(3000):
-			logger.warning(f"Thread '{name}' did not stop in time; terminating")
-			thread.terminate()
-			thread.wait(1000)
-
 	def _mw_force_reload_basemap(self):
-		"""Evict DB cache for the current trip selection and re-fetch basemap from network."""
-		if not self._mw_current_fileids:
-			return
-		files_part = ",".join(str(fid) for fid in sorted(self._mw_current_fileids))
-		pattern = f"{self._map_cache_version}|%{files_part}"
+		self._plot_refresh_timer.start(50)
+
+	def _mw_zoom_in(self) -> None:
+		self.map_canvas.zoom_in()
+
+	def _mw_zoom_out(self) -> None:
+		self.map_canvas.zoom_out()
+
+	def _mw_zoom_full(self) -> None:
+		if self._mw_full_bounds_latlon:
+			self.map_canvas.zoom_full(*self._mw_full_bounds_latlon)
+
+	def _on_map_point_clicked(self, data_str: str) -> None:
 		try:
-			with self.engine.begin() as conn:
-				conn.execute(
-					text("DELETE FROM mapimagecache WHERE selection_key LIKE :pattern"),
-					{"pattern": pattern},
-				)
-			logger.debug(f"MW: cleared map cache for fileids={self._mw_current_fileids}")
+			data = json.loads(data_str)
 		except Exception as e:
-			logger.warning(f"MW: could not clear map cache from DB: {e} ({type(e)})")
-		self.refresh_plot()
-
-	def _mw_zoom_in(self):
-		ax = self.map_canvas.ax
-		x0, x1 = ax.get_xlim()
-		y0, y1 = ax.get_ylim()
-		cx = (x0 + x1) / 2.0
-		cy = (y0 + y1) / 2.0
-		span_x = (x1 - x0) * 0.65
-		span_y = (y1 - y0) * 0.65
-		new_half_x = max(span_x, 1.0) / 2.0
-		new_half_y = max(span_y, 1.0) / 2.0
-		ax.set_xlim(cx - new_half_x, cx + new_half_x)
-		ax.set_ylim(cy - new_half_y, cy + new_half_y)
-		self.map_canvas.draw_idle()
-
-	def _mw_zoom_out(self):
-		ax = self.map_canvas.ax
-		x0, x1 = ax.get_xlim()
-		y0, y1 = ax.get_ylim()
-		cx = (x0 + x1) / 2.0
-		cy = (y0 + y1) / 2.0
-		new_half_x = (x1 - x0) * 0.725
-		new_half_y = (y1 - y0) * 0.725
-		if self._mw_full_bounds:
-			bx0, bx1, by0, by1 = self._mw_full_bounds
-			max_half_x = (bx1 - bx0) * 1.0
-			max_half_y = (by1 - by0) * 1.0
-			new_half_x = min(new_half_x, max_half_x)
-			new_half_y = min(new_half_y, max_half_y)
-		ax.set_xlim(cx - new_half_x, cx + new_half_x)
-		ax.set_ylim(cy - new_half_y, cy + new_half_y)
-		self.map_canvas.draw_idle()
-
-	def _mw_zoom_full(self):
-		if not self._mw_full_bounds:
+			logger.warning(f"Could not parse map point data: {e} ({type(e)})")
 			return
-		xmin, xmax, ymin, ymax = self._mw_full_bounds
-		ax = self.map_canvas.ax
-		ax.set_xlim(xmin, xmax)
-		ax.set_ylim(ymin, ymax)
-		self.map_canvas.draw_idle()
-
-	def _on_map_pick(self, event):
-		if event.artist not in self._start_end_overlay_artists:
+		pos_type = str(data.get("pos_type", ""))
+		pos_id = int(data.get("pos_id", 0))
+		if not pos_type or pos_id <= 0:
 			return
-		try:
-			idx = self._start_end_overlay_artists.index(event.artist)
-		except ValueError:
-			return
-		if idx >= len(self._start_end_overlay_data):
-			return
-		point = self._start_end_overlay_data[idx]
-		pos_type = str(point.get("pos_type", ""))
-		pos_id = int(point.get("pos_id", 0))
-		current_label = str(point.get("label", "") or "")
+		current_label = str(data.get("label", "") or "")
 		prefix = "S" if pos_type == "start" else "E"
 		new_label, ok = QInputDialog.getText(
 			self,
@@ -2373,7 +2248,6 @@ class MainWindow(QMainWindow):
 		if not ok:
 			return
 		if self._save_start_end_label(pos_type, pos_id, new_label):
-			point["label"] = new_label.strip()
 			rows = sorted(set(index.row() for index in self.table.selectionModel().selectedRows()))
 			if rows:
 				self._plot_refresh_timer.start(50)
@@ -2395,11 +2269,71 @@ class MainWindow(QMainWindow):
 			logger.error(f"Failed to save label for {pos_type} #{pos_id}: {e} ({type(e)})")
 			return False
 
+	@staticmethod
+	def _thread_is_running(thread: QThread | None) -> bool:
+		if thread is None:
+			return False
+		try:
+			return bool(thread.isRunning())
+		except RuntimeError:
+			return False
+
+	def _shutdown_thread(self, thread: QThread | None, name: str) -> bool:
+		if self.args.debug:
+			logger.debug(f"Stopping thread {name} {thread} from {self} active threads: {len(self._active_threads)})")
+		if thread is None:
+			return True
+		try:
+			if not thread.isRunning():
+				return True
+		except RuntimeError as e:
+			if self.args.debug:
+				logger.error(f"RuntimeError checking thread.isRunning() for '{name}': {e} ({type(e)})")
+			return True
+		if thread.currentThread() is thread:
+			return False
+		thread.requestInterruption()
+		thread.quit()
+		if not thread.wait(3000):
+			if self.args.debug:
+				logger.warning(f"Thread '{name}' did not stop in time; terminating")
+			thread.terminate()
+			stopped = thread.wait(1000)
+			return bool(stopped)
+		return True
+
+	def _detach_running_threads_for_close(self) -> None:
+		threads: set[QThread] = set()
+		if self._thread_is_running(self._initial_trips_thread):
+			threads.add(cast(QThread, self._initial_trips_thread))
+		if self._thread_is_running(self._plot_data_thread):
+			threads.add(cast(QThread, self._plot_data_thread))
+		for t in list(self._active_threads):
+			if self._thread_is_running(t):
+				threads.add(t)
+		for t in threads:
+			_ORPHAN_QTHREADS.add(t)
+			try:
+				t.finished.connect(lambda thr=t: _release_orphan_thread(thr))
+			except RuntimeError:
+				_release_orphan_thread(t)
+		self._active_threads.clear()
+		self._initial_trips_thread = None
+		self._initial_trips_worker = None
+		self._plot_data_thread = None
+		self._plot_data_worker = None
+
 	def closeEvent(self, event: QCloseEvent):
-		self._shutdown_thread(self._basemap_thread, "basemap")
+		self._closing = True
+		close_started = time.monotonic()
 		self._shutdown_thread(self._initial_trips_thread, "initial_trips")
+		self._shutdown_thread(self._plot_data_thread, "plot_data")
 		for idx, t in enumerate(list(self._active_threads)):
 			self._shutdown_thread(t, f"active_{idx}")
+		if any(self._thread_is_running(t) for t in list(self._active_threads)) or self._thread_is_running(self._plot_data_thread):
+			if self.args.debug:
+				logger.warning(f"Closing with running workers after {time.monotonic() - close_started:.2f}s; detaching threads")
+			self._detach_running_threads_for_close()
 		super().closeEvent(event)
 
 	def on_row_selected(self, selected, deselected):
@@ -2409,8 +2343,8 @@ class MainWindow(QMainWindow):
 		if rows:
 			logger.debug(f"on_row_selected with {len(rows)} selected row(s): {rows[:5]}{'...' if len(rows) > 5 else ''}")
 			self._populate_metric_columns(self._get_selected_fileids(rows))
-			# Debounce bursty selection events while user is building a multi-row selection.
 			self._plot_refresh_timer.start(250)
 		else:
 			self._populate_metric_columns(None)
 			self.stats_label.setText("No trip selected")
+			self._set_all_metrics_table_model(pd.DataFrame(columns=["metric", "min", "avg", "max"]))

@@ -4,6 +4,7 @@ import random
 import os
 import re
 import sys
+import time
 from datetime import datetime
 from hashlib import md5
 from pathlib import Path
@@ -15,6 +16,7 @@ from sqlalchemy import DateTime
 from sqlalchemy import create_engine, text, MetaData, Table, Column, Float, String, Integer
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy import inspect
+from psycopg2.errors import UniqueViolation
 from commonformats import fmt_20, fmt_24, fmt_26, fmt_28, fmt_30, fmt_34, fmt_36
 from datamodels import database_init, COLUMN_TYPES
 from schemas import canonicalize_column_name, canonicalize_columns
@@ -40,6 +42,7 @@ def get_parser(appname):
 	parser.add_argument("--sqlchunksize", nargs="?", default=1000, type=int, help="sql chunk", action="store")
 	parser.add_argument("-i", "--info", "--dbinfo", default=False, help="show dbinfo", action="store_true", dest="dbinfo", )
 	parser.add_argument("-d", "--debug", default=False, help="debugmode", action="store_true", dest="debug", )
+	parser.add_argument('--min_row_count', default=100, type=int, help="minimum row count for a file to be processed", action="store")
 	if appname == "guitest2":
 		parser.add_argument('--main-window', help="start main window", action="store_true", dest='main_window', default=True)
 		parser.add_argument('--pos-manager', help="start position manager window", action="store_true", dest='pos_manager', default=False)
@@ -236,9 +239,7 @@ def _collapse_duplicate_dataframe_columns(df: pd.DataFrame, csvfile: Path) -> pd
 		return df
 
 	resolved_duplicates = [str(col) for col in pd.unique(df.columns[df.columns.duplicated()])]
-	logger.warning(
-		f"Resolved duplicate canonical columns for {csvfile}: {resolved_duplicates}"
-	)
+	logger.warning(f"Resolved duplicate canonical columns for {csvfile}: {resolved_duplicates}")
 
 	ordered_unique_cols: list[str] = []
 	seen = set()
@@ -314,15 +315,8 @@ def update_trip_and_file_for_fileid(conn, fileid):
 			if isinstance(trip_start_dt, datetime) and isinstance(trip_end_dt, datetime):
 				trip_duration = (trip_end_dt - trip_start_dt).total_seconds()
 			else:
+				logger.warning(f"Could not parse trip_start or trip_end as datetime for fileid {fileid}: {trip_start} ({type(trip_start)}), {trip_end} ({type(trip_end)})")
 				trip_duration = None
-
-			# if not isinstance(trip_start, datetime):
-			# 	# trip_start = convert_string_to_datetime(trip_start)
-			# 	trip_start = convert_string_to_datetime(str(trip_start))
-			# if not isinstance(trip_end, datetime):
-			# 	# trip_end = convert_string_to_datetime(trip_end)
-			# 	trip_end = convert_string_to_datetime(str(trip_end))
-			# trip_duration = (trip_end - trip_start).total_seconds()
 		except Exception as e:
 			logger.error(f'{e} {type(e)} {trip_start=} {trip_end=}')
 			trip_duration = None
@@ -422,9 +416,9 @@ def update_trip_and_file_for_fileid(conn, fileid):
 		"row_count": row_count,
 		"trip_distance": trip_distance
 	})
-	logger.debug(f'Updated TorqFile and Torqtrips for fileid {fileid}: trip_start={trip_start}, trip_end={trip_end}, duration={trip_duration}, distance={trip_distance}, rows={row_count}')
+	logger.debug(f'Updated fileid {fileid}: trip_start={trip_start}, trip_end={trip_end}, duration={trip_duration}, distance={trip_distance}, rows={row_count}')
 
-def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs'):
+def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs') -> None:
 	"""
 	Read all CSV files into a DataFrame, normalize column names, and insert into SQLite table.
 	Handles varying columns, missing data, and extra spaces in column names.
@@ -500,7 +494,7 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs'):
 		logger.debug(f'skipped {skipped_count} files that were already processed based on hash')
 	if not valid_files:
 		logger.warning("No valid CSV files found after header validation")
-		return None, pd_columns
+		return None
 	if args.file_limit:
 		random.shuffle(valid_files)
 		valid_files = [k for k in valid_files][0:10]
@@ -517,7 +511,7 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs'):
 		create_or_update_table(session, table_name, all_columns, column_types)
 	except Exception as e:
 		logger.error(f"Error updating table schema: {e} {type(e)}")
-		return None, pd_columns
+		return None
 
 	# Second pass: Read and insert data from valid files
 	df = pd.DataFrame()
@@ -543,6 +537,7 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs'):
 				if conn.in_transaction():
 					conn.rollback()
 				try:
+					read_started = time.perf_counter()
 
 					# Read CSV file
 					df = pd.read_csv(csvfile, low_memory=False, on_bad_lines='skip', encoding='utf-8', encoding_errors='replace')
@@ -588,6 +583,7 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs'):
 					header_row = list(df.columns)
 					df = df[~df.apply(lambda row: list(row) == header_row, axis=1)]
 					df = df[~df.apply(lambda row: row.astype(str).str.contains(' Device Time').any(), axis=1)]
+					read_elapsed = float(time.perf_counter() - read_started)
 
 					pre_filter_columns = list(df.columns)
 					allowed_cols = set(actual_table_columns)
@@ -607,39 +603,56 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs'):
 					safe_chunksize = max(1, SQLITE_MAX_VARS // len(df.columns))
 					requested_chunksize = max(1, int(args.sqlchunksize))
 					effective_chunksize = min(requested_chunksize, safe_chunksize)
-					logger.info(f"[{csv_idx}/{len(valid_files)}] Sending {len(df)} rows from {csvfile} with fileid {fileid}")
-					df.to_sql(
-						table_name,
-						conn,
-						if_exists='append',
-						index=False,
-						method='multi',
-						chunksize=effective_chunksize,
-					)
+					if len(df) >= args.min_row_count:
+						# logger.info(f"[{csv_idx}/{len(valid_files)}] Sending {len(df)} rows from {csvfile} with fileid {fileid}")
+						send_started = time.perf_counter()
+						df.to_sql(table_name, conn, if_exists='append', index=False, method='multi', chunksize=effective_chunksize,)
 
-					# Update trip and file info for this fileid
-					update_trip_and_file_for_fileid(conn, fileid)
+						# Update trip and file info for this fileid
+						update_trip_and_file_for_fileid(conn, fileid)
 
-					# Update TorqFile row count
-					conn.execute(text("UPDATE torqfiles SET sent_rows = :rows WHERE fileid = :fileid"),{"rows": len(df), "fileid": fileid})
-					logger.info(f"[{csv_idx}/{len(valid_files)}] Successfully inserted {len(df)} rows from {csvfile}")
+						send_elapsed = float(time.perf_counter() - send_started)
+
+						# Update TorqFile import timings and row count
+						conn.execute(
+							text(
+								"""
+								UPDATE torqfiles
+								SET sent_rows = :rows,
+									readtime = :readtime,
+									sendtime = :sendtime
+								WHERE fileid = :fileid
+								"""
+							),
+							{"rows": len(df), "readtime": read_elapsed, "sendtime": send_elapsed, "fileid": fileid}
+						)
+						logger.info(f"[{csv_idx}/{len(valid_files)}] Sent {len(df)} rows from {csvfile} fileid {fileid}")
+						if conn.in_transaction():
+							conn.commit()
+					else:
+						logger.warning(f"[{csv_idx}/{len(valid_files)}] Skipping {csvfile} with fileid {fileid} - row count {len(df)} below minimum threshold")
+						conn.execute(text("DELETE FROM torqfiles WHERE fileid = :fileid"), {"fileid": fileid})
+						if conn.in_transaction():
+							conn.commit()
+				except UniqueViolation as e:
+					logger.warning(f"Duplicate entry for {csvfile} with fileid {fileid}, skipping: {e}")
 					if conn.in_transaction():
-						conn.commit()
-
+						conn.rollback()
+					continue
 				except Exception as e:
 					if conn.in_transaction():
 						conn.rollback()
-					logger.error(f"Error processing {csvfile}: {e}")
+					logger.error(f"Error processing {csvfile}: {e} {type(e)}")
 					if args.debug:
 						logger.error(f"DataFrame columns: {df.columns.tolist()}")
 					continue
 
 		except Exception as e:
-			logger.error(f"Transaction failed: {e}")
+			logger.error(f"Transaction failed: {e} {type(e)}")
 			raise
 
 	# engine.dispose()
-	return None, pd_columns
+	return None
 
 def get_csv_files(searchpath: Path, args):
 	# scan searchpath for csv files
@@ -787,5 +800,5 @@ def convert_string_to_datetime(s: str) -> datetime | None:
 			return None
 		return parsed.to_pydatetime()
 	except (ValueError, TypeError, KeyError) as e:
-		logger.debug(f"dateconverter {type(e)} {e} {s=}")
+		logger.warning(f"dateconverter {type(e)} {e} {s=}")
 		return None

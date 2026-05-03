@@ -32,7 +32,8 @@ class BasemapWorker(QObject):
 				"zoom": cast(Any, self.zoom),
 				"wait": 0.5,
 				"max_retries": 1,
-				"n_connections": 4,
+				# Keep tile fetch single-threaded to avoid joblib/loky callbacks during app shutdown.
+				"n_connections": 1,
 			}
 			if source is not None:
 				kwargs["source"] = source
@@ -53,4 +54,5 @@ class BasemapWorker(QObject):
 			self.finished.emit(img, ext, self.request_id)
 			logger.debug(f"BasemapWorker finished fetching basemap for request_id={self.request_id}")
 		except Exception as e:
+			logger.error(f"BasemapWorker error for request_id={self.request_id}: {e} ({type(e)})")
 			self.error.emit(f'{e} {type(e)}', self.request_id)
