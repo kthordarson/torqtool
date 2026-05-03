@@ -297,29 +297,18 @@ class MainWindow(QMainWindow):
 		self.left_tabs.setMinimumWidth(0)
 		self.left_tabs.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
 
-		trip_filter_bar = QWidget()
-		trip_filter_layout = QHBoxLayout(trip_filter_bar)
-		trip_filter_layout.setContentsMargins(2, 1, 2, 1)
-		trip_filter_layout.setSpacing(4)
-		trip_filter_layout.addWidget(QLabel("Distance km:"))
 		self.trip_distance_min_filter = QLineEdit()
 		self.trip_distance_min_filter.setPlaceholderText("min")
 		self.trip_distance_min_filter.setFixedWidth(52)
 		self.trip_distance_max_filter = QLineEdit()
 		self.trip_distance_max_filter.setPlaceholderText("max")
 		self.trip_distance_max_filter.setFixedWidth(52)
-		trip_filter_layout.addWidget(self.trip_distance_min_filter)
-		trip_filter_layout.addWidget(self.trip_distance_max_filter)
-		trip_filter_layout.addWidget(QLabel("Trip date:"))
 		self.trip_date_filter = QLineEdit()
 		self.trip_date_filter.setPlaceholderText("YYYY-MM-DD or text")
 		self.trip_date_filter.setFixedWidth(118)
-		trip_filter_layout.addWidget(self.trip_date_filter)
-		trip_filter_layout.addWidget(QLabel("Time min:"))
 		self.trip_time_filter = QLineEdit()
 		self.trip_time_filter.setPlaceholderText("seconds")
 		self.trip_time_filter.setFixedWidth(64)
-		trip_filter_layout.addWidget(self.trip_time_filter)
 		self.trip_filters_apply_btn = QPushButton("Apply")
 		self.trip_filters_clear_btn = QPushButton("Clear")
 		self.trip_filters_apply_btn.clicked.connect(self._apply_trip_filters)
@@ -328,10 +317,36 @@ class MainWindow(QMainWindow):
 		self.trip_distance_max_filter.returnPressed.connect(self._apply_trip_filters)
 		self.trip_date_filter.returnPressed.connect(self._apply_trip_filters)
 		self.trip_time_filter.returnPressed.connect(self._apply_trip_filters)
-		trip_filter_layout.addWidget(self.trip_filters_apply_btn)
-		trip_filter_layout.addWidget(self.trip_filters_clear_btn)
-		trip_filter_layout.addStretch()
-		trip_filter_bar.setMaximumHeight(34)
+
+		trip_filter_row1 = QWidget()
+		trip_filter_row1_layout = QHBoxLayout(trip_filter_row1)
+		trip_filter_row1_layout.setContentsMargins(2, 1, 2, 1)
+		trip_filter_row1_layout.setSpacing(4)
+		trip_filter_row1_layout.addWidget(QLabel("Distance km:"))
+		trip_filter_row1_layout.addWidget(self.trip_distance_min_filter)
+		trip_filter_row1_layout.addWidget(self.trip_distance_max_filter)
+		trip_filter_row1_layout.addWidget(QLabel("Trip date:"))
+		trip_filter_row1_layout.addWidget(self.trip_date_filter)
+		trip_filter_row1_layout.addStretch()
+		trip_filter_row1.setMaximumHeight(28)
+
+		trip_filter_row2 = QWidget()
+		trip_filter_row2_layout = QHBoxLayout(trip_filter_row2)
+		trip_filter_row2_layout.setContentsMargins(2, 1, 2, 1)
+		trip_filter_row2_layout.setSpacing(4)
+		trip_filter_row2_layout.addWidget(QLabel("Time min:"))
+		trip_filter_row2_layout.addWidget(self.trip_time_filter)
+		trip_filter_row2_layout.addWidget(self.trip_filters_apply_btn)
+		trip_filter_row2_layout.addWidget(self.trip_filters_clear_btn)
+		trip_filter_row2_layout.addStretch()
+		trip_filter_row2.setMaximumHeight(28)
+
+		trip_filter_bar = QWidget()
+		trip_filter_bar_layout = QVBoxLayout(trip_filter_bar)
+		trip_filter_bar_layout.setContentsMargins(0, 0, 0, 0)
+		trip_filter_bar_layout.setSpacing(1)
+		trip_filter_bar_layout.addWidget(trip_filter_row1)
+		trip_filter_bar_layout.addWidget(trip_filter_row2)
 		trip_filter_bar.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
 		trips_tab = QWidget()
@@ -2285,21 +2300,24 @@ class MainWindow(QMainWindow):
 		print(f"{self} Basemap load failed: {err} (request_id={request_id}) current_id={self._basemap_request_id}")
 
 	def _shutdown_thread(self, thread: QThread | None, name: str):
+		if self.args.debug:
+			logger.debug(f"Stopping thread {name} {thread} from {self} active threads: {len(self._active_threads)})")
 		if thread is None:
 			return
 		try:
 			if not thread.isRunning():
 				return
 		except RuntimeError as e:
-			logger.error(f"RuntimeError checking thread.isRunning() for '{name}': {e} ({type(e)})")
+			if self.args.debug:
+				logger.error(f"RuntimeError checking thread.isRunning() for '{name}': {e} ({type(e)})")
 			return
 		if thread.currentThread() is thread:
 			return
-		logger.debug(f"Stopping thread '{name}'")
 		thread.requestInterruption()
 		thread.quit()
 		if not thread.wait(3000):
-			logger.warning(f"Thread '{name}' did not stop in time; terminating")
+			if self.args.debug:
+				logger.warning(f"Thread '{name}' did not stop in time; terminating")
 			thread.terminate()
 			thread.wait(1000)
 
