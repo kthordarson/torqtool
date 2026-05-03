@@ -4,7 +4,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from PySide6.QtCore import QObject, Signal, QThread
 
 
@@ -24,6 +24,7 @@ class TripPlotWorker(QObject):
 		lat_col: str,
 		lon_col: str,
 		time_col: str | None,
+		sample_step: int = 1,
 	):
 		super().__init__()
 		self.db_url = db_url
@@ -33,6 +34,7 @@ class TripPlotWorker(QObject):
 		self.lat_col = lat_col
 		self.lon_col = lon_col
 		self.time_col = time_col
+		self.sample_step = max(1, int(sample_step))
 
 	@staticmethod
 	def _lonlat_to_web_mercator_np(lon: np.ndarray, lat: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -52,6 +54,7 @@ class TripPlotWorker(QObject):
 			preview_xy_by_file: dict[int, tuple[list[float], list[float]]] = {}
 
 			order_col = f'"{self.time_col}"' if self.time_col else 'id'
+			sample_where = " AND MOD(id, :sample_step) = 0" if self.sample_step > 1 else ""
 
 			# Phase 1: fetch lon/lat first so UI can render trip paths immediately.
 			for current_index, fileid in enumerate(self.fileids, start=1):
@@ -60,15 +63,19 @@ class TripPlotWorker(QObject):
 					self.cancelled.emit(self.request_id)
 					return
 
-				q_preview = (
+				q_preview = text(
 					f'SELECT "{self.lon_col}" AS longitude, "{self.lat_col}" AS latitude '
 					f'FROM torqlogs '
-					f'WHERE fileid = {int(fileid)} '
+					f'WHERE fileid = :fileid '
 					f'AND "{self.lon_col}" IS NOT NULL '
 					f'AND "{self.lat_col}" IS NOT NULL '
+					f'{sample_where} '
 					f'ORDER BY {order_col}'
 				)
-				df_preview = pd.read_sql(q_preview, engine)
+				preview_params: dict[str, int] = {"fileid": int(fileid)}
+				if self.sample_step > 1:
+					preview_params["sample_step"] = int(self.sample_step)
+				df_preview = pd.read_sql(q_preview, engine, params=preview_params)
 				if df_preview.empty:
 					self.preview.emit(self.request_id, {"done": current_index, "total": len(self.fileids), "trip": None})
 					continue
@@ -114,15 +121,19 @@ class TripPlotWorker(QObject):
 					self.progress.emit(self.request_id, current_index, len(self.fileids))
 					continue
 				x_list, y_list = xy_payload
-				q = (
+				q = text(
 					f'SELECT "{self.metric_name}" AS selectedmetric{time_select} '
 					f'FROM torqlogs '
-					f'WHERE fileid = {int(fileid)} '
+					f'WHERE fileid = :fileid '
 					f'AND "{self.lon_col}" IS NOT NULL '
 					f'AND "{self.lat_col}" IS NOT NULL '
+					f'{sample_where} '
 					f'ORDER BY {order_col}'
 				)
-				df = pd.read_sql(q, engine)
+				metric_params: dict[str, int] = {"fileid": int(fileid)}
+				if self.sample_step > 1:
+					metric_params["sample_step"] = int(self.sample_step)
+				df = pd.read_sql(q, engine, params=metric_params)
 				if df.empty:
 					self.progress.emit(self.request_id, current_index, len(self.fileids))
 					continue

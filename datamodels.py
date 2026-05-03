@@ -238,6 +238,67 @@ def database_init(engine):  # create tables
 		with engine.begin() as conn:
 			# Keep legacy databases aligned: enforce stable identity by hash.
 			conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_torqfiles_csvhash ON torqfiles(csvhash)"))
+			# Ensure torqfiles is properly linked to start/end position tables when supported by backend.
+			try:
+				conn.execute(
+					text(
+						"""
+						DO $$
+						BEGIN
+							IF NOT EXISTS (
+								SELECT 1
+								FROM pg_constraint
+								WHERE conname = 'torqfiles_startid_fkey'
+							) THEN
+								ALTER TABLE torqfiles
+								ADD CONSTRAINT torqfiles_startid_fkey
+								FOREIGN KEY (startid) REFERENCES startpos(startid)
+								ON UPDATE CASCADE ON DELETE SET NULL;
+							END IF;
+							IF NOT EXISTS (
+								SELECT 1
+								FROM pg_constraint
+								WHERE conname = 'torqfiles_endid_fkey'
+							) THEN
+								ALTER TABLE torqfiles
+								ADD CONSTRAINT torqfiles_endid_fkey
+								FOREIGN KEY (endid) REFERENCES endpos(endid)
+								ON UPDATE CASCADE ON DELETE SET NULL;
+							END IF;
+						END $$;
+						"""
+					)
+				)
+			except Exception as e:
+				# SQLite and older DB variants may not support PL/pgSQL blocks.
+				logger.debug(f"Skipping optional torqfiles FK constraint migration: {e} ({type(e)})")
+
+			# Unified view for start/end position analytics and grouping in GUI tools.
+			conn.execute(text("DROP VIEW IF EXISTS trip_start_end_summary"))
+			conn.execute(
+				text(
+					"""
+					CREATE VIEW trip_start_end_summary AS
+					SELECT
+						tf.fileid,
+						tf.startid,
+						tf.endid,
+						sp.latstart,
+						sp.lonstart,
+						sp.label AS start_label,
+						ep.latend,
+						ep.lonend,
+						ep.label AS end_label,
+						tt.tripdate,
+						tt.time AS trip_time_s,
+						COALESCE(tt.trip_distance, tt.distance) AS trip_distance_m
+					FROM torqfiles tf
+					LEFT JOIN startpos sp ON sp.startid = tf.startid
+					LEFT JOIN endpos ep ON ep.endid = tf.endid
+					LEFT JOIN torqtrips tt ON tt.fileid = tf.fileid
+					"""
+				)
+			)
 	except (OperationalError, AssertionError) as e:
 		logger.error(f'[dbinit] {type(e)} {e}')
 		sys.exit(-1)

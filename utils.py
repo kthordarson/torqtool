@@ -43,6 +43,8 @@ def get_parser(appname):
 	if appname == "guitest2":
 		parser.add_argument('--main-window', help="start main window", action="store_true", dest='main_window', default=True)
 		parser.add_argument('--pos-manager', help="start position manager window", action="store_true", dest='pos_manager', default=False)
+		parser.add_argument('--start-end-window', help="start start/end grouped window", action="store_true", dest='start_end_window', default=False)
+		parser.add_argument('--tabbed-workspace', help="start tabbed workspace with main/positions/start-end", action="store_true", dest='tabbed_workspace', default=False)
 	return parser
 
 class TimeZoneAwareConstructorWarning:

@@ -12,7 +12,7 @@ from sqlalchemy.orm import sessionmaker
 from PySide6.QtWidgets import (
 	QMainWindow, QTableView, QVBoxLayout, QWidget, QSplitter,
 	QHBoxLayout, QLabel, QComboBox, QScrollArea, QFileDialog, QMessageBox,
-	QSlider, QLineEdit, QPushButton, QInputDialog, QAbstractItemView, QTabWidget,
+	QSlider, QLineEdit, QPushButton, QInputDialog, QAbstractItemView, QTabWidget, QSpinBox, QSizePolicy,
 )
 from PySide6.QtGui import QFont, QAction, QCloseEvent
 from PySide6.QtCore import Qt, QTimer, QThread, QItemSelectionModel
@@ -25,6 +25,7 @@ from .basemap_worker import BasemapWorker
 from .trip_list_worker import TripListWorker
 from .trip_plot_worker import TripPlotWorker
 from .position_manager_window import PositionManagerWindow
+from .start_end_window import StartEndWindow
 from .pandas_model import PandasModel
 from ._helpers import _normalize_col_name, format_duration
 
@@ -75,6 +76,15 @@ class MainWindow(QMainWindow):
 		self._plot_request_context: dict[int, dict[str, Any]] = {}
 		self._active_threads: set[QThread] = set()
 		self._position_manager_window: PositionManagerWindow | None = None
+		self._start_end_window: StartEndWindow | None = None
+		self._positions_tab_container: QWidget | None = None
+		self._start_end_tab_container: QWidget | None = None
+		self._positions_tab_layout: QVBoxLayout | None = None
+		self._start_end_tab_layout: QVBoxLayout | None = None
+		self._all_trips_df = pd.DataFrame(columns=["id", "fileid", "trip_distance", "tripdate", "time", "trip_distance_sort", "tripdate_raw", "time_raw"])
+		self._trip_table_font_size = 8
+		self._point_sample_percent = 10
+		self._bounds_padding_ratio = 0.06
 		self.Session = sessionmaker(bind=self.engine)
 		self.session = self.Session()
 		self._ensure_map_cache_schema()
@@ -141,6 +151,36 @@ class MainWindow(QMainWindow):
 		self._mw_reload_map_btn.setFixedWidth(84)
 		self._mw_reload_map_btn.clicked.connect(self._mw_force_reload_basemap)
 		zoom_layout.addWidget(self._mw_reload_map_btn)
+		sample_label = QLabel("Points %:")
+		self.sample_percent_spin = QSpinBox()
+		self.sample_percent_spin.setRange(1, 100)
+		self.sample_percent_spin.setValue(self._point_sample_percent)
+		self.sample_percent_spin.setFixedWidth(56)
+		self.sample_percent_spin.setToolTip("Approximate percentage of torqlogs points to render")
+		self.sample_percent_spin.valueChanged.connect(self._on_sampling_changed)
+		self.sample_refresh_btn = QPushButton("Refresh points")
+		self.sample_refresh_btn.setFixedHeight(24)
+		self.sample_refresh_btn.clicked.connect(lambda: self._plot_refresh_timer.start(50))
+		padding_label = QLabel("Bounds %:")
+		self.bounds_padding_spin = QSpinBox()
+		self.bounds_padding_spin.setRange(1, 30)
+		self.bounds_padding_spin.setValue(int(self._bounds_padding_ratio * 100))
+		self.bounds_padding_spin.setFixedWidth(56)
+		self.bounds_padding_spin.setToolTip("Padding around trip bounds before fetching basemap")
+		self.bounds_padding_spin.valueChanged.connect(self._on_bounds_padding_changed)
+		font_label = QLabel("Table font:")
+		self.trip_table_font_spin = QSpinBox()
+		self.trip_table_font_spin.setRange(6, 14)
+		self.trip_table_font_spin.setValue(self._trip_table_font_size)
+		self.trip_table_font_spin.setFixedWidth(48)
+		self.trip_table_font_spin.valueChanged.connect(self._on_trip_table_font_size_changed)
+		zoom_layout.addWidget(sample_label)
+		zoom_layout.addWidget(self.sample_percent_spin)
+		zoom_layout.addWidget(self.sample_refresh_btn)
+		zoom_layout.addWidget(padding_label)
+		zoom_layout.addWidget(self.bounds_padding_spin)
+		zoom_layout.addWidget(font_label)
+		zoom_layout.addWidget(self.trip_table_font_spin)
 		zoom_layout.addStretch()
 		zoom_layout.setSpacing(10)
 		zoom_layout.setContentsMargins(10, 3, 10, 3)
@@ -208,7 +248,7 @@ class MainWindow(QMainWindow):
 
 		# Make font a little smaller
 		font = QFont()
-		font.setPointSize(9)
+		font.setPointSize(self._trip_table_font_size)
 		self.table.setFont(font)
 		self.label_groups_table.setFont(font)
 		self.label_groups_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -241,9 +281,59 @@ class MainWindow(QMainWindow):
 		label_tab_layout.addWidget(self.label_groups_table)
 
 		self.left_tabs = QTabWidget()
+		self.left_tabs.setDocumentMode(True)
+		self.left_tabs.setTabPosition(QTabWidget.TabPosition.North)
 		self.left_tabs.addTab(self.table, "Trips")
-		self.left_tabs.addTab(label_tab, "Label Groups")
+		self.left_tabs.addTab(label_tab, "Label groups")
+		self._positions_tab_container = QWidget()
+		self._positions_tab_layout = QVBoxLayout(self._positions_tab_container)
+		self._positions_tab_layout.setContentsMargins(0, 0, 0, 0)
+		self._positions_tab_layout.setSpacing(0)
+		self.left_tabs.addTab(self._positions_tab_container, "Positions")
+
+		self._start_end_tab_container = QWidget()
+		self._start_end_tab_layout = QVBoxLayout(self._start_end_tab_container)
+		self._start_end_tab_layout.setContentsMargins(0, 0, 0, 0)
+		self._start_end_tab_layout.setSpacing(0)
+		self.left_tabs.addTab(self._start_end_tab_container, "Start/End")
 		self.left_tabs.currentChanged.connect(self._on_left_tab_changed)
+
+		trip_filter_bar = QWidget()
+		trip_filter_layout = QHBoxLayout(trip_filter_bar)
+		trip_filter_layout.setContentsMargins(2, 1, 2, 1)
+		trip_filter_layout.setSpacing(4)
+		trip_filter_layout.addWidget(QLabel("Distance km:"))
+		self.trip_distance_min_filter = QLineEdit()
+		self.trip_distance_min_filter.setPlaceholderText("min")
+		self.trip_distance_min_filter.setFixedWidth(52)
+		self.trip_distance_max_filter = QLineEdit()
+		self.trip_distance_max_filter.setPlaceholderText("max")
+		self.trip_distance_max_filter.setFixedWidth(52)
+		trip_filter_layout.addWidget(self.trip_distance_min_filter)
+		trip_filter_layout.addWidget(self.trip_distance_max_filter)
+		trip_filter_layout.addWidget(QLabel("Trip date:"))
+		self.trip_date_filter = QLineEdit()
+		self.trip_date_filter.setPlaceholderText("YYYY-MM-DD or text")
+		self.trip_date_filter.setFixedWidth(118)
+		trip_filter_layout.addWidget(self.trip_date_filter)
+		trip_filter_layout.addWidget(QLabel("Time min:"))
+		self.trip_time_filter = QLineEdit()
+		self.trip_time_filter.setPlaceholderText("seconds")
+		self.trip_time_filter.setFixedWidth(64)
+		trip_filter_layout.addWidget(self.trip_time_filter)
+		self.trip_filters_apply_btn = QPushButton("Apply")
+		self.trip_filters_clear_btn = QPushButton("Clear")
+		self.trip_filters_apply_btn.clicked.connect(self._apply_trip_filters)
+		self.trip_filters_clear_btn.clicked.connect(self._clear_trip_filters)
+		self.trip_distance_min_filter.returnPressed.connect(self._apply_trip_filters)
+		self.trip_distance_max_filter.returnPressed.connect(self._apply_trip_filters)
+		self.trip_date_filter.returnPressed.connect(self._apply_trip_filters)
+		self.trip_time_filter.returnPressed.connect(self._apply_trip_filters)
+		trip_filter_layout.addWidget(self.trip_filters_apply_btn)
+		trip_filter_layout.addWidget(self.trip_filters_clear_btn)
+		trip_filter_layout.addStretch()
+		trip_filter_bar.setMaximumHeight(34)
+		trip_filter_bar.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
 		splitter.addWidget(self.left_tabs)
 		splitter.addWidget(right_panel)
@@ -251,7 +341,15 @@ class MainWindow(QMainWindow):
 
 		container = QWidget()
 		layout = QVBoxLayout(container)
-		layout.addWidget(splitter)
+		layout.setContentsMargins(2, 2, 2, 2)
+		layout.setSpacing(2)
+		filter_body_splitter = QSplitter(Qt.Orientation.Vertical)
+		filter_body_splitter.addWidget(trip_filter_bar)
+		filter_body_splitter.addWidget(splitter)
+		filter_body_splitter.setCollapsible(0, False)
+		filter_body_splitter.setCollapsible(1, False)
+		filter_body_splitter.setSizes([30, 970])
+		layout.addWidget(filter_body_splitter)
 		self.setCentralWidget(container)
 
 		# Render immediately, then hydrate data/metrics after first paint.
@@ -312,13 +410,53 @@ class MainWindow(QMainWindow):
 		position_manager_action = QAction("&Position manager", self)
 		position_manager_action.triggered.connect(self._open_position_manager)
 		tools_menu.addAction(position_manager_action)
+		start_end_action = QAction("Start/&End grouped trips", self)
+		start_end_action.triggered.connect(self._open_start_end_window)
+		tools_menu.addAction(start_end_action)
 
 	def _open_position_manager(self):
+		if hasattr(self, "left_tabs") and self.left_tabs is not None:
+			self._ensure_positions_tab_embedded()
+			self.left_tabs.setCurrentIndex(2)
+			return
 		if self._position_manager_window is None:
-			self._position_manager_window = PositionManagerWindow(self.engine, self)
+			self._position_manager_window = PositionManagerWindow(self.args, self.engine, self)
 		self._position_manager_window.show()
 		self._position_manager_window.raise_()
 		self._position_manager_window.activateWindow()
+
+	def _open_start_end_window(self):
+		if hasattr(self, "left_tabs") and self.left_tabs is not None:
+			self._ensure_start_end_tab_embedded()
+			self.left_tabs.setCurrentIndex(3)
+			return
+		if self._start_end_window is None:
+			self._start_end_window = StartEndWindow(self.args, self.engine, self)
+		self._start_end_window.show()
+		self._start_end_window.raise_()
+		self._start_end_window.activateWindow()
+
+	def _ensure_positions_tab_embedded(self):
+		if self._position_manager_window is not None:
+			return
+		if self._positions_tab_layout is None or self._positions_tab_container is None:
+			return
+		self._position_manager_window = PositionManagerWindow(self.args, self.engine, self)
+		self._position_manager_window.setWindowFlag(Qt.WindowType.Widget, True)
+		self._position_manager_window.setParent(self._positions_tab_container)
+		self._positions_tab_layout.addWidget(self._position_manager_window)
+		self._position_manager_window.show()
+
+	def _ensure_start_end_tab_embedded(self):
+		if self._start_end_window is not None:
+			return
+		if self._start_end_tab_layout is None or self._start_end_tab_container is None:
+			return
+		self._start_end_window = StartEndWindow(self.args, self.engine, self)
+		self._start_end_window.setWindowFlag(Qt.WindowType.Widget, True)
+		self._start_end_window.setParent(self._start_end_tab_container)
+		self._start_end_tab_layout.addWidget(self._start_end_window)
+		self._start_end_window.show()
 
 	def _open_database(self):
 		path, _ = QFileDialog.getOpenFileName(self, "Open Database", "", "SQLite Database (*.db);;All Files (*)")
@@ -376,6 +514,70 @@ class MainWindow(QMainWindow):
 		self._dot_size_scale = float(value) / 100.0
 		self.dot_size_value_label.setText(f"{self._dot_size_scale:.2f}x")
 		self._plot_refresh_timer.start(120)
+
+	def _sample_step(self) -> int:
+		pct = max(1, min(100, int(self._point_sample_percent)))
+		return max(1, int(round(100.0 / float(pct))))
+
+	def _on_sampling_changed(self, value: int):
+		self._point_sample_percent = max(1, min(100, int(value)))
+		self._trip_plot_cache.clear()
+		self._trip_geo_cache.clear()
+		self._plot_refresh_timer.start(100)
+
+	def _on_bounds_padding_changed(self, value: int):
+		self._bounds_padding_ratio = max(0.01, min(0.30, float(value) / 100.0))
+		self._plot_refresh_timer.start(120)
+
+	def _on_trip_table_font_size_changed(self, value: int):
+		self._trip_table_font_size = max(6, min(14, int(value)))
+		font = self.table.font()
+		font.setPointSize(self._trip_table_font_size)
+		self.table.setFont(font)
+		self.label_groups_table.setFont(font)
+		self.metric_table.setFont(QFont("Monospace", max(6, self._trip_table_font_size - 1)))
+
+	def _safe_float_from_line_edit(self, edit: QLineEdit) -> float | None:
+		text_value = edit.text().strip()
+		if not text_value:
+			return None
+		try:
+			return float(text_value)
+		except ValueError:
+			return None
+
+	def _apply_trip_filters(self, auto_select_latest: bool = False):
+		if self._all_trips_df.empty:
+			return
+		df = self._all_trips_df.copy()
+		dmin = self._safe_float_from_line_edit(self.trip_distance_min_filter)
+		dmax = self._safe_float_from_line_edit(self.trip_distance_max_filter)
+		date_filter = self.trip_date_filter.text().strip().lower()
+		time_min = self._safe_float_from_line_edit(self.trip_time_filter)
+		if dmin is not None:
+			df = df[df["trip_distance_sort"] >= dmin * 1000.0]
+		if dmax is not None:
+			df = df[df["trip_distance_sort"] <= dmax * 1000.0]
+		if date_filter:
+			df = df[df["tripdate"].astype(str).str.lower().str.contains(date_filter, na=False, regex=False)]
+		if time_min is not None:
+			df = df[df["time_raw"] >= time_min]
+		self._set_table_model(df)
+		if auto_select_latest and not self.df_trips.empty and self.table.selectionModel() is not None:
+			model_index = self.table.model().index(0, 0)
+			self.table.selectionModel().select(
+				model_index,
+				QItemSelectionModel.SelectionFlag.ClearAndSelect | QItemSelectionModel.SelectionFlag.Rows,
+			)
+			self.table.scrollTo(model_index)
+			self._plot_refresh_timer.start(50)
+
+	def _clear_trip_filters(self):
+		self.trip_distance_min_filter.clear()
+		self.trip_distance_max_filter.clear()
+		self.trip_date_filter.clear()
+		self.trip_time_filter.clear()
+		self._apply_trip_filters(auto_select_latest=False)
 
 	def on_metric_selection_changed(self):
 		"""Called when user changes the metric selection in the list."""
@@ -587,6 +789,9 @@ class MainWindow(QMainWindow):
 		sort_overrides = {'trip_distance': 'trip_distance_sort'} if 'trip_distance_sort' in self.df_trips.columns else None
 		self.table_model = PandasModel(self.df_trips, display_columns=display_columns, sort_overrides=sort_overrides)
 		self.table.setModel(self.table_model)
+		font = self.table.font()
+		font.setPointSize(self._trip_table_font_size)
+		self.table.setFont(font)
 		self.table.setSortingEnabled(True)
 		self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
 		# Allow Ctrl/Shift multi-select so multiple trips can be plotted together.
@@ -633,13 +838,17 @@ class MainWindow(QMainWindow):
 
 	def _on_initial_trips_loaded(self, df_trips: pd.DataFrame):
 		logger.debug(f"Loaded {len(df_trips)} trips from database")
-		df_trips['trip_distance_sort'] = pd.to_numeric(df_trips['trip_distance'], errors='coerce')
-		df_trips['tripdate'] = pd.to_datetime(df_trips['tripdate'], errors='coerce')
-		df_trips['tripdate'] = df_trips['tripdate'].dt.strftime('%Y-%m-%d %H:%M')
-		df_trips['time'] = df_trips['time'].apply(format_duration)
-		df_trips['trip_distance'] = df_trips['trip_distance'].apply(lambda x: f"{x/1000:.1f} km" if pd.notna(x) else "")
-		df_trips.set_index('id', inplace=True)
-		self._set_table_model(df_trips)
+		df = df_trips.copy()
+		df['trip_distance_sort'] = pd.to_numeric(df['trip_distance'], errors='coerce')
+		df['tripdate_raw'] = pd.to_datetime(df['tripdate'], errors='coerce')
+		df['time_raw'] = pd.to_numeric(df['time'], errors='coerce')
+		df.sort_values(by=['tripdate_raw', 'fileid'], ascending=[False, False], inplace=True)
+		df['tripdate'] = df['tripdate_raw'].dt.strftime('%Y-%m-%d %H:%M')
+		df['time'] = df['time_raw'].apply(format_duration)
+		df['trip_distance'] = df['trip_distance_sort'].apply(lambda x: f"{x/1000:.1f} km" if pd.notna(x) else "")
+		df.set_index('id', inplace=True)
+		self._all_trips_df = df
+		self._apply_trip_filters(auto_select_latest=True)
 
 	def _populate_label_groups_table(self):
 		query = text(
@@ -858,6 +1067,10 @@ class MainWindow(QMainWindow):
 		if index == 0:
 			rows = sorted(set(idx.row() for idx in self.table.selectionModel().selectedRows())) if self.table.selectionModel() is not None else []
 			self._populate_metric_columns(self._get_selected_fileids(rows) if rows else None)
+		elif index == 2:
+			self._ensure_positions_tab_embedded()
+		elif index == 3:
+			self._ensure_start_end_tab_embedded()
 
 	def _on_initial_trips_error(self, error_message: str):
 		logger.error(error_message)
@@ -1019,7 +1232,10 @@ class MainWindow(QMainWindow):
 			"preview_trips": {},
 		}
 
-		self.stats_label.setText(f"Loading {len(fileids)} trips in background (paths first)...")
+		sample_step = self._sample_step()
+		self.stats_label.setText(
+			f"Loading {len(fileids)} trips in background (paths first, sample 1/{sample_step})..."
+		)
 		self.cancel_plot_load_btn.setEnabled(True)
 
 		thread = QThread()
@@ -1031,6 +1247,7 @@ class MainWindow(QMainWindow):
 			lat_col,
 			lon_col,
 			time_col,
+			sample_step,
 		)
 		worker.moveToThread(thread)
 
@@ -1201,7 +1418,7 @@ class MainWindow(QMainWindow):
 			plots.append(sc)
 
 		bounds = self._compute_plot_bounds(all_x, all_y)
-		effective_zoom = int(self.zoom_combo.currentText())
+		effective_zoom = self._base_zoom_for_selection(fileids, int(self.zoom_combo.currentText()))
 		cached_payload: tuple[bytes, tuple[float, float, float, float]] | None = None
 		if bounds:
 			effective_zoom = self._effective_basemap_zoom(bounds, effective_zoom)
@@ -1270,11 +1487,19 @@ class MainWindow(QMainWindow):
 
 		time_select = f', "{time_col}" AS metric_time' if time_col else ''
 		order_col = f'"{time_col}"' if time_col else 'id'
-		q = (
+		sample_where = " AND MOD(id, :sample_step) = 0" if self._sample_step() > 1 else ""
+		q = text(
 			f'SELECT "{lon_col}" AS longitude, "{lat_col}" AS latitude{time_select} '
-			f'FROM torqlogs WHERE fileid = {int(fileid)} ORDER BY {order_col}'
+			f'FROM torqlogs WHERE fileid = :fileid{sample_where} ORDER BY {order_col}'
 		)
-		df_geo = pd.read_sql(q, self.engine)
+		params: dict[str, Any] = {"fileid": int(fileid)}
+		if self._sample_step() > 1:
+			params["sample_step"] = int(self._sample_step())
+		try:
+			df_geo = pd.read_sql(q, self.engine, params=params)
+		except Exception as e:
+			logger.error(f"Failed to load geo data for trip fileid={fileid}: {e} ({type(e)})")
+			df_geo = pd.DataFrame()
 		if df_geo.empty:
 			payload = {"x": [], "y": [], "time": []}
 			self._trip_geo_cache[fileid] = payload
@@ -1309,6 +1534,8 @@ class MainWindow(QMainWindow):
 
 		geo_payload = self._load_trip_geo_data(fileid)
 		if geo_payload is None:
+			if self.args.debug:
+				logger.warning(f"No geo data available for trip fileid={fileid}, cannot load plot data for metric '{metric_name}'")
 			return None
 
 		speed_col_name = self._resolve_actual_torqlogs_column(metric_name)
@@ -1318,11 +1545,15 @@ class MainWindow(QMainWindow):
 			return None
 
 		time_order = f' ORDER BY "{time_col}"' if time_col else ' ORDER BY id'
-		q = (
+		sample_where = " AND MOD(id, :sample_step) = 0" if self._sample_step() > 1 else ""
+		q = text(
 			f'SELECT "{speed_col_name}" AS selectedmetric '
-			f'FROM torqlogs WHERE fileid = {int(fileid)}{time_order}'
+			f'FROM torqlogs WHERE fileid = :fileid{sample_where}{time_order}'
 		)
-		df_part = pd.read_sql(q, self.engine)
+		params: dict[str, Any] = {"fileid": int(fileid)}
+		if self._sample_step() > 1:
+			params["sample_step"] = int(self._sample_step())
+		df_part = pd.read_sql(q, self.engine, params=params)
 		if df_part.empty:
 			self._trip_plot_cache[cache_key] = {"x": [], "y": [], "speed": [], "time": []}
 			return self._trip_plot_cache[cache_key]
@@ -1346,16 +1577,19 @@ class MainWindow(QMainWindow):
 		return payload
 
 	def _selection_key(self, fileids: list[int], metric_name: str) -> str:
-		return f"{self._map_cache_version}|metric={metric_name}|" + ",".join(str(fid) for fid in sorted(fileids))
+		return (
+			f"{self._map_cache_version}|metric={metric_name}|sample={self._sample_step()}|"
+			+ ",".join(str(fid) for fid in sorted(fileids))
+		)
 
 	def _basemap_selection_key(self, fileids: list[int]) -> str:
 		# Basemap tiles are independent of metric and colormap for a fixed trip selection/zoom.
-		return f"{self._map_cache_version}|basemap|" + ",".join(str(fid) for fid in sorted(fileids))
+		return f"{self._map_cache_version}|basemap|sample={self._sample_step()}|" + ",".join(str(fid) for fid in sorted(fileids))
 
 	def _timeseries_selection_key(self, fileids: list[int], metric_names: list[str]) -> str:
 		metrics_part = ",".join(metric_names)
 		files_part = ",".join(str(fid) for fid in sorted(fileids))
-		return f"{self._map_cache_version}|timeseries|metrics={metrics_part}|{files_part}"
+		return f"{self._map_cache_version}|timeseries|sample={self._sample_step()}|metrics={metrics_part}|{files_part}"
 
 	def _cache_fileid(self, fileids: list[int]) -> int | None:
 		return int(fileids[0]) if len(fileids) == 1 else None
@@ -1502,8 +1736,8 @@ class MainWindow(QMainWindow):
 
 		dx = max(1.0, xmax - xmin)
 		dy = max(1.0, ymax - ymin)
-		pad_x = dx * 0.03
-		pad_y = dy * 0.03
+		pad_x = dx * self._bounds_padding_ratio
+		pad_y = dy * self._bounds_padding_ratio
 		return (xmin - pad_x, xmax + pad_x, ymin - pad_y, ymax + pad_y)
 
 	def _effective_basemap_zoom(self, bounds: tuple[float, float, float, float], base_zoom: int) -> int:
@@ -1522,13 +1756,27 @@ class MainWindow(QMainWindow):
 		# Respect current user-selected zoom as baseline, but improve detail for tight bounds.
 		return max(1, min(18, base_zoom + boost))
 
+	def _base_zoom_for_selection(self, fileids: list[int], fallback_zoom: int) -> int:
+		if not fileids or self._all_trips_df.empty:
+			return fallback_zoom
+		try:
+			subset = self._all_trips_df[self._all_trips_df["fileid"].isin(fileids)]
+			if subset.empty:
+				return fallback_zoom
+			distances = pd.to_numeric(subset["trip_distance_sort"], errors="coerce").dropna()
+			if not distances.empty and bool((distances <= 10_000.0).all()):
+				return max(fallback_zoom, 12)
+		except Exception as e:
+			logger.debug(f"Could not evaluate short-trip zoom policy: {e} ({type(e)})")
+		return fallback_zoom
+
 	def _plot_for_rows(self, rows):
 		fileids = self._get_selected_fileids(rows)
 		if not fileids:
 			self.stats_label.setText("No trip selected")
 			return
 
-		base_zoom = int(self.zoom_combo.currentText())
+		base_zoom = self._base_zoom_for_selection(fileids, int(self.zoom_combo.currentText()))
 		colormap_name = self._current_colormap
 		selected_metrics = self._get_selected_metrics()
 		if not selected_metrics:

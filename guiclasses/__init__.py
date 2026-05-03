@@ -6,6 +6,8 @@ from .position_table_model import PositionTableModel
 from .position_load_worker import PositionLoadWorker
 from .position_manager_window import PositionManagerWindow
 from .main_window import MainWindow
+from .start_end_window import StartEndWindow
+from .app_tabs_window import AppTabsWindow
 from .pandas_model import PandasModel
 
 __all__ = [
@@ -17,5 +19,7 @@ __all__ = [
 	"PositionLoadWorker",
 	"PositionManagerWindow",
 	"MainWindow",
+	"StartEndWindow",
+	"AppTabsWindow",
 	"PandasModel",
 ]
