@@ -585,6 +585,7 @@ class MainWindow(QMainWindow):
 			QMessageBox.warning(self, "Cache Clear Failed", f"Could not clear mapimagecache:\n{e}")
 
 	def _set_colormap(self, colormap_name: str):
+		self._invalidate_and_cancel_active_plot_load("Color change requested")
 		self._current_colormap = colormap_name
 		for name, action in self._colormap_actions.items():
 			action.setChecked(name == colormap_name)
@@ -595,9 +596,11 @@ class MainWindow(QMainWindow):
 		self._plot_refresh_timer.start(50)
 
 	def on_zoom_changed(self, zoom_level):
+		self._invalidate_and_cancel_active_plot_load("Zoom changed")
 		self._plot_refresh_timer.start(300)
 
 	def on_dot_size_changed(self, value: int):
+		self._invalidate_and_cancel_active_plot_load("Dot size changed")
 		self._dot_size_scale = float(value) / 100.0
 		self.dot_size_value_label.setText(f"{self._dot_size_scale:.2f}x")
 		self._plot_refresh_timer.start(120)
@@ -666,6 +669,7 @@ class MainWindow(QMainWindow):
 		return "|".join(parts)
 
 	def _on_sampling_changed(self, value: int):
+		self._invalidate_and_cancel_active_plot_load("Sampling changed")
 		self._point_sample_percent = max(1, min(100, int(value)))
 		self._trip_plot_cache.clear()
 		self._trip_geo_cache.clear()
@@ -733,6 +737,7 @@ class MainWindow(QMainWindow):
 		self._apply_trip_filters(auto_select_latest=False)
 
 	def on_metric_selection_changed(self):
+		self._invalidate_and_cancel_active_plot_load("Metric selection changed")
 		if self._get_selected_metrics():
 			self._plot_refresh_timer.start(200)
 
@@ -1188,7 +1193,7 @@ class MainWindow(QMainWindow):
 
 		self._select_trips_by_fileids(sorted(fileids), "No visible trips match the selected labels.")
 
-	def _select_trips_by_fileids(self, fileids: list[int], no_visible_message: str) -> bool:
+	def _select_trips_by_fileids(self, fileids: list[int], no_visible_message: str, force_async_plot: bool = False) -> bool:
 		if not fileids:
 			return False
 
@@ -1223,7 +1228,10 @@ class MainWindow(QMainWindow):
 		self.left_tabs.setCurrentIndex(0)
 		selected_fileids = self._get_selected_fileids(matching_rows)
 		self._populate_metric_columns(selected_fileids if selected_fileids else None)
-		self._plot_refresh_timer.start(120)
+		if selected_fileids and force_async_plot:
+			self._start_async_plot_for_fileids(selected_fileids)
+		else:
+			self._plot_refresh_timer.start(120)
 		return True
 
 	def _on_left_tab_changed(self, index: int):
@@ -1377,6 +1385,8 @@ class MainWindow(QMainWindow):
 			self._set_all_metrics_table_model(pd.DataFrame(columns=["metric", "min", "avg", "max"]))
 			return
 
+		self._invalidate_and_cancel_active_plot_load(None)
+
 		selected_metrics = self._get_selected_metrics()
 		if not selected_metrics:
 			fallback_metric = self._get_selected_metric()
@@ -1424,6 +1434,7 @@ class MainWindow(QMainWindow):
 			lon_col,
 			time_col,
 			sample_step,
+			metric_names=[self._resolve_actual_torqlogs_column(name) or name for name in selected_metrics],
 		)
 		worker.moveToThread(thread)
 
@@ -1515,6 +1526,17 @@ class MainWindow(QMainWindow):
 			self.stats_label.setText("Cancelling background load...")
 		self.cancel_plot_load_btn.setEnabled(False)
 
+	def _invalidate_and_cancel_active_plot_load(self, reason: str | None):
+		thread = self._plot_data_thread
+		if thread is None or not thread.isRunning():
+			return
+		self._plot_data_request_id += 1
+		self._plot_request_context.clear()
+		thread.requestInterruption()
+		self.cancel_plot_load_btn.setEnabled(False)
+		if reason:
+			self.stats_label.setText(f"{reason}; cancelling previous background load...")
+
 	def _on_async_plot_data_loaded(self, request_id: int, payload: object) -> None:
 		if request_id != self._plot_data_request_id:
 			return
@@ -1538,12 +1560,29 @@ class MainWindow(QMainWindow):
 		for item in trips:
 			fid = int(item.get("fileid", -1))
 			if fid >= 0:
-				self._trip_plot_cache[(fid, selected_metric)] = {
-					"lat": list(item.get("lat", [])),
-					"lon": list(item.get("lon", [])),
-					"speed": list(item.get("speed", [])),
-					"time": list(item.get("time", [])),
-				}
+				lat_vals = list(item.get("lat", []))
+				lon_vals = list(item.get("lon", []))
+				time_vals = list(item.get("time", []))
+				metrics_payload = item.get("metrics") if isinstance(item.get("metrics"), dict) else {}
+				if metrics_payload:
+					for metric_name, metric_values in metrics_payload.items():
+						metric_list = list(metric_values) if isinstance(metric_values, list) else []
+						point_count = min(len(lat_vals), len(lon_vals), len(metric_list))
+						if time_vals:
+							point_count = min(point_count, len(time_vals))
+						self._trip_plot_cache[(fid, str(metric_name))] = {
+							"lat": lat_vals[:point_count],
+							"lon": lon_vals[:point_count],
+							"speed": metric_list[:point_count],
+							"time": time_vals[:point_count] if time_vals else [],
+						}
+				else:
+					self._trip_plot_cache[(fid, selected_metric)] = {
+						"lat": lat_vals,
+						"lon": lon_vals,
+						"speed": list(item.get("speed", [])),
+						"time": time_vals,
+					}
 
 		fileid_color_map = self._build_fileid_color_map(fileids, colormap_name)
 		m, bounds = self._build_trip_folium_map(trips, fileids, colormap_name)
@@ -2339,6 +2378,7 @@ class MainWindow(QMainWindow):
 	def on_row_selected(self, selected, deselected):
 		if self._suppress_trip_selection_handler:
 			return
+		self._invalidate_and_cancel_active_plot_load("Trip selection changed")
 		rows = sorted(set(index.row() for index in self.table.selectionModel().selectedRows()))
 		if rows:
 			logger.debug(f"on_row_selected with {len(rows)} selected row(s): {rows[:5]}{'...' if len(rows) > 5 else ''}")
