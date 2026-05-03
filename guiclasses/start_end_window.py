@@ -148,6 +148,20 @@ class StartEndWindow(QMainWindow):
             return
 
         parent = self.parent()
+        if parent is not None and hasattr(parent, "_select_trips_by_fileids"):
+            try:
+                selected_ok = bool(
+                    parent._select_trips_by_fileids(
+                        selected_fileids,
+                        "No visible trips match the selected start/end groups.",
+                    )
+                )
+                if selected_ok:
+                    self.stats_label.setText(f"{len(selected_fileids)} trip(s) selected")
+                    return
+            except Exception as e:
+                logger.warning(f"Could not route Start/End selection to parent: {e} ({type(e)})")
+
         if parent is not None and hasattr(parent, "_plot_for_start_end_fileids"):
             try:
                 parent._plot_for_start_end_fileids(selected_fileids)
