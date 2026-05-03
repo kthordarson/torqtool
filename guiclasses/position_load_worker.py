@@ -54,6 +54,7 @@ class PositionLoadWorker(QObject):
         except Exception as e:
             pos_type = self.pos_type if self.pos_type in ("start", "end") else "start/end"
             self.error.emit(f"Failed to load {pos_type} positions: {e} ({type(e)})")
+            logger.error(f"Failed to load {pos_type} positions: {e} ({type(e)})")
         finally:
             if engine is not None:
                 engine.dispose()

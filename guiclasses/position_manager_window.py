@@ -673,7 +673,8 @@ class PositionManagerWindow(QMainWindow):
     def _on_map_point_clicked(self, data_str: str) -> None:
         try:
             data = json.loads(data_str)
-        except Exception:
+        except Exception as e:
+            logger.error(f"Error parsing point click data: {e} ({type(e)})")
             return
         row_index = int(data.get("row_index", -1))
         if row_index < 0 or row_index not in self.df_positions.index:
@@ -980,7 +981,7 @@ class PositionManagerWindow(QMainWindow):
         try:
             return thread.isRunning()
         except RuntimeError as e:
-            logger.debug(f"RuntimeError calling thread.isRunning(): {e} ({type(e)})")
+            logger.warning(f"RuntimeError calling thread.isRunning(): {e} ({type(e)})")
             return False
 
     def closeEvent(self, event: QCloseEvent):

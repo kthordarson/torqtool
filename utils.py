@@ -4,6 +4,7 @@ import random
 import os
 import re
 import sys
+import time
 from datetime import datetime
 from hashlib import md5
 from pathlib import Path
@@ -314,15 +315,8 @@ def update_trip_and_file_for_fileid(conn, fileid):
 			if isinstance(trip_start_dt, datetime) and isinstance(trip_end_dt, datetime):
 				trip_duration = (trip_end_dt - trip_start_dt).total_seconds()
 			else:
+				logger.warning(f"Could not parse trip_start or trip_end as datetime for fileid {fileid}: {trip_start} ({type(trip_start)}), {trip_end} ({type(trip_end)})")
 				trip_duration = None
-
-			# if not isinstance(trip_start, datetime):
-			# 	# trip_start = convert_string_to_datetime(trip_start)
-			# 	trip_start = convert_string_to_datetime(str(trip_start))
-			# if not isinstance(trip_end, datetime):
-			# 	# trip_end = convert_string_to_datetime(trip_end)
-			# 	trip_end = convert_string_to_datetime(str(trip_end))
-			# trip_duration = (trip_end - trip_start).total_seconds()
 		except Exception as e:
 			logger.error(f'{e} {type(e)} {trip_start=} {trip_end=}')
 			trip_duration = None
@@ -422,7 +416,7 @@ def update_trip_and_file_for_fileid(conn, fileid):
 		"row_count": row_count,
 		"trip_distance": trip_distance
 	})
-	logger.debug(f'Updated TorqFile and Torqtrips for fileid {fileid}: trip_start={trip_start}, trip_end={trip_end}, duration={trip_duration}, distance={trip_distance}, rows={row_count}')
+	logger.debug(f'Updated fileid {fileid}: trip_start={trip_start}, trip_end={trip_end}, duration={trip_duration}, distance={trip_distance}, rows={row_count}')
 
 def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs') -> None:
 	"""
@@ -543,6 +537,7 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs') -> None:
 				if conn.in_transaction():
 					conn.rollback()
 				try:
+					read_started = time.perf_counter()
 
 					# Read CSV file
 					df = pd.read_csv(csvfile, low_memory=False, on_bad_lines='skip', encoding='utf-8', encoding_errors='replace')
@@ -588,6 +583,7 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs') -> None:
 					header_row = list(df.columns)
 					df = df[~df.apply(lambda row: list(row) == header_row, axis=1)]
 					df = df[~df.apply(lambda row: row.astype(str).str.contains(' Device Time').any(), axis=1)]
+					read_elapsed = float(time.perf_counter() - read_started)
 
 					pre_filter_columns = list(df.columns)
 					allowed_cols = set(actual_table_columns)
@@ -608,15 +604,29 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs') -> None:
 					requested_chunksize = max(1, int(args.sqlchunksize))
 					effective_chunksize = min(requested_chunksize, safe_chunksize)
 					if len(df) >= args.min_row_count:
-						logger.info(f"[{csv_idx}/{len(valid_files)}] Sending {len(df)} rows from {csvfile} with fileid {fileid}")
+						# logger.info(f"[{csv_idx}/{len(valid_files)}] Sending {len(df)} rows from {csvfile} with fileid {fileid}")
+						send_started = time.perf_counter()
 						df.to_sql(table_name, conn, if_exists='append', index=False, method='multi', chunksize=effective_chunksize,)
 
 						# Update trip and file info for this fileid
 						update_trip_and_file_for_fileid(conn, fileid)
 
-						# Update TorqFile row count
-						conn.execute(text("UPDATE torqfiles SET sent_rows = :rows WHERE fileid = :fileid"),{"rows": len(df), "fileid": fileid})
-						logger.info(f"[{csv_idx}/{len(valid_files)}] Successfully inserted {len(df)} rows from {csvfile}")
+						send_elapsed = float(time.perf_counter() - send_started)
+
+						# Update TorqFile import timings and row count
+						conn.execute(
+							text(
+								"""
+								UPDATE torqfiles
+								SET sent_rows = :rows,
+									readtime = :readtime,
+									sendtime = :sendtime
+								WHERE fileid = :fileid
+								"""
+							),
+							{"rows": len(df), "readtime": read_elapsed, "sendtime": send_elapsed, "fileid": fileid}
+						)
+						logger.info(f"[{csv_idx}/{len(valid_files)}] Sent {len(df)} rows from {csvfile} fileid {fileid}")
 						if conn.in_transaction():
 							conn.commit()
 					else:
@@ -638,7 +648,7 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs') -> None:
 					continue
 
 		except Exception as e:
-			logger.error(f"Transaction failed: {e}")
+			logger.error(f"Transaction failed: {e} {type(e)}")
 			raise
 
 	# engine.dispose()
@@ -790,5 +800,5 @@ def convert_string_to_datetime(s: str) -> datetime | None:
 			return None
 		return parsed.to_pydatetime()
 	except (ValueError, TypeError, KeyError) as e:
-		logger.debug(f"dateconverter {type(e)} {e} {s=}")
+		logger.warning(f"dateconverter {type(e)} {e} {s=}")
 		return None

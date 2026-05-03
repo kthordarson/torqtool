@@ -197,14 +197,26 @@ class StartEndWindow(QMainWindow):
         self._detail_df = df
         self._refresh_group_table()
 
+    @staticmethod
+    def _safe_group_id(value: Any) -> int:
+        if value is None or pd.isna(value):
+            return 0
+        try:
+            return int(value)
+        except (TypeError, ValueError) as e:
+            logger.warning(f"Failed to convert value to int: {value} ({e})")
+            return 0
+
     def _group_key(self, row: pd.Series) -> str:
+        start_id = self._safe_group_id(row.get("startid"))
+        end_id = self._safe_group_id(row.get("endid"))
         if self._group_mode == "start":
-            return f"S{int(row.get('startid') or 0)} {row.get('start_label', '')}"
+            return f"S{start_id} {row.get('start_label', '')}"
         if self._group_mode == "end":
-            return f"E{int(row.get('endid') or 0)} {row.get('end_label', '')}"
+            return f"E{end_id} {row.get('end_label', '')}"
         return (
-            f"S{int(row.get('startid') or 0)} {row.get('start_label', '')}"
-            f" -> E{int(row.get('endid') or 0)} {row.get('end_label', '')}"
+            f"S{start_id} {row.get('start_label', '')}"
+            f" -> E{end_id} {row.get('end_label', '')}"
         )
 
     def _refresh_group_table(self) -> None:
@@ -215,7 +227,11 @@ class StartEndWindow(QMainWindow):
             return
 
         df = self._detail_df.copy()
-        df["group"] = df.apply(self._group_key, axis=1)
+        try:
+            df["group"] = df.apply(self._group_key, axis=1)
+        except ValueError as e:
+            logger.error(f"Error applying group key function: {e} ({type(e)}) self._group_key={self._group_key} df columns={df.columns.tolist()} sample row={df.iloc[0].to_dict() if not df.empty else 'N/A'}")
+            df["group"] = "(error grouping)"
         rows: list[dict[str, Any]] = []
         self._group_to_fileids = {}
         for group_name, group_df in df.groupby("group", dropna=False):
@@ -270,9 +286,11 @@ class StartEndWindow(QMainWindow):
 
         all_lats, all_lons = [], []
         for _, r in start_df.iterrows():
-            all_lats.append(float(r["latstart"])); all_lons.append(float(r["lonstart"]))
+            all_lats.append(float(r["latstart"]))
+            all_lons.append(float(r["lonstart"]))
         for _, r in end_df.iterrows():
-            all_lats.append(float(r["latend"])); all_lons.append(float(r["lonend"]))
+            all_lats.append(float(r["latend"]))
+            all_lons.append(float(r["lonend"]))
 
         if not all_lats:
             return None

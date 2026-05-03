@@ -54,4 +54,5 @@ class BasemapWorker(QObject):
 			self.finished.emit(img, ext, self.request_id)
 			logger.debug(f"BasemapWorker finished fetching basemap for request_id={self.request_id}")
 		except Exception as e:
+			logger.error(f"BasemapWorker error for request_id={self.request_id}: {e} ({type(e)})")
 			self.error.emit(f'{e} {type(e)}', self.request_id)

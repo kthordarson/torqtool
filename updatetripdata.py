@@ -38,7 +38,8 @@ def to_float(value: object) -> float | None:
     if isinstance(value, (str, bytes, bytearray, memoryview)):
         try:
             return float(value)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError) as e:
+            logger.warning(f"Could not convert value to float: {value} ({e})")
             return None
     return None
 
@@ -96,7 +97,8 @@ def _parse_labeled_coords(backup_file: Path, default_section: str | None = None)
 				int(parts[0])
 				lat = float(parts[1])
 				lon = float(parts[2])
-			except (TypeError, ValueError):
+			except (TypeError, ValueError) as e:
+				logger.warning(f"Could not parse line in backup file: {raw_line.strip()} ({e})")
 				continue
 
 			label = parts[4]
