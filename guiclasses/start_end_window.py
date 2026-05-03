@@ -78,6 +78,7 @@ class StartEndWindow(QMainWindow):
         self.groups_table.setFont(QFont("Monospace", self._table_font_size))
 
         left_panel = QWidget()
+        self.left_panel = left_panel
         left_layout = QVBoxLayout(left_panel)
         left_layout.setContentsMargins(2, 2, 2, 2)
         left_layout.setSpacing(2)
@@ -147,14 +148,13 @@ class StartEndWindow(QMainWindow):
             return
 
         parent = self.parent()
-        if parent is not None and hasattr(parent, "_select_trips_by_fileids"):
+        if parent is not None and hasattr(parent, "_plot_for_start_end_fileids"):
             try:
-                selected = bool(parent._select_trips_by_fileids(selected_fileids, "No visible trips match the selected Start/End group(s)."))
-                if selected:
-                    self.stats_label.setText(f"Trips: {len(selected_fileids)} | selected in Trips tab")
-                    return
+                parent._plot_for_start_end_fileids(selected_fileids)
+                self.stats_label.setText(f"{len(selected_fileids)} trip(s) plotted")
+                return
             except Exception as e:
-                logger.warning(f"Could not route Start/End selection to parent trips table: {e} ({type(e)})")
+                logger.warning(f"Could not route Start/End plot to parent: {e} ({type(e)})")
 
         # Standalone fallback: keep the local Start/End plots behavior.
         self._plot_for_fileids(selected_fileids)

@@ -325,7 +325,7 @@ ncc = {
     "Hybrid Battery Charge (%)(%)": "hybrid_battery_charge_",
     "Catalyst Temperature (Bank 1 Sensor 1)(°C)": "catalyst_temperature_bank_1_sensor_1c",
     "Catalyst Temperature (Bank 1 Sensor 1)(°F)": "catalyst_temperature_bank_1_sensor_1f",
-    "Catalyst Temperature (Bank 1 Sensor 2)(°F)": "catalyst_temperature_bank_2_sensor_1f",
+    "Catalyst Temperature (Bank 1 Sensor 2)(°F)": "catalyst_temperature_bank_1_sensor_2f",
     "Accelerator PedalPosition D(%)": "accelerator_pedalposition_d",
     "Evap System Vapour Pressure(Pa)": "evap_system_vapour_pressurepa",
     "Exhaust gas temp Bank 2 Sensor 2(°C)": "exhaust_gas_temp_bank_2_sensor_2c",

@@ -15,6 +15,7 @@ from sqlalchemy import DateTime
 from sqlalchemy import create_engine, text, MetaData, Table, Column, Float, String, Integer
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy import inspect
+from psycopg2.errors import UniqueViolation
 from commonformats import fmt_20, fmt_24, fmt_26, fmt_28, fmt_30, fmt_34, fmt_36
 from datamodels import database_init, COLUMN_TYPES
 from schemas import canonicalize_column_name, canonicalize_columns
@@ -40,6 +41,7 @@ def get_parser(appname):
 	parser.add_argument("--sqlchunksize", nargs="?", default=1000, type=int, help="sql chunk", action="store")
 	parser.add_argument("-i", "--info", "--dbinfo", default=False, help="show dbinfo", action="store_true", dest="dbinfo", )
 	parser.add_argument("-d", "--debug", default=False, help="debugmode", action="store_true", dest="debug", )
+	parser.add_argument('--min_row_count', default=100, type=int, help="minimum row count for a file to be processed", action="store")
 	if appname == "guitest2":
 		parser.add_argument('--main-window', help="start main window", action="store_true", dest='main_window', default=True)
 		parser.add_argument('--pos-manager', help="start position manager window", action="store_true", dest='pos_manager', default=False)
@@ -236,9 +238,7 @@ def _collapse_duplicate_dataframe_columns(df: pd.DataFrame, csvfile: Path) -> pd
 		return df
 
 	resolved_duplicates = [str(col) for col in pd.unique(df.columns[df.columns.duplicated()])]
-	logger.warning(
-		f"Resolved duplicate canonical columns for {csvfile}: {resolved_duplicates}"
-	)
+	logger.warning(f"Resolved duplicate canonical columns for {csvfile}: {resolved_duplicates}")
 
 	ordered_unique_cols: list[str] = []
 	seen = set()
@@ -424,7 +424,7 @@ def update_trip_and_file_for_fileid(conn, fileid):
 	})
 	logger.debug(f'Updated TorqFile and Torqtrips for fileid {fileid}: trip_start={trip_start}, trip_end={trip_end}, duration={trip_duration}, distance={trip_distance}, rows={row_count}')
 
-def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs'):
+def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs') -> None:
 	"""
 	Read all CSV files into a DataFrame, normalize column names, and insert into SQLite table.
 	Handles varying columns, missing data, and extra spaces in column names.
@@ -500,7 +500,7 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs'):
 		logger.debug(f'skipped {skipped_count} files that were already processed based on hash')
 	if not valid_files:
 		logger.warning("No valid CSV files found after header validation")
-		return None, pd_columns
+		return None
 	if args.file_limit:
 		random.shuffle(valid_files)
 		valid_files = [k for k in valid_files][0:10]
@@ -517,7 +517,7 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs'):
 		create_or_update_table(session, table_name, all_columns, column_types)
 	except Exception as e:
 		logger.error(f"Error updating table schema: {e} {type(e)}")
-		return None, pd_columns
+		return None
 
 	# Second pass: Read and insert data from valid files
 	df = pd.DataFrame()
@@ -607,29 +607,32 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs'):
 					safe_chunksize = max(1, SQLITE_MAX_VARS // len(df.columns))
 					requested_chunksize = max(1, int(args.sqlchunksize))
 					effective_chunksize = min(requested_chunksize, safe_chunksize)
-					logger.info(f"[{csv_idx}/{len(valid_files)}] Sending {len(df)} rows from {csvfile} with fileid {fileid}")
-					df.to_sql(
-						table_name,
-						conn,
-						if_exists='append',
-						index=False,
-						method='multi',
-						chunksize=effective_chunksize,
-					)
+					if len(df) >= args.min_row_count:
+						logger.info(f"[{csv_idx}/{len(valid_files)}] Sending {len(df)} rows from {csvfile} with fileid {fileid}")
+						df.to_sql(table_name, conn, if_exists='append', index=False, method='multi', chunksize=effective_chunksize,)
 
-					# Update trip and file info for this fileid
-					update_trip_and_file_for_fileid(conn, fileid)
+						# Update trip and file info for this fileid
+						update_trip_and_file_for_fileid(conn, fileid)
 
-					# Update TorqFile row count
-					conn.execute(text("UPDATE torqfiles SET sent_rows = :rows WHERE fileid = :fileid"),{"rows": len(df), "fileid": fileid})
-					logger.info(f"[{csv_idx}/{len(valid_files)}] Successfully inserted {len(df)} rows from {csvfile}")
+						# Update TorqFile row count
+						conn.execute(text("UPDATE torqfiles SET sent_rows = :rows WHERE fileid = :fileid"),{"rows": len(df), "fileid": fileid})
+						logger.info(f"[{csv_idx}/{len(valid_files)}] Successfully inserted {len(df)} rows from {csvfile}")
+						if conn.in_transaction():
+							conn.commit()
+					else:
+						logger.warning(f"[{csv_idx}/{len(valid_files)}] Skipping {csvfile} with fileid {fileid} - row count {len(df)} below minimum threshold")
+						conn.execute(text("DELETE FROM torqfiles WHERE fileid = :fileid"), {"fileid": fileid})
+						if conn.in_transaction():
+							conn.commit()
+				except UniqueViolation as e:
+					logger.warning(f"Duplicate entry for {csvfile} with fileid {fileid}, skipping: {e}")
 					if conn.in_transaction():
-						conn.commit()
-
+						conn.rollback()
+					continue
 				except Exception as e:
 					if conn.in_transaction():
 						conn.rollback()
-					logger.error(f"Error processing {csvfile}: {e}")
+					logger.error(f"Error processing {csvfile}: {e} {type(e)}")
 					if args.debug:
 						logger.error(f"DataFrame columns: {df.columns.tolist()}")
 					continue
@@ -639,7 +642,7 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs'):
 			raise
 
 	# engine.dispose()
-	return None, pd_columns
+	return None
 
 def get_csv_files(searchpath: Path, args):
 	# scan searchpath for csv files

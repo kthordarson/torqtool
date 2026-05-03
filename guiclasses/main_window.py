@@ -505,15 +505,13 @@ class MainWindow(QMainWindow):
             self._start_end_window = StartEndWindow(self.args, self.engine, self)
             if hasattr(self._start_end_window, "set_table_font_size"):
                 self._start_end_window.set_table_font_size(self._trip_table_font_size)
-        embedded = self._start_end_window.takeCentralWidget()
-        if embedded is None:
-            return
-        embedded.setParent(self._start_end_tab_container)
-        embedded.setMinimumSize(0, 0)
-        embedded.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
-        self._start_end_tab_layout.addWidget(embedded)
-        embedded.show()
-        self._start_end_embedded_widget = embedded
+        left_panel = self._start_end_window.left_panel
+        left_panel.setParent(self._start_end_tab_container)
+        left_panel.setMinimumSize(0, 0)
+        left_panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._start_end_tab_layout.addWidget(left_panel)
+        left_panel.show()
+        self._start_end_embedded_widget = left_panel
 
     def _open_database(self):
         path, _ = QFileDialog.getOpenFileName(self, "Open Database", "", "SQLite Database (*.db);;All Files (*)")
@@ -1324,6 +1322,9 @@ class MainWindow(QMainWindow):
 
     def _start_async_plot_for_rows(self, rows: list[int]):
         fileids = self._get_selected_fileids(rows)
+        self._start_async_plot_for_fileids(fileids)
+
+    def _start_async_plot_for_fileids(self, fileids: list[int]):
         if not fileids:
             self.stats_label.setText("No trip selected")
             return
@@ -1791,6 +1792,9 @@ class MainWindow(QMainWindow):
 
     def _plot_for_rows(self, rows):
         fileids = self._get_selected_fileids(rows)
+        self._plot_for_fileids(fileids)
+
+    def _plot_for_fileids(self, fileids: list[int]):
         if not fileids:
             self.stats_label.setText("No trip selected")
             return
@@ -1845,6 +1849,15 @@ class MainWindow(QMainWindow):
         all_lon = [v for item in trip_data_list for v in item["lon"]]
         self._update_timeseries_plot(fileids, selected_metrics, colormap_name, fileid_color_map)
         self._update_stats_panel(fileids, all_metric_values, all_lat, all_lon, selected_metric)
+
+    def _plot_for_start_end_fileids(self, fileids: list[int]) -> None:
+        if not fileids:
+            return
+        self._populate_metric_columns(fileids)
+        if len(fileids) >= self._plot_async_threshold:
+            self._start_async_plot_for_fileids(fileids)
+        else:
+            self._plot_for_fileids(fileids)
 
     def _load_trip_metadata(self, fileids: list[int]) -> dict:
         if not fileids:
