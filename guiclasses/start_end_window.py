@@ -128,7 +128,23 @@ class StartEndWindow(QMainWindow):
 				if 0 <= view_idx < len(self._grouped_df.index):
 					group_name = str(self._grouped_df.iloc[view_idx]["group"])
 					fileids.extend(self._group_to_fileids.get(group_name, []))
-		self._plot_for_fileids(sorted(set(fileids)))
+		selected_fileids = sorted(set(fileids))
+		if not selected_fileids:
+			self._plot_for_fileids([])
+			return
+
+		parent = self.parent()
+		if parent is not None and hasattr(parent, "_select_trips_by_fileids"):
+			try:
+				selected = bool(parent._select_trips_by_fileids(selected_fileids, "No visible trips match the selected Start/End group(s)."))
+				if selected:
+					self.stats_label.setText(f"Trips: {len(selected_fileids)} | selected in Trips tab")
+					return
+			except Exception as e:
+				logger.warning(f"Could not route Start/End selection to parent trips table: {e} ({type(e)})")
+
+		# Standalone fallback: keep the local Start/End plots behavior.
+		self._plot_for_fileids(selected_fileids)
 
 	def load_data(self) -> None:
 		query = text(

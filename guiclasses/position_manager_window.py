@@ -101,6 +101,7 @@ class PositionManagerWindow(QMainWindow):
 		left_layout.setSpacing(2)
 		self.map_fig, self.map_ax = plt.subplots(figsize=(8, 6))
 		self.map_canvas = FigureCanvas(self.map_fig)
+		self._maximize_map_plot_area()
 		self.map_ax.callbacks.connect("xlim_changed", self._on_view_limits_changed)
 		self.map_ax.callbacks.connect("ylim_changed", self._on_view_limits_changed)
 		self.map_toolbar = NavigationToolbar(self.map_canvas, self)
@@ -623,11 +624,17 @@ class PositionManagerWindow(QMainWindow):
 			except Exception as e:
 				logger.error(f"Failed to remove previous basemap artist: {e} ({type(e)})")
 		self._basemap_artist = self.map_ax.imshow(img, extent=ext, interpolation="nearest", zorder=0)
+		self._maximize_map_plot_area()
 		self.map_canvas.draw_idle()
 
 	def _draw_basemap_from_bytes(self, image_bytes: bytes, ext: tuple[float, float, float, float]):
 		img = mpimg.imread(io.BytesIO(image_bytes), format="png")
 		self._draw_basemap_array(img, ext)
+
+	def _maximize_map_plot_area(self):
+		# Use full canvas space for the map panel, especially on initial render.
+		self.map_ax.set_aspect("auto")
+		self.map_fig.subplots_adjust(left=0.02, right=0.995, bottom=0.02, top=0.96)
 
 	def _set_table_model(self):
 		filtered_df = self._filtered_positions_df()
@@ -1022,6 +1029,7 @@ class PositionManagerWindow(QMainWindow):
 		self.map_ax.set_title("Position Manager: Start/End points")
 		self.map_ax.legend(loc="upper right")
 		self.map_ax.set_axis_off()
+		self._maximize_map_plot_area()
 
 		if prev_bounds is not None:
 			# Reload after an edit: preserve both the previous viewport and zoom level.
