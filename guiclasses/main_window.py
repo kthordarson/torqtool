@@ -1737,6 +1737,7 @@ class MainWindow(QMainWindow):
 	) -> tuple[folium.Map | None, tuple[float, float, float, float] | None]:
 		all_lat: list[float] = []
 		all_lon: list[float] = []
+		speed_vals = []
 		for item in trip_data_list:
 			all_lat.extend(item.get("lat", []))
 			all_lon.extend(item.get("lon", []))
@@ -1789,7 +1790,10 @@ class MainWindow(QMainWindow):
 			)
 			layer.add_to(m)
 		if self.args.debug:
-			logger.debug(f"Added trip fileid={fileid} to map with {len(lat_vals)} points, base color {base_hex}, radius range [{max(2.0, min(8.0, min(speed_vals) / 10.0 * self._dot_size_scale + 2.0)):.1f}, {max(2.0, min(8.0, max(speed_vals) / 10.0 * self._dot_size_scale + 2.0)):.1f}]")
+			if len(speed_vals) > 0:
+				logger.debug(f"Added trip fileid={fileid} to map with {len(lat_vals)} points, base color {base_hex}, radius range [{max(2.0, min(8.0, min(speed_vals) / 10.0 * self._dot_size_scale + 2.0)):.1f}, {max(2.0, min(8.0, max(speed_vals) / 10.0 * self._dot_size_scale + 2.0)):.1f}]")
+			else:
+				logger.debug(f"Added trip fileid={fileid} to map with {len(lat_vals)} points, base color {base_hex}, no speed data for radius scaling")
 		return m, bounds
 
 	def _plot_for_rows(self, rows):
