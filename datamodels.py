@@ -271,7 +271,7 @@ def database_init(engine):  # create tables
 				)
 			except Exception as e:
 				# SQLite and older DB variants may not support PL/pgSQL blocks.
-				logger.debug(f"Skipping optional torqfiles FK constraint migration: {e} ({type(e)})")
+				logger.warning(f"Skipping optional torqfiles FK constraint migration: {e} ({type(e)})")
 
 			# Unified view for start/end position analytics and grouping in GUI tools.
 			conn.execute(text("DROP VIEW IF EXISTS trip_start_end_summary"))

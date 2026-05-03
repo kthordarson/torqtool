@@ -777,6 +777,7 @@ class MainWindow(QMainWindow):
                 merged.append((p, False))
 
         self._start_end_overlay_data = []
+        features: list[dict] = []
         for point, is_selected_file in merged:
             lat = float(point.get("lat", 0.0))
             lon = float(point.get("lon", 0.0))
@@ -788,31 +789,51 @@ class MainWindow(QMainWindow):
             color = "green" if pos_type == "start" else "orange"
             size = 9 if is_selected_file else 5
             opacity = 1.0 if is_selected_file else 0.55
-            click_data = json.dumps({"pos_type": pos_type, "pos_id": pos_id, "lat": lat, "lon": lon, "label": label_text})
-            click_data_escaped = click_data.replace("'", "\\'").replace('"', '\\"')
-
-            marker = folium.CircleMarker(
-                location=[lat, lon],
-                radius=size,
-                color=color,
-                fill=True,
-                fill_color=color,
-                fill_opacity=opacity,
-                tooltip=full_label,
-            )
-            marker_var = marker.get_name()
-            marker.add_to(m)
-
-            click_js = (
-                f"{marker_var}.on('click',function(e){{\n"
-                f"  e.originalEvent.stopPropagation();\n"
-                f"  new QWebChannel(qt.webChannelTransport,function(ch){{\n"
-                f'    ch.objects.bridge.on_point_clicked("{click_data_escaped}");\n'
-                f"  }});\n"
-                f"}});\n"
-            )
-            m.get_root().script.add_child(folium.Element(click_js))
+            features.append({
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [lon, lat]},
+                "properties": {
+                    "pos_type": pos_type,
+                    "pos_id": pos_id,
+                    "lat": lat,
+                    "lon": lon,
+                    "label": label_text,
+                    "tooltip": full_label,
+                    "color": color,
+                    "radius": size,
+                    "fillOpacity": opacity,
+                },
+            })
             self._start_end_overlay_data.append(dict(point))
+
+        if features:
+            on_each_feature = (
+                "function(feature, layer) {"
+                "  layer.on('click', function(e) {"
+                "    e.originalEvent.stopPropagation();"
+                "    var p = feature.properties;"
+                "    var d = JSON.stringify({pos_type: p.pos_type, pos_id: p.pos_id, lat: p.lat, lon: p.lon, label: p.label});"
+                "    new QWebChannel(qt.webChannelTransport, function(ch) {"
+                "      ch.objects.bridge.on_point_clicked(d);"
+                "    });"
+                "  });"
+                "}"
+            )
+            folium.GeoJson(
+                {"type": "FeatureCollection", "features": features},
+                marker=folium.CircleMarker(radius=6, fill=True),
+                style_function=lambda f: {
+                    "fillColor": f["properties"]["color"],
+                    "color": f["properties"]["color"],
+                    "radius": f["properties"]["radius"],
+                    "weight": 1,
+                    "fill": True,
+                    "fillOpacity": f["properties"]["fillOpacity"],
+                },
+                tooltip=folium.GeoJsonTooltip(fields=["tooltip"], aliases=[""]),
+                name="start_end_points",
+                on_each_feature=on_each_feature,
+            ).add_to(m)
 
     def _get_selected_metrics(self) -> list[str]:
         selection_model = self.metric_table.selectionModel()
@@ -1753,12 +1774,13 @@ class MainWindow(QMainWindow):
                 })
             layer = folium.GeoJson(
                 {"type": "FeatureCollection", "features": features},
-                marker=folium.CircleMarker(radius=4),
+                marker=folium.CircleMarker(radius=4, fill=True),
                 style_function=lambda f: {
                     "fillColor": f["properties"]["color"],
                     "color": f["properties"]["color"],
                     "radius": f["properties"]["radius"],
                     "weight": 0,
+                    "fill": True,
                     "fillOpacity": 0.65,
                 },
                 name=f"Trip {fileid}",

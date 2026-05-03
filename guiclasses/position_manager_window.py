@@ -640,32 +640,33 @@ class PositionManagerWindow(QMainWindow):
                 },
             })
 
+        on_each_feature = (
+            "function(feature, layer) {"
+            "  layer.on('click', function(e) {"
+            "    var p = feature.properties;"
+            "    var d = JSON.stringify({row_index: p.row_index, pos_id: p.pos_id, pos_type: p.pos_type});"
+            "    new QWebChannel(qt.webChannelTransport, function(ch) {"
+            "      ch.objects.bridge.on_point_clicked(d);"
+            "    });"
+            "  });"
+            "}"
+        )
         geojson_layer = folium.GeoJson(
             {"type": "FeatureCollection", "features": features},
-            marker=folium.CircleMarker(radius=6),
+            marker=folium.CircleMarker(radius=6, fill=True),
             style_function=lambda f: {
                 "fillColor": f["properties"]["color"],
                 "color": f["properties"]["color"],
                 "radius": f["properties"]["radius"],
                 "weight": 1,
+                "fill": True,
                 "fillOpacity": 0.75,
             },
             tooltip=folium.GeoJsonTooltip(fields=["tt"], aliases=[""]),
             name="positions",
+            on_each_feature=on_each_feature,
         )
-        geojson_var = geojson_layer.get_name()
         geojson_layer.add_to(m)
-
-        click_js = (
-            f"{geojson_var}.on('click',function(e){{\n"
-            f"  var p=e.layer.feature.properties;\n"
-            f"  var d=JSON.stringify({{row_index:p.row_index,pos_id:p.pos_id,pos_type:p.pos_type}});\n"
-            f"  new QWebChannel(qt.webChannelTransport,function(ch){{\n"
-            f"    ch.objects.bridge.on_point_clicked(d);\n"
-            f"  }});\n"
-            f"}});\n"
-        )
-        m.get_root().script.add_child(folium.Element(click_js))
 
         self.map_canvas.display_map(m)
 
