@@ -1,207 +1,652 @@
 # utils and db things here
-
+from math import radians, cos, sin, sqrt, atan2
+import random
 import os
 import re
-import shutil
 import sys
 from datetime import datetime
 from hashlib import md5
 from pathlib import Path
-from pickle import PicklingError
-import random
 import argparse
 import pandas as pd
-import polars as pl
-import pymysql
 import pytz
 from loguru import logger
-from polars import ComputeError
-from polars import read_csv as read_csv_polars
-from polars.exceptions import ColumnNotFoundError, InvalidOperationError
-from sqlalchemy import create_engine, text
-from sqlalchemy.exc import ArgumentError, DataError, IntegrityError, InternalError, OperationalError, ProgrammingError
-from sqlalchemy.orm import sessionmaker
-
+from sqlalchemy import DateTime
+from sqlalchemy import create_engine, text, MetaData, Table, Column, Float, String, Integer
+from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy import inspect
 from commonformats import fmt_20, fmt_24, fmt_26, fmt_28, fmt_30, fmt_34, fmt_36
-from datamodels import database_init
+from datamodels import database_init, COLUMN_TYPES
+from schemas import canonicalize_column_name, canonicalize_columns
 
 MIN_FILESIZE = 3000
 
 def get_parser(appname):
 	parser = argparse.ArgumentParser(description=appname)
-	parser.add_argument("--fixer", default=False, help="run fixer, set --bakpath", action="store_true", dest="fixer")
-	parser.add_argument("--fixcsv", default=False, help="repair csv", action="store_true", dest="fixcsv")
-	parser.add_argument("--foobar", default=False, help="foobar", action="store_true")
-	parser.add_argument("--getcols", default=False, help="prep cols", action="store_true", dest="getcols")
-	parser.add_argument("--repairsplit", default=False, help="enable splitting of strange log files", action="store_true", dest="repairsplit", )
-	parser.add_argument("--samplemode", default=False, help="use samplemode, select small random number of logs-for debugging", action="store_true", dest="samplemode", )
 	parser.add_argument("--scanpath", default=False, help="run scanpath", action="store_true", dest="scanpath", )
-	parser.add_argument("--showdrops", default=False, help="show dropped columns", action="store_true", dest="showdrops", )
-	parser.add_argument("--skipwrites", default=False, help="skipwrites", action="store_true", dest="skipwrites", )
 	parser.add_argument("--filestats", default=True, help="create filestats", action="store_true", dest="filestats", )
-	parser.add_argument("--testnewreader", default=False, help="run testnewreader", action="store_true", dest="testnewreader", )
-	parser.add_argument("--threadmode", default="ppe", help="threadmode ppe/oldppe/tpe", action="store")
-	parser.add_argument("--torqdata", default=False, help="create torqdata", action="store_true", dest="torqdata", )
-	parser.add_argument("--transfer", default=False, help="transfer old logs, set oldlogpath to location of old triplogs", action="store_true", dest="transfer", )
-	parser.add_argument("--bakpath", nargs="?", default="/home/kth/development/torq/backups3", help="where to put backups", action="store", )
-	parser.add_argument("--check-file", default=False, help="check database", action="store_true", dest="check_file", )
-	parser.add_argument("--chunks", nargs="?", default="4", help="chunks", action="store")
-	parser.add_argument("--combinecsv", default=False, help="make big csv", action="store_true", dest="combinecsv", )
 	parser.add_argument("--create-trips", default=False, help="create trip database", action="store_true", dest="create_trips", )
-	parser.add_argument("--check-db", default=False, help="check database", action="store_true", dest="check_db", )
 	parser.add_argument("--database_dropall", default=False, help="drop database", action="store_true", dest="database_dropall", )
 	parser.add_argument("--dbhost", default="localhost", help="dbname", action="store")
 	parser.add_argument("--dbmode", default="sqlite", help="sqlmode mysql/psql/sqlite/mariadb", action="store", dest="dbmode", )
 	parser.add_argument("--dbname", default="torq", help="dbname", action="store")
-	parser.add_argument("--dbpass", default="qrot", help="dbname", action="store")
-	parser.add_argument("--dbuser", default="torq", help="dbname", action="store")
-	parser.add_argument("--dbfile", default="torqfiskur.db", help="database file", action="store")
+	parser.add_argument("--dbpass", default="qrot", help="dbpass", action="store")
+	parser.add_argument("--dbuser", default="torq", help="dbuser", action="store")
+	parser.add_argument("--dbfile", default="torqdata.db", help="database file", action="store")
 	parser.add_argument("--db_limit", default=False, help="db_limit", action="store", dest="db_limit")
-	parser.add_argument("--db_rowlimit", default=False, help="db_rowlimit", action="store", dest="db_rowlimit")
-	parser.add_argument("--db_minrows", default=100, help="db_minrows", action="store", dest="db_minrows")
-	parser.add_argument("--dump-db", nargs="?", default=None, help="dump database to file", action="store", )
+	parser.add_argument("--file_limit", default=False, help="file_limit", action="store_true", dest="file_limit")
 	parser.add_argument("--file", nargs="?", default=".", help="path to single csv file", action="store")
 	parser.add_argument("--logpath", nargs="?", default=".", help="path to csv files", action="store")
-	parser.add_argument("--max_workers", nargs="?", default="4", help="max_workers", action="store")
-	parser.add_argument("--oldlogpath", nargs="?", default=".", help="oldlogpath", action="store")
-	parser.add_argument("--sqlchunksize", nargs="?", default="1000", help="sql chunk", action="store")
-	parser.add_argument("--webstart", default=False, help="start web listener", action="store_true", dest="web", )
-	parser.add_argument("-i", "--info", default=False, help="show dbinfo", action="store_true", dest="dbinfo", )
+	parser.add_argument("--sqlchunksize", nargs="?", default=1000, type=int, help="sql chunk", action="store")
+	parser.add_argument("-i", "--info", "--dbinfo", default=False, help="show dbinfo", action="store_true", dest="dbinfo", )
 	parser.add_argument("-d", "--debug", default=False, help="debugmode", action="store_true", dest="debug", )
-	parser.add_argument("--extradebug", default=False, help="extradebug", action="store_true", dest="extradebug", )
-	# parser.add_argument("--gui", default=False, help="Run gui", action="store_true", dest='gui')
-	# parser.add_argument("--init-db", default=False, help="init database", action="store_true", dest='init_db')
-
+	if appname == "guitest2":
+		parser.add_argument('--main-window', help="start main window", action="store_true", dest='main_window', default=True)
+		parser.add_argument('--pos-manager', help="start position manager window", action="store_true", dest='pos_manager', default=False)
+		parser.add_argument('--start-end-window', help="start start/end grouped window", action="store_true", dest='start_end_window', default=False)
+		parser.add_argument('--tabbed-workspace', help="start tabbed workspace with main/positions/start-end", action="store_true", dest='tabbed_workspace', default=False)
 	return parser
-
 
 class TimeZoneAwareConstructorWarning:
 	pass
 
-
-def replace_all(text, dic):
-	for i, j in dic.items():
-		textout = text.replace(i, j)
-	if text != textout:
-		logger.warning(f"{text} -> {textout}")
-	return textout
-
-
-def get_sanatized_column_names(orgcol):
+def normalize_column_name(col):
 	"""
-	clean up column names, remove special characters and make lowercase
-	orgcol DataFrame.columns (list of column names) or str of column names
+	Normalize column names by stripping spaces, replacing multiple spaces, and removing problematic characters.
 	"""
-	if isinstance(orgcol, list):
-		newcolname = (",".join([re.sub(r"\W", "", col).lower() for col in orgcol]).encode("ascii", "ignore").decode())
-		newcolname += "\n"
-		newcolname = newcolname.lower()
-		return newcolname
-	elif isinstance(orgcol, str):
-		newcolname = (",".join([re.sub(r"\W", "", col).lower() for col in orgcol.split(",")]).encode("ascii", "ignore").decode())
-		newcolname += "\n"
-		return newcolname
-	else:
-		logger.warning(f"unknown type {type(orgcol)} {orgcol}")
-		return orgcol
+	col = str(col).strip()  # Convert to string and remove leading/trailing spaces
+	col = re.sub(r'\s+', ' ', col)  # Replace multiple spaces with single space
+	col = re.sub(r'[^\w\s]', '', col)  # Remove special characters (keep alphanumeric and spaces)
+	return col.replace(' ', '_')
 
-
-def get_fixed_lines(logfile, debug=True):
-	# read csv file, replace badvals and fix column names
-	# returns a buff with the fixed csv file
-	with open(logfile, "r") as reader:
-		data0 = reader.readlines()
-	orgcol = data0[0].split(",")
-	data = data0[1:]  # skip first line, fix column names later....
-	# lines0 = [k for k in data if not k.startswith('-')]
-	# lines = [replace_all(b, badvals) for b in data]
-	lines = [re.sub(",-,", ",0,", k) for k in data]
-	lines = [re.sub("∞", "0", k) for k in lines]
-	lines = [re.sub("â", "0", k) for k in lines]
-	lines = [re.sub("Â", "0", k) for k in lines]
-	# for bv in badvals:
-	# lines = [re.sub(bv,'0,',k) for k in data]
-	# lines = [re.sub('∞','0',k) for k in data]
-	# lines = [re.sub(b,'0',k) for k in data for b in badvals]
-	# newcolname = ','.join([re.sub(r'\W', '', col) for col in orgcol]).encode('ascii', 'ignore').decode()
-	# newcolname += '\n'
-	# newcolname = newcolname.lower()
-	newcolname = get_sanatized_column_names(orgcol)
-	# column_count = newcolname.count(',')
-	lines[0] = newcolname
-	return lines
-
-
-def check_split(logfile: Path, debug=False):
+def get_table_columns(session, table_name):
 	"""
-	check if file is damanaged, if so split it and save new log files
-	if the file contains multiple column headers, split into multiple files for each column header line
-	todo, check if time difference is small between headers, then ignore and assume its part of the same trip
+	Get the current columns of a table in a database-agnostic way.
 	"""
-	with open(logfile, "r") as f:
-		data = f.readlines()
-		splits = sum([k[0:4].lower().count("gps") for k in data])
-	return splits
-
-
-def fix_logfile(logfile: Path, debug=False):
-	"""
-	fix_logfile - fix bad values in csv files
-	returns True if ok, False if not ok
-	"""
-
-	# get sanatized data from csv
 	try:
-		splits = check_split(logfile, debug=debug)
-		if splits > 1:
-			logger.warning(f"[gcv] {splits=} in {logfile}")
-			# todo make splitter ....
-			return False
-		else:
-			fixedlines = get_fixed_lines(logfile, debug=debug)
-			# logger.info(f'fixer read {len(fixedlines)} lines from {logfile}')
-			# make backup of original file before overwriting
-			backupfile = f"{logfile}.bak"
-			if Path(backupfile).exists():
-				rx = "".join([str(random.randint(1, 100)) for k in range(4)])
-				newbakname = f"{logfile}.{rx}.bak"
-				logger.warning(f"backupfile {backupfile} exists, backing up to {newbakname} ")
-			shutil.copy(logfile, backupfile)
-			# write to fixed csv file
-			with open(file=logfile, mode="w", encoding="utf-8", newline="") as writer:
-				writer.writelines(fixedlines)
-			if debug:
-				logger.debug(f"[gcv] saved {len(fixedlines)} fixed lines to {logfile}")
-			return True
-	except FileNotFoundError as e:
-		logger.error(f"[gcv] {type(e)} {e} in {logfile=} ")
-		return False
+		inspector = inspect(session.get_bind())
+		return [str(col["name"]).lower() for col in inspector.get_columns(table_name)]
 	except Exception as e:
-		logger.error(f"[gcv] unhandled {type(e)} {e} in {logfile}")
+		logger.error(f"An error occurred: {e} {type(e)} while fetching columns for table {table_name}")
+		return []
+
+def create_or_update_table(session, table_name, columns, column_types):
+	"""
+	Create or update the table to include all provided columns.
+	Handles duplicate columns and maintains existing schema.
+	"""
+	metadata = MetaData()
+
+	# Check existing table columns and normalize to lowercase
+	try:
+		existing_columns = [col.lower() for col in get_table_columns(session, table_name)]
+		logger.debug(f"Existing columns: {len(existing_columns)}")
+	except Exception as e:
+		logger.error(f"Error checking existing columns: {e} {type(e)} table_name={table_name}")
+		existing_columns = []
+
+	# Create table definition with all columns
+	table_columns = [Column(col, column_types.get(col, String)) for col in sorted(columns)]
+
+	if not existing_columns:
+		# Create new table if it doesn't exist
+		logger.info(f"Creating new table {table_name} with {len(columns)} columns")
+		Table(table_name, metadata, *table_columns, extend_existing=True)
+		metadata.create_all(bind=session.get_bind())
+	else:
+		# Add only new columns to existing table
+		with session.get_bind().connect() as conn:
+			# Convert all column names to lowercase for comparison
+			new_columns = set(col.lower() for col in columns) - set(existing_columns)
+			orig_col = ''
+			if new_columns:
+				logger.info(f"Adding {len(new_columns)} new columns to {table_name}")
+				for col in new_columns:
+					try:
+						# Get original case version of column name
+						orig_col = next(c for c in columns if c.lower() == col)
+						sqlalchemy_type = column_types.get(orig_col, String)
+						if isinstance(sqlalchemy_type, type):
+							sql_type = sqlalchemy_type().compile(dialect=conn.dialect)
+						else:
+							sql_type = sqlalchemy_type.compile(dialect=conn.dialect)
+						alter_sql = text(f'ALTER TABLE {table_name} ADD COLUMN "{orig_col}" {sql_type}')
+						conn.execute(alter_sql)
+						logger.debug(f"Added column: {orig_col} ({sql_type})")
+					except Exception as e:
+						if "duplicate column" in str(e).lower() or "already exists" in str(e).lower():
+							logger.debug(f"Column {orig_col} already exists, skipping")
+							continue
+						else:
+							logger.warning(f"Could not add column {orig_col}: {e}")
+			conn.commit()
+
+	# Verify final column structure
+	final_columns = [col.lower() for col in get_table_columns(session, table_name)]
+	logger.debug(f"Final table structure: {len(final_columns)} columns")
+
+	# Return list of columns that couldn't be added
+	missing_columns = set(col.lower() for col in columns) - set(final_columns)
+	if missing_columns:
+		logger.warning(f"Could not add columns: {missing_columns}")
+
+	return list(missing_columns)
+
+def haversine(lat1, lon1, lat2, lon2):
+	"""
+	Calculate the great-circle distance between two points on the Earth (specified in decimal degrees).
+	Returns distance in meters.
+	"""
+	R = 6371000  # Earth radius in meters
+	lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
+	dlat = lat2 - lat1
+	dlon = lon2 - lon1
+	a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
+	c = 2 * atan2(sqrt(a), sqrt(1-a))
+	return R * c
+
+
+def _normalize_col_name(value: str) -> str:
+	return "".join(ch.lower() for ch in str(value) if ch.isalnum())
+
+
+def _is_datetime_column_name(col_name: str) -> bool:
+	"""
+	Identify true timestamp/date columns and exclude duration/counter fields.
+	"""
+	normalized = _normalize_col_name(col_name)
+	if not any(token in normalized for token in ("time", "date", "timestamp")):
 		return False
 
+	# Duration-like fields are numeric counters, not absolute datetimes.
+	excluded_tokens = (
+		"timesince",
+		"duration",
+		"elapsed",
+		"stationary",
+		"moving",
+		"seconds",
+		"millis",
+		"milliseconds",
+	)
+	if any(token in normalized for token in excluded_tokens):
+		return False
 
-def get_csv_files(searchpath: str, args):
+	return True
+
+
+def _resolve_torqlogs_columns(conn, requested_columns: list[str]) -> dict[str, str]:
+	inspector = inspect(conn)
+	actual_columns = [str(col["name"]) for col in inspector.get_columns("torqlogs")]
+	normalized_actual = {_normalize_col_name(col): col for col in actual_columns}
+	resolved: dict[str, str] = {}
+	for requested in requested_columns:
+		actual = normalized_actual.get(_normalize_col_name(requested))
+		if actual:
+			resolved[requested] = actual
+	return resolved
+
+
+def _repair_postgres_column_type_mismatches(conn, table_name: str, column_types: dict):
+	"""
+	Repair known timestamp-vs-numeric schema mismatches in PostgreSQL.
+	"""
+	if conn.dialect.name != "postgresql":
+		return
+
+	inspector = inspect(conn)
+	for col in inspector.get_columns(table_name):
+		col_name = str(col["name"])
+		actual_type = str(col.get("type", "")).lower()
+		expected_type = column_types.get(col_name)
+		if expected_type is None:
+			expected_type = column_types.get(_normalize_col_name(col_name))
+
+		expected_cls = expected_type if isinstance(expected_type, type) else type(expected_type)
+		if expected_cls not in (Float, Integer):
+			continue
+		if "timestamp" not in actual_type:
+			continue
+
+		target_sql_type = "double precision" if expected_cls is Float else "bigint"
+		alter_sql = text(
+			f'''ALTER TABLE "{table_name}"
+			ALTER COLUMN "{col_name}" TYPE {target_sql_type}
+			USING CASE
+				WHEN "{col_name}" IS NULL THEN NULL
+				WHEN "{col_name}"::text ~ '^-?[0-9]+(\\.[0-9]+)?$' THEN "{col_name}"::text::{target_sql_type}
+				ELSE NULL
+			END'''
+		)
+		logger.warning(
+			f"Repairing PostgreSQL column type mismatch for {table_name}.{col_name}: "
+			f"{actual_type} -> {target_sql_type}"
+		)
+		conn.execute(alter_sql)
+	if conn.in_transaction():
+		conn.commit()
+
+
+def _collapse_duplicate_dataframe_columns(df: pd.DataFrame, csvfile: Path) -> pd.DataFrame:
+	"""
+	Collapse duplicate DataFrame column names by coalescing values left-to-right.
+	This prevents `to_sql` from failing when multiple source headers map to the same canonical name.
+	"""
+	if not df.columns.duplicated().any():
+		return df
+
+	resolved_duplicates = [str(col) for col in pd.unique(df.columns[df.columns.duplicated()])]
+	logger.warning(
+		f"Resolved duplicate canonical columns for {csvfile}: {resolved_duplicates}"
+	)
+
+	ordered_unique_cols: list[str] = []
+	seen = set()
+	for col in df.columns:
+		col_name = str(col)
+		if col_name in seen:
+			continue
+		seen.add(col_name)
+		ordered_unique_cols.append(col_name)
+
+	series_list: list[pd.Series] = []
+	for col_name in ordered_unique_cols:
+		col_block = df.loc[:, df.columns == col_name]
+		if col_block.shape[1] == 1:
+			series_list.append(col_block.iloc[:, 0].rename(col_name))
+			continue
+
+		# Treat whitespace-only strings as missing, then take first non-null value per row.
+		coalesced = col_block.replace(r"^\s*$", pd.NA, regex=True).bfill(axis=1).iloc[:, 0]
+		series_list.append(coalesced.rename(col_name))
+
+	if not series_list:
+		return pd.DataFrame(index=df.index)
+
+	# Build all columns in one concat to avoid block fragmentation warnings.
+	return pd.concat(series_list, axis=1).copy()
+
+def update_trip_and_file_for_fileid(conn, fileid):
+	"""
+	Update TorqFile and Torqtrips for a single fileid after inserting its data.
+	"""
+	resolved = _resolve_torqlogs_columns(conn, ['gpstime', 'latitude', 'longitude'])
+	time_col = resolved.get('gpstime')
+	lat_col = resolved.get('latitude')
+	lon_col = resolved.get('longitude')
+	if not (time_col and lat_col and lon_col):
+		logger.error(f'Missing required torqlogs columns for fileid {fileid}: {resolved}')
+		return
+
+	# Aggregate trip info for this fileid
+	sql = f"""
+	SELECT
+		fileid,
+		MIN("{time_col}") AS trip_start,
+		MAX("{time_col}") AS trip_end,
+		MIN("{lat_col}") AS startlat,
+		MIN("{lon_col}") AS startlon,
+		MAX("{lat_col}") AS endlat,
+		MAX("{lon_col}") AS endlon,
+		COUNT(*) AS row_count
+	FROM torqlogs
+	WHERE fileid = :fileid
+	GROUP BY fileid
+	"""
+	row = conn.execute(text(sql), {"fileid": fileid}).mappings().first()
+	if not row:
+		return
+
+	trip_start = row["trip_start"]
+	trip_end = row["trip_end"]
+	startlat = row["startlat"]
+	startlon = row["startlon"]
+	endlat = row["endlat"]
+	endlon = row["endlon"]
+	row_count = row["row_count"]
+
+	# Calculate trip duration
+	trip_duration = None
+	if trip_start and trip_end:
+		try:
+			trip_start_dt = convert_string_to_datetime(str(trip_start))
+			trip_end_dt = convert_string_to_datetime(str(trip_end))
+			if isinstance(trip_start_dt, datetime) and isinstance(trip_end_dt, datetime):
+				trip_duration = (trip_end_dt - trip_start_dt).total_seconds()
+			else:
+				trip_duration = None
+
+			# if not isinstance(trip_start, datetime):
+			# 	# trip_start = convert_string_to_datetime(trip_start)
+			# 	trip_start = convert_string_to_datetime(str(trip_start))
+			# if not isinstance(trip_end, datetime):
+			# 	# trip_end = convert_string_to_datetime(trip_end)
+			# 	trip_end = convert_string_to_datetime(str(trip_end))
+			# trip_duration = (trip_end - trip_start).total_seconds()
+		except Exception as e:
+			logger.error(f'{e} {type(e)} {trip_start=} {trip_end=}')
+			trip_duration = None
+	# Calculate trip distance (sum of point-to-point GPS distances for this fileid)
+	trip_distance = 0.0
+	try:
+		if conn.dialect.name == "postgresql":
+			# Compute the full path distance in SQL to avoid pulling thousands of rows to Python.
+			distance_sql = text(f'''
+				WITH ordered AS (
+					SELECT
+						"{lat_col}"::double precision AS lat,
+						"{lon_col}"::double precision AS lon,
+						LAG("{lat_col}"::double precision) OVER (ORDER BY "{time_col}" ASC) AS prev_lat,
+						LAG("{lon_col}"::double precision) OVER (ORDER BY "{time_col}" ASC) AS prev_lon
+					FROM torqlogs
+					WHERE fileid = :fileid
+				)
+				SELECT COALESCE(SUM(
+					6371000.0 * 2.0 * atan2(
+						sqrt(
+							pow(sin(radians((lat - prev_lat) / 2.0)), 2)
+							+ cos(radians(prev_lat)) * cos(radians(lat))
+							* pow(sin(radians((lon - prev_lon) / 2.0)), 2)
+						),
+						sqrt(
+							GREATEST(
+								0.0,
+								1.0 - (
+									pow(sin(radians((lat - prev_lat) / 2.0)), 2)
+									+ cos(radians(prev_lat)) * cos(radians(lat))
+									* pow(sin(radians((lon - prev_lon) / 2.0)), 2)
+								)
+							)
+						)
+					)
+				), 0.0) AS trip_distance
+				FROM ordered
+				WHERE prev_lat IS NOT NULL AND prev_lon IS NOT NULL
+			''')
+			trip_distance = float(conn.execute(distance_sql, {"fileid": fileid}).scalar() or 0.0)
+		else:
+			df_gps = pd.read_sql(
+				text(f'SELECT "{lat_col}" AS latitude, "{lon_col}" AS longitude FROM torqlogs WHERE fileid = :fileid ORDER BY "{time_col}" ASC'),
+				conn,
+				params={"fileid": fileid}
+			)
+			if len(df_gps) > 1:
+				distances = [
+					haversine(
+						df_gps.iloc[i-1]['latitude'], df_gps.iloc[i-1]['longitude'],
+						df_gps.iloc[i]['latitude'], df_gps.iloc[i]['longitude']
+					)
+					for i in range(1, len(df_gps))
+				]
+				trip_distance = float(sum(distances))
+			else:
+				trip_distance = 0.0
+	except Exception as e:
+		logger.error(f"Error calculating trip_distance for fileid {fileid}: {e} {type(e)}")
+		trip_distance = 0.0
+
+	# Insert or update Torqtrips
+	conn.execute(text("""
+		INSERT INTO torqtrips (fileid, tripdate, time, trip_distance)
+		SELECT :fileid, :trip_start, :trip_duration, :trip_distance
+		WHERE NOT EXISTS (SELECT 1 FROM torqtrips WHERE fileid = :fileid)
+	"""), {
+		"fileid": fileid,
+		"trip_start": trip_start,
+		"trip_duration": trip_duration,
+		"trip_distance": trip_distance
+	})
+
+	# Update TorqFile
+	conn.execute(text("""
+		UPDATE torqfiles
+		SET trip_start = :trip_start,
+			trip_end = :trip_end,
+			trip_duration = :trip_duration,
+			startlat = :startlat,
+			startlon = :startlon,
+			endlat = :endlat,
+			endlon = :endlon,
+			sent_rows = :row_count,
+			trip_distance = :trip_distance
+		WHERE fileid = :fileid
+	"""), {
+		"fileid": fileid,
+		"trip_start": trip_start,
+		"trip_end": trip_end,
+		"trip_duration": trip_duration,
+		"startlat": startlat,
+		"startlon": startlon,
+		"endlat": endlat,
+		"endlon": endlon,
+		"row_count": row_count,
+		"trip_distance": trip_distance
+	})
+	logger.debug(f'Updated TorqFile and Torqtrips for fileid {fileid}: trip_start={trip_start}, trip_end={trip_end}, duration={trip_duration}, distance={trip_distance}, rows={row_count}')
+
+def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs'):
+	"""
+	Read all CSV files into a DataFrame, normalize column names, and insert into SQLite table.
+	Handles varying columns, missing data, and extra spaces in column names.
+	Returns the concatenated DataFrame and a dictionary of column stats.
+	"""
+	# Define column types based on sample data
+
+	# Initialize dictionary to store column stats and file info
+	pd_columns = {'stats': {}, 'files': {}}
+	skipped_count = 0
+	# Get list of CSV files
+	csv_files = list(Path(args.logpath).glob("**/trackLog*.csv"))
+	if not csv_files:
+		logger.warning("No CSV files found")
+		return None, pd_columns
+
+	# First pass: Collect and validate headers from all files
+	all_columns = set()
+	valid_files = []
+	csvhash = ''
+	session = get_engine_session(args)
+	# engine = create_engine(f'sqlite:///{args.dbfile}', echo=False, connect_args={'timeout': 30, 'isolation_level': None, 'check_same_thread': False})
+	# Initialize database schema first
+	try:
+		database_init(session.get_bind())
+	except Exception as e:
+		logger.error(f"Error initializing database: {e}")
+		return None, pd_columns
+
+	for file_idx, csvfile in enumerate(csv_files):
+		try:
+			if csvfile.stat().st_size < MIN_FILESIZE:
+				with open(csvfile, 'rb') as f:
+					d = f.readlines()
+				linecount = len(d)
+				logger.warning(f"Skipping {csvfile} - file size too small {csvfile.stat().st_size} min {MIN_FILESIZE} lines {linecount}")
+				continue
+
+			# Check if file has already been processed
+			csvhash = md5(Path(csvfile).read_bytes()).hexdigest()
+			with session.get_bind().connect() as conn:  # type: ignore[union-attr]
+				existing_file = conn.execute(text("SELECT fileid FROM torqfiles WHERE csvhash = :csvhash"),{"csvhash": csvhash}).first()
+
+			if existing_file:
+				skipped_count += 1
+				# logger.info(f"[{file_idx}/{len(csv_files)}] File {csvfile} already processed, skipping")
+				continue
+
+			# Read only the header row
+			df = pd.read_csv(csvfile, nrows=0)
+
+			# Normalize columns using shared Torq header mapping.
+			original_columns = df.columns.to_list()
+			normalized_columns = [canonicalize_column_name(col) for col in original_columns]
+
+			# Validate columns - check for empty or numeric column names
+			if any(not col or col[0].isdigit() for col in normalized_columns):
+				logger.warning(f"Skipping {csvfile} - invalid column names")
+				continue
+			all_columns.update(normalized_columns)
+			valid_files.append((csvfile, normalized_columns, csvhash))
+
+			# Store file info
+			pd_columns['files'][str(csvfile)] = {
+				'filename': str(csvfile),
+				'columns': normalized_columns
+			}
+
+		except Exception as e:
+			logger.error(f"Error reading headers from {csvfile}: {e}")
+			continue
+	if args.debug and skipped_count > 0:
+		logger.debug(f'skipped {skipped_count} files that were already processed based on hash')
+	if not valid_files:
+		logger.warning("No valid CSV files found after header validation")
+		return None, pd_columns
+	if args.file_limit:
+		random.shuffle(valid_files)
+		valid_files = [k for k in valid_files][0:10]
+	logger.info(f"Found {len(valid_files)} valid CSV files, skipped {skipped_count}. Columns: {len(all_columns)}")
+	column_types = COLUMN_TYPES.copy()
+	for col in all_columns:
+		if col in column_types:
+			continue
+		if _is_datetime_column_name(col):
+			column_types[col] = DateTime
+
+	# Update database schema if needed
+	try:
+		create_or_update_table(session, table_name, all_columns, column_types)
+	except Exception as e:
+		logger.error(f"Error updating table schema: {e} {type(e)}")
+		return None, pd_columns
+
+	# Second pass: Read and insert data from valid files
+	df = pd.DataFrame()
+	if args.debug:
+		logger.debug(f"Starting data insertion for {len(valid_files)} files into table {table_name} with {len(all_columns)} columns")
+	with session.get_bind().connect() as conn:  # type: ignore[union-attr]
+		if conn.dialect.name == "sqlite":
+			conn.execute(text("PRAGMA journal_mode = WAL"))  # Use Write-Ahead Logging
+			conn.execute(text("PRAGMA synchronous = NORMAL"))  # Reduce synchronization
+		else:
+			_repair_postgres_column_type_mismatches(conn, table_name, column_types)
+
+		inspector = inspect(conn)
+		actual_table_columns = [str(col["name"]) for col in inspector.get_columns(table_name)]
+		normalized_actual_columns = {
+			_normalize_col_name(col_name): col_name for col_name in actual_table_columns
+		}
+
+		try:
+			for csv_idx, (csvfile, normalized_columns, csvhash) in enumerate(valid_files):
+				# SQLAlchemy 2.x may start a transaction implicitly (autobegin).
+				# Ensure each file starts with a clean transaction boundary.
+				if conn.in_transaction():
+					conn.rollback()
+				try:
+
+					# Read CSV file
+					df = pd.read_csv(csvfile, low_memory=False, on_bad_lines='skip', encoding='utf-8', encoding_errors='replace')
+
+					for col in df.columns:
+						if _is_datetime_column_name(col):
+							try:
+								# df[col] = pd.to_datetime(df[col], errors='coerce')
+								# df[col] = df[col].apply(lambda x: convert_string_to_datetime(x) if pd.notnull(x) else pd.NaT)
+								df[col] = df[col].apply(lambda x: convert_string_to_datetime(x) if isinstance(x, str) and pd.notnull(x) else pd.NaT)  # type: ignore
+							except Exception as e:
+								logger.warning(f"Could not convert column {col} to datetime: {e} {type(e)} in {csvfile}")
+
+					# Create TorqFile entry with required metadata.
+					result = conn.execute(
+						text("INSERT INTO torqfiles (csvfile, csvhash, import_date) VALUES (:csvfile, :csvhash, :import_date) RETURNING fileid"),
+						{"csvfile": str(csvfile), "csvhash": csvhash, "import_date": datetime.now()}
+					)
+					fileid = result.scalar()
+
+					# Add fileid column first
+					df.insert(0, 'fileid', fileid)
+
+					# Process columns and data
+					df = df.rename(columns=canonicalize_columns(list(df.columns)))
+					# Align canonicalized DataFrame columns with actual DB column names (case-sensitive in PostgreSQL).
+					db_col_rename_map = {}
+					for c in df.columns:
+						actual_col = normalized_actual_columns.get(_normalize_col_name(c))
+						if actual_col and actual_col != c:
+							db_col_rename_map[c] = actual_col
+					if db_col_rename_map:
+						df = df.rename(columns=db_col_rename_map)
+					df = _collapse_duplicate_dataframe_columns(df, csvfile)
+					df = df.replace(['-', '∞', 'inf', '-inf'], pd.NA)
+
+					# Convert numeric columns
+					for col in df.columns:
+						if col in COLUMN_TYPES and COLUMN_TYPES[col] in [Float, Integer]:
+							df[col] = pd.to_numeric(df[col], errors='coerce')
+
+					# Remove rows that are identical to the header (possible repeated headers)
+					header_row = list(df.columns)
+					df = df[~df.apply(lambda row: list(row) == header_row, axis=1)]
+					df = df[~df.apply(lambda row: row.astype(str).str.contains(' Device Time').any(), axis=1)]
+
+					pre_filter_columns = list(df.columns)
+					allowed_cols = set(actual_table_columns)
+					ordered_cols = [col for col in ['fileid'] if col in df.columns and col in allowed_cols]
+					ordered_cols.extend(sorted([col for col in df.columns if col != 'fileid' and col in allowed_cols]))
+					df = df[ordered_cols]
+					if len(df.columns) == 0:
+						raise ValueError(
+							f"No matching columns remain after filtering for table {table_name}. "
+							f"Input columns sample: {pre_filter_columns[:10]}"
+						)
+
+					# Insert data
+					# SQLite limits bind variables to 999 (or 32766 on newer builds).
+					# Use the conservative limit so chunksize * num_columns stays within it.
+					SQLITE_MAX_VARS = 999
+					safe_chunksize = max(1, SQLITE_MAX_VARS // len(df.columns))
+					requested_chunksize = max(1, int(args.sqlchunksize))
+					effective_chunksize = min(requested_chunksize, safe_chunksize)
+					logger.info(f"[{csv_idx}/{len(valid_files)}] Sending {len(df)} rows from {csvfile} with fileid {fileid}")
+					df.to_sql(
+						table_name,
+						conn,
+						if_exists='append',
+						index=False,
+						method='multi',
+						chunksize=effective_chunksize,
+					)
+
+					# Update trip and file info for this fileid
+					update_trip_and_file_for_fileid(conn, fileid)
+
+					# Update TorqFile row count
+					conn.execute(text("UPDATE torqfiles SET sent_rows = :rows WHERE fileid = :fileid"),{"rows": len(df), "fileid": fileid})
+					logger.info(f"[{csv_idx}/{len(valid_files)}] Successfully inserted {len(df)} rows from {csvfile}")
+					if conn.in_transaction():
+						conn.commit()
+
+				except Exception as e:
+					if conn.in_transaction():
+						conn.rollback()
+					logger.error(f"Error processing {csvfile}: {e}")
+					if args.debug:
+						logger.error(f"DataFrame columns: {df.columns.tolist()}")
+					continue
+
+		except Exception as e:
+			logger.error(f"Transaction failed: {e}")
+			raise
+
+	# engine.dispose()
+	return None, pd_columns
+
+def get_csv_files(searchpath: Path, args):
 	# scan searchpath for csv files
-	torqcsvfiles = [({"csvfile": k, "csvhash": md5(open(k, "rb").read()).hexdigest(), "size": os.stat(k).st_size, "dbmode": args.dbmode, }) for k in Path(searchpath).glob("**/*.csv") if k.stat().st_size >= MIN_FILESIZE]  # and not os.path.exists(f'{k}.fixed.csv')]
+	torqcsvfiles = [({"csvfile": k, "csvhash": md5(open(k, "rb").read()).hexdigest(), "size": os.stat(k).st_size, "dbmode": args.dbmode, }) for k in searchpath.glob("**/*.csv") if k.stat().st_size >= MIN_FILESIZE]  # and not os.path.exists(f'{k}.fixed.csv')]
 	return torqcsvfiles
 
-
-def get_bad_vals(csvfile: str):
-	with open(csvfile, "r") as reader:
-		data = reader.readlines()
-	for line in data:
-		l0 = line.split(",")
-		for lx in l0:
-			try:
-				lx.encode("ascii")
-			except (UnicodeEncodeError, UnicodeDecodeError) as e:
-				logger.error(f"unicodeerr: {e} in {csvfile} lt={type(line)} l={line}")
-			except AttributeError as e:
-				logger.error(f"AttributeError: {e} in {csvfile} lt={type(line)} l={line}")
-
-
-def get_engine_session(args):
+def get_engine_session(args: argparse.Namespace) -> Session:
 	dburl = None
 	engine = None
 	if args.dbmode == "mysql":
@@ -227,341 +672,24 @@ def get_engine_session(args):
 	if not engine:
 		logger.error("no engine")
 		sys.exit(-1)
-	Session = sessionmaker(bind=engine)
-	session = Session()
+	# s = sessionmaker(bind=engine)
+	# session = s()
 	try:
 		database_init(engine)
 	except AssertionError as e:
 		logger.error(f"[maindbinit] {e}")
 		sys.exit(-1)
-	return engine, session
+	SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+	return SessionLocal()
 
-
-def mapping_replace(column: str, mapping: dict):
-	if not mapping:
-		raise Exception("Mapping can't be empty")
-	elif not isinstance(mapping, dict):
-		TypeError(f"mapping must be of type dict, but is type: {type(mapping)}")
-	if not isinstance(column, str):
-		raise TypeError(f"column must be of type str, but is type: {type(column)}")
-	branch = pl.when(pl.col(column) == list(mapping.keys())[0]).then(list(mapping.values())[0])
-	for from_value, to_value in mapping.items():
-		try:
-			branch = branch.when(pl.col(column) == from_value).then(to_value)
-		except ComputeError as e:
-			logger.error(e)
-	return branch.otherwise(pl.col(column)).alias(column)
-
-
-def sqlsender(buffer, dburl, debug=False):
-	engine = create_engine(url=dburl, echo=False)
-	# Session = sessionmaker(bind=engine)
-	# session = Session()
-	results = {
-		"fileid": buffer["fileid"], "csvfile": buffer["csvfile"], "status": "unknown", }
-	try:
-		tmpbuf = buffer["torqbuffer"].to_pandas()
-	except ValueError as e:
-		logger.error(f"[tosql] tmpbuf {type(e)} {e}")
-		raise ValueError(f"[tosql] tmpbuf {type(e)} {e}")
-	# logger.info(f'[tosql] tmpbuf.is_empty() {buffer["torqbuffer"].is_empty()} ')
-	# torqfile = (session.query(TorqFile).filter(TorqFile.fileid == results["fileid"]).first())
-	try:
-		tmpbuf.to_sql("torqlogs", con=engine, if_exists="append", index=False)
-		results["status"] = "success"
-		# torqfile = (session.query(TorqFile).filter(TorqFile.fileid == results["fileid"]).first())
-	except (OperationalError, ProgrammingError) as e:
-		# todo handle db locks
-		# todo handle unknown / new columns from csv files
-		newcol = "unknown"
-		if e.code == "e3q8" and "Unknown column" in e.args[0]:
-			try:
-				newcol = e.args[0].split()[4].replace("'", "")
-			except IndexError as iexpt:
-				logger.error(f"[tosql] {iexpt} while handling {e}")
-			logger.warning(f'[tosql] {newcol=} code={e} args={e.args} r={results} csvfile={buffer["csvfile"]}')  # error:{e}
-		elif e.code == "e3q8" and "database is locked" in e.args[0]:
-			logger.warning(f'[tosql] {newcol=} code={e} args={e.args} r={results} csvfile={buffer["csvfile"]}')  # error:{e}
-		else:
-			logger.error(f'[tosql] code={e} r={results} csvfile={buffer["csvfile"]}')  # error:{e}
-			results["status"] = "error"
-	except InternalError as e:
-		logger.error(f'[tosql] InternalError {e} r={results} csvfile={buffer["csvfile"]}')
-		results["status"] = "error"
-	except IntegrityError as e:
-		logger.warning(f'[tosql] {type(e)} code={e} args={e.args[0]} r={results} csvfile={buffer["csvfile"]}')
-		results["status"] = "error"
-		# logger.warning(f'[tosql] {e.statement} {e.params}')
-		# logger.warning(f'[tosql] {e}')
-	except (pymysql.err.DataError, DataError) as e:
-		# logger.error(f'[!]{type(e)}\n{e}\n')
-		csvfile = buffer[
-			"csvfile"
-		]  # session.query(TorqFile).filter(TorqFile.fileid == results['fileid']).first()
-		errmsg = e.args[0]
-		err_row = errmsg.split("row")[-1].strip()
-		err_row = errmsg.split(",")[1].split("at row")[1].strip().strip('")')
-		if "Incorrect double value" in errmsg:
-			err_col = errmsg.split()[8].split(".")[2].strip("`")
-		else:
-			err_col = errmsg.split(",")[1].split("at row")[0].split("'")[1]
-		# logger.warning(f'\n[tosql] code={e}\nargs={e.args[0]}\nr={results}\nerr_row: {err_row}\nerr_col:{err_col}\ntorqfile={tf_err} csvfile={buffer["csvfile"]}\n')  # error:{e}
-		logger.warning(f'\n[tosql] {type(e)} code={e} err_row: {err_row} err_col:{err_col} torqfile={csvfile} fileid:{buffer["fileid"]}')  # error:{e}
-		# tmpbuf = tmpbuf.drop(columns=err_col)
-		err_row = int(err_row)
-		try:
-			tmpbuf = tmpbuf.drop(index=err_row)
-		except Exception as exc:
-			logger.error(f'[torql] {type(exc)} {exc} err_row: {err_row} err_col:{err_col} torqfile={csvfile} fileid:{buffer["fileid"]}')
-		try:
-			tmpbuf.to_sql("torqlogs", con=engine, if_exists="append", index=False)
-			results["status"] = "warning"
-		except (IndexError, KeyError, DataError) as ex:
-			errmsg = ex.args[0]
-			logger.error(f"[!] {type(ex)}\nerrmsg: {errmsg}\n")
-	except (TypeError, ValueError) as e:
-		logger.error(f"[!]{type(e)}\n{e}\n")
-	return results
-
-
-def sqlsender_ppe(buffer, session, debug=False):
-	# engine = create_engine(url=dburl, echo=False)
-	# Session = sessionmaker(bind=engine)
-	# session = Session()
-	results = {
-		"fileid": buffer["fileid"], "csvfile": buffer["csvfile"], "status": "unknown", }
-	try:
-		if not isinstance(buffer["torqbuffer"], pd.DataFrame):
-			tmpbuf = buffer["torqbuffer"].to_pandas()
-		else:
-			tmpbuf = buffer["torqbuffer"]
-	except ValueError as e:
-		logger.error(f"[tosql] tmpbuf {type(e)} {e}")
-		raise ValueError(f"[tosql] tmpbuf {type(e)} {e}")
-	# logger.info(f'[tosql] tmpbuf.is_empty() {buffer["torqbuffer"].is_empty()} ')
-	# torqfile = (session.query(TorqFile).filter(TorqFile.fileid == results["fileid"]).first())
-	try:
-		tmpbuf.to_sql("torqlogs", con=session.get_bind(), if_exists="append", index=False)
-		results["status"] = "success"
-		# torqfile = (session.query(TorqFile).filter(TorqFile.fileid == results["fileid"]).first())
-	except (OperationalError, ProgrammingError, ArgumentError) as e:
-		# todo handle db locks
-		# todo handle unknown / new columns from csv files
-		newcol = "unknown"
-		if e.code == "e3q8" and "Unknown column" in e.args[0]:
-			try:
-				newcol = e.args[0].split()[4].replace("'", "")
-			except IndexError as iexpt:
-				logger.error(f"[tosql] {iexpt} while handling {e}")
-			logger.warning(f'[tosql] {newcol=} code={e} args={e.args} r={results} csvfile={buffer["csvfile"]}')  # error:{e}
-		elif e.code == "e3q8" and "database is locked" in e.args[0]:
-			logger.warning(f'[tosql] {newcol=} code={e} args={e.args} r={results} csvfile={buffer["csvfile"]}')  # error:{e}
-		else:
-			logger.error(f'[tosql] code={e} r={results} csvfile={buffer["csvfile"]}')  # error:{e}
-			results["status"] = "error"
-	except InternalError as e:
-		logger.error(f'[tosql] InternalError {e} r={results} csvfile={buffer["csvfile"]}')
-		results["status"] = "error"
-	except IntegrityError as e:
-		logger.warning(f'[tosql] {type(e)} code={e} args={e.args[0]} r={results} csvfile={buffer["csvfile"]}')
-		results["status"] = "error"
-		# logger.warning(f'[tosql] {e.statement} {e.params}')
-		# logger.warning(f'[tosql] {e}')
-	except (pymysql.err.DataError, DataError) as e:
-		# logger.error(f'[!]{type(e)}\n{e}\n')
-		csvfile = buffer[
-			"csvfile"
-		]  # session.query(TorqFile).filter(TorqFile.fileid == results['fileid']).first()
-		errmsg = e.args[0]
-		err_row = errmsg.split("row")[-1].strip()
-		err_row = errmsg.split(",")[1].split("at row")[1].strip().strip('")')
-		if "Incorrect double value" in errmsg:
-			err_col = errmsg.split()[8].split(".")[2].strip("`")
-		else:
-			err_col = errmsg.split(",")[1].split("at row")[0].split("'")[1]
-		# logger.warning(f'\n[tosql] code={e}\nargs={e.args[0]}\nr={results}\nerr_row: {err_row}\nerr_col:{err_col}\ntorqfile={tf_err} csvfile={buffer["csvfile"]}\n')  # error:{e}
-		logger.warning(f'\n[tosql] {type(e)} code={e} err_row: {err_row} err_col:{err_col} torqfile={csvfile} fileid:{buffer["fileid"]}')  # error:{e}
-		# tmpbuf = tmpbuf.drop(columns=err_col)
-		err_row = int(err_row)
-		try:
-			tmpbuf = tmpbuf.drop(index=err_row)
-		except Exception as exc:
-			logger.error(f'[torql] {type(exc)} {exc} err_row: {err_row} err_col:{err_col} torqfile={csvfile} fileid:{buffer["fileid"]}')
-		try:
-			# tmpbuf.to_sql('torqlogs', con=engine, if_exists='append', index=False)
-			results["status"] = "warning"
-		except (IndexError, KeyError, DataError) as ex:
-			errmsg = ex.args[0]
-			logger.error(f"[!] {type(ex)}\nerrmsg: {errmsg}\n")
-	except (TypeError, ValueError) as e:
-		logger.error(f"[!]{type(e)}\n{e}\n")
-	return results
-
-
-def read_buff(csvfile, tf_fileid, debug=False):
-	error_files = []
-	rb = {
-		"torqbuffer": pd.DataFrame(), "fileid": tf_fileid, "csvfile": csvfile, }
-	try:
-		torqbuffer = read_csv_polars(csvfile, ignore_errors=True, try_parse_dates=True, truncate_ragged_lines=True, )  # , use_pyarrow=True ,  ) #, null_values=['NaN','-','0\x88\x9e'])
-		torqbuffer = torqbuffer.fill_null(0).fill_nan(0)
-
-	except (InvalidOperationError, ValueError) as e:
-		logger.error(f"[rb] {type(e)} {e} csvfile={csvfile}")
-		return rb, error_files
-	except ComputeError as e:
-		logger.error(f"[rb] {type(e)} {e} csvfile={csvfile}")
-		return rb, error_files
-	# for column in torqbuffer.columns: # replace - with 0
-	# 	mapping = {'-': 0}
-	# 	try:
-	# 		if '-' in str(torqbuffer[column]):
-	# 			torqbuffer = torqbuffer.with_columns(mapping_replace(column,mapping))
-	# 	except ComputeError as e:
-	# 		logger.error(f'[rb] {type(e)} {e} csvfile={csvfile}')
-	# 		logger.warning(f'{column=} rbcol: {torqbuffer[column]} {torqbuffer.columns=}')
-
-	# devtime = torqbuffer.devicetime
-	# if not devtime:
-	# 	logger.error(f'[rb] missing devicetime {csvfile}')
-	# 	return None
-	if torqbuffer.is_empty():
-		logger.error(f"[rb] torqbuffer is empty {csvfile}")
-		return rb, error_files
-	fileid_series = pl.Series("fileid", [tf_fileid for k in range(len(torqbuffer))])
-	torqbuffer.insert_at_idx(1, fileid_series)
-	rbx = None
-	errf = None
-	try:
-		rbx, errf = fix_timestamps(torqbuffer, csvfile, tf_fileid)
-	except Exception as e:
-		logger.error(f"[rb] {type(e)} {e} in fix_timestamps {csvfile}\nrbx: {rbx}\n")
-	if rbx:
-		rb["torqbuffer"] = rbx["torqbuffer"]
-		if debug:
-			pass  # logger.info(f'[rb] {csvfile} rbx={rbx} \nrb={rb}\n{error_files}\n')
-	if errf:
-		error_files.extend(errf)
-	return rb, error_files
-	# fix datetime formatting for devicetime and gpstime
-	# if not isinstance(torqbuffer['devicetime'], pl.Series):
-	# print(f"{csvfile} {torqbuffer['devicetime']}")
-	# if not torqbuffer['devicetime'].is_empty():
-	# print(f"{csvfile} {torqbuffer}")
-
-
-def fix_timestamps(torqbuffer, csvfile, tf_fileid):
-	# todo fix gpstime and devicetime
-	# drop rows where either values are null or missing
-	error_files = []
-	resultbuffer = {
-		"torqbuffer": torqbuffer, "fileid": tf_fileid, "csvfile": csvfile, }
-	try:
-		idx = len(torqbuffer["devicetime"]) // 2  # get middle index to guess dateformat
-	except (ColumnNotFoundError, ComputeError, ValueError) as e:
-		logger.error(f"[rb] devicetime {type(e)} {e} csvfile: {csvfile}")
-		idx = 10
-	try:
-		idx = len(torqbuffer["gpstime"]) // 2  # get middle index to guess dateformat
-	except (ColumnNotFoundError, ComputeError, ValueError) as e:
-		logger.error(f"[rb] gpstime {type(e)} {e} csvfile: {csvfile}")
-		idx = 10
-	gpstime = torqbuffer["gpstime"]
-	devicetime = torqbuffer["devicetime"]
-	try:
-		if len(torqbuffer["devicetime"][idx]) == 28:
-			devicetime = pl.Series("devicetime", [datetime.strptime(k, fmt_28).astimezone(pytz.timezone("UTC")) for k in torqbuffer["devicetime"] if k], )
-		elif len(torqbuffer["devicetime"][idx]) == 24:
-			devicetime = pl.Series("devicetime", [datetime.strptime(k, fmt_24).astimezone(pytz.timezone("UTC")) for k in torqbuffer["devicetime"] if k], )
-		elif len(torqbuffer["devicetime"][idx]) == 26:
-			devicetime = pl.Series("devicetime", [datetime.strptime(k, fmt_26).astimezone(pytz.timezone("UTC")) for k in torqbuffer["devicetime"] if k], )
-		elif len(torqbuffer["devicetime"][idx]) == 20:
-			devicetime = pl.Series("devicetime", [datetime.strptime(k, fmt_20).astimezone(pytz.timezone("UTC")) for k in torqbuffer["devicetime"] if k], )
-		else:
-			logger.error(f'[rb] devicetime format error! len = {len(torqbuffer["devicetime"][idx])} {idx=} buffer: {torqbuffer["devicetime"]}')
-	except (ColumnNotFoundError, ComputeError, ValueError, TypeError) as e:
-		logger.error(f'[rb] devicetime {type(e)} {e} csvfile: {csvfile} len = {len(torqbuffer["devicetime"][idx])} {idx=} ')
-		error_files.append(csvfile)
-	try:
-		if len(torqbuffer["gpstime"][idx]) == 28:
-			gpstime = pl.Series("gpstime", [datetime.strptime(k, fmt_28).astimezone(pytz.timezone("UTC")) for k in torqbuffer["gpstime"] if k], )
-		elif len(torqbuffer["gpstime"][idx]) == 26:
-			# gpstime = pl.Series('gpstime', [datetime.strptime(k,fmt_26).astimezone(pytz.timezone('UTC')) for k in torqbuffer['gpstime'] if k])
-			gpstime = pl.Series("gpstime", [datetime.strptime(k, fmt_26).astimezone(pytz.timezone("UTC")) for k in torqbuffer["gpstime"] if k], )
-		elif len(torqbuffer["gpstime"][idx]) == 34:
-			# to fix TimeZoneAwareConstructorWarning
-			gpstime = pl.Series("gpstime", [datetime.strptime(k, fmt_34).astimezone(pytz.timezone("UTC")) for k in torqbuffer["gpstime"] if k], )
-			# gpstime = pl.Series('gpstime', [datetime.strptime(k,fmt_34) for k in torqbuffer['gpstime'] if k], strict=True, dtype_if_empty=str, nan_to_null=True)
-			# gpstime = pl.Series("dt", [ts.astimezone(pytz.timezone('UTC'))])
-			# print(f'\n timestamp \n {torqbuffer["gpstime"][idx]} \n \n')
-		else:
-			logger.error(f'[rb] gpstime format error ex: {torqbuffer["gpstime"]} len: {len(torqbuffer["gpstime"])}')
-	except (ComputeError, ValueError, TypeError) as e:
-		logger.error(f'[rb] {type(e)} {e} csvfile: {csvfile} len = {len(torqbuffer["devicetime"][idx])} {idx=} buf: {torqbuffer["gpstime"]}')
-		error_files.append(csvfile)
-		# raise e
-
-	gpstime_err = [idx for idx, k in enumerate(torqbuffer["gpstime"]) if not k]
-	devicetime_err = [idx for idx, k in enumerate(torqbuffer["devicetime"]) if not k]
-	try:
-		torqbuffer = torqbuffer.drop("devicetime")
-		if len(torqbuffer) != len(devicetime):
-			torqbuffer = torqbuffer[0:len(devicetime)]
-		torqbuffer.insert_at_idx(4, devicetime)
-	except (AttributeError, UnboundLocalError, pl.exceptions.ShapeError) as e:
-		logger.error(f"[rb] {type(e)} {e} csvfile: {csvfile} tblen={len(torqbuffer)} glen={len(gpstime)} dlen={len(devicetime)} {gpstime_err=} {devicetime_err=}")
-		error_files.append(csvfile)
-	try:
-		torqbuffer = torqbuffer.drop("gpstime")
-		if len(torqbuffer) != len(gpstime):
-			torqbuffer = torqbuffer[0:len(gpstime)]
-		torqbuffer.insert_at_idx(3, gpstime)
-	except (AttributeError, UnboundLocalError, pl.exceptions.ShapeError) as e:
-		logger.error(f"[rb] {type(e)} {e} csvfile: {csvfile} tblen={len(torqbuffer)} glen={len(gpstime)} dlen={len(devicetime)} {gpstime_err=} {devicetime_err=}")
-		error_files.append(csvfile)
-	resultbuffer["torqbuffer"] = torqbuffer
-	# resultbuffer = {
-	# 	'torqbuffer' : torqbuffer, # 	'fileid' : tf_fileid, # 	'csvfile' : csvfile, # }
-	return resultbuffer, error_files
-
-
-async def torq_worker_ppe(tf, session, debug=False):
-	buffer = None
-	results = None
-	t0 = datetime.now()
-	timetotal = 0
-	try:
-		buffer, error_files = read_buff(tf.csvfile, tf.fileid, debug=debug)
-		if not buffer:
-			logger.warning(f"[!] buffer is None tf={tf}")
-		if debug:
-			if len(error_files) > 0:
-				logger.warning(f"error_files: {len(error_files)} ")  # pass # logger.debug(f'file {tf.csvfile} buffer: {len(buffer["torqbuffer"])}')
-				_ = [print(f"error in file: {k}") for k in error_files]
-	except (TypeError,) as e:
-		logger.error(f"[!] {type(e)} {e} in read_buff {tf.csvfile}")
-		raise e
-	except (InvalidOperationError, ValueError, PicklingError, ComputeError) as e:
-		logger.error(f"[!] {type(e)} {e} in read_buff {tf.csvfile}")
-		return None
-	try:
-		results = sqlsender_ppe(buffer, session, debug=debug)  # send triplog data
-		timetotal += (datetime.now() - t0).seconds
-		if debug:
-			logger.debug(f't: {(datetime.now()-t0).seconds}/{timetotal} fileid {results.get("fileid")} {results.get("status")} buffer: {len(buffer["torqbuffer"])}')
-	except (ValueError, TypeError, PicklingError) as e:
-		logger.error(f'[!] {type(e)} {e} in sqlsender buffer.is_empty() {buffer["torqbuffer"].is_empty()}')
-		return None
-
-
-def send_torqtripdata(stats_data: dict, session: sessionmaker, args: argparse.Namespace):
+def send_torqtripdata(stats_data: dict, session: Session, args: argparse.Namespace):
 	"""
 	generate some stats from torqlogs and send to database
 	param stats_data dict of stats, session sqlalchemy session, args
 	"""
 	# todo
 	# send the data generated by generate_torqdata to database
-	print(f'{stats_data=}')
+	logger.info(f'{stats_data=}')
 
 
 def get_time_stats(time_cols):
@@ -603,79 +731,7 @@ def get_temp_stats(temp_cols):
 			"name": c.name, f"{c.name}.min": c.min(), f"{c.name}.mean": c.mean(), f"{c.name}.max": c.max(), }
 	return stats
 
-def check_database_columns(session, args=None, limit=1000):
-	"""
-	collect some info about database columns
-	"""
-	skip_cols = ['id', 'fileid', 'devicetime', 'gpstime','time', 'csvfile', 'csvhash', 'read_flag', 'error_flag', 'send_flag', 'send_flag', 'data_flag', 'distance']
-	df = pd.DataFrame(session.execute(text('select column_name from information_schema.columns where table_name = "torqlogs" order by table_name,ordinal_position')).all())
-	# df = pd.DataFrame(session.execute(text('select column_name from information_schema.columns where table_schema = "torq" order by table_name,ordinal_position')).all())
-	# df2 = pd.DataFrame(session.execute(text('SELECT id,fileid,o2sensor1widerangecurrentma FROM torqlogs WHERE o2sensor1widerangecurrentma IS NULL  OR o2sensor1widerangecurrentma=";" ')).all())
-	column_names = sorted([k for k in set([k[0] for k in df.values]) if k not in skip_cols])
-	logger.info(f'found {len(column_names)} columns in database, limit:{limit}')
-	maxnlen = max([len(k) for k in column_names])  # longest name, for formatting
-	for col in column_names:
-		if args.debug:
-			logger.debug(f'checking {col} limit:{limit} ')
-		if not limit:
-			df = pd.DataFrame(session.execute(text(f'select {col} from torqlogs')).all())
-		else:
-			df = pd.DataFrame(session.execute(text(f'select {col} from torqlogs limit {limit}')).all())
-		try:
-			nulls = df.isnull().sum().values[0]
-		except (IndexError,AttributeError) as e:
-			logger.error(f'{type(e)} {e} {col=} ')
-			nulls = 0.0
-		# nullratio = len(df)/df.isnull().sum().values[0]
-		nr = 0.0
-		if nulls > 0:
-			try:
-				nr = len(df)/nulls
-			except (Exception, RuntimeError, ZeroDivisionError) as e:
-				logger.error(f'{type(e)} {e} {col=} {df.describe()}')
-
-		minval = df.min().values[0] or 0.0
-		mednval = df.median().values[0] or 0.0
-		meannval = df.mean().values[0] or 0.0
-		maxnval = df.max().values[0] or 0.0
-		print(f'  {col:<{maxnlen}} nulls: {nulls:>3} nr: {nr:>3.3} {minval:>3.3} {mednval:>3.3} {meannval:>3.3} {maxnval:>3.3}')
-
-def get_tripfile_stats(fileid, session, args=None, limit=1000):
-	"""
-	collect some info about database columns
-	"""
-	skip_cols = ['id', 'fileid', 'devicetime', 'gpstime','time', 'csvfile', 'csvhash', 'read_flag', 'error_flag', 'send_flag', 'send_flag', 'data_flag', 'distance']
-	df = pd.DataFrame(session.execute(text('select column_name from information_schema.columns where table_name = "torqlogs" order by table_name,ordinal_position')).all())
-	column_names = sorted([k for k in set([k[0] for k in df.values]) if k not in skip_cols])
-	logger.info(f'checking {fileid=} found {len(column_names)} columns in database, limit:{limit}')
-	maxnlen = max([len(k) for k in column_names])
-	for col in column_names:
-		if args.debug:
-			logger.debug(f'checking {col} limit:{limit} ')
-		if not limit:
-			df = pd.DataFrame(session.execute(text(f'select {col} from torqlogs where fileid={fileid}')).all())
-		else:
-			df = pd.DataFrame(session.execute(text(f'select {col} from torqlogs where fileid={fileid} limit {limit}')).all())
-		try:
-			nulls = df.isnull().sum().values[0]
-		except (IndexError,AttributeError) as e:
-			logger.error(f'{type(e)} {e} {col=} ')
-			nulls = 0.0
-		# nullratio = len(df)/df.isnull().sum().values[0]
-		nr = 0.0
-		if nulls > 0:
-			try:
-				nr = len(df)/nulls
-			except (Exception, RuntimeError, ZeroDivisionError) as e:
-				logger.error(f'{type(e)} {e} {col=} {df.describe()}')
-
-		minval = df.min().values[0] or 0.0
-		mednval = df.median().values[0] or 0.0
-		meannval = df.mean().values[0] or 0.0
-		maxnval = df.max().values[0] or 0.0
-		print(f'  {col:<{maxnlen}} nulls: {nulls:>3} nr: {nr:>3.3} {minval:>3.3} {mednval:>3.3} {meannval:>3.3} {maxnval:>3.3}')
-
-def generate_torqdata(df: pd.DataFrame, session: sessionmaker = None, args: argparse.Namespace = None):
+def generate_torqdata(df: pd.DataFrame, session: Session, args: argparse.Namespace):
 	# generate torqdata from torqlogs
 	# df = pd.DataFrame([k.__dict__ for k in data])
 	time_cols = [df[k] for k in df.columns if "gpstime" in k or "devicetime" in k]
@@ -694,204 +750,42 @@ def generate_torqdata(df: pd.DataFrame, session: sessionmaker = None, args: argp
 	temp_cols = [df[k] for k in df.columns if "temp" in k]
 	stats["tempstats"] = get_temp_stats(temp_cols)
 
-	# gps_cols = [df[k] for k in df.columns if 'gps' in k]
-	# for c in gps_cols:
-	# 	stats[c.name] = {
-	# 		'name':c.name, # 		f'{c.name}.mean':c.mean(), # 		f'{c.name}.max':c.max(), # 		f'{c.name}.mix':c.min(), # 	   }
-	# 	# print(stats)
-	# cost_cols = [df[k] for k in df.columns if 'cost' in k]
-	# for c in cost_cols:
-	# 	stats[c.name] = {
-	# 		'name':c.name, # 		f'{c.name}.mean':c.mean(), # 		f'{c.name}.max':c.max(), # 		f'{c.name}.mix':c.min(), # 	   }
-	# 	# print(stats)
-	# temp_cols = [df[k] for k in df.columns if 'temp' in k]
-	# for c in temp_cols:
-	# 	stats[c.name] = {
-	# 		'name':c.name, # 		f'{c.name}.mean':c.mean(), # 		f'{c.name}.max':c.max(), # 		f'{c.name}.mix':c.min(), # 	   }
-	# 	#print(stats)
 	return stats
 
-
-def Convert(lst):
-	# convert list to dict
-	res_dct = map(lambda i: (lst[i], lst[i + 1]), range(len(lst) - 1)[::2])
-	return dict(res_dct)
-
-
-def convert_string_to_datetime(s: str):
+def convert_string_to_datetime(s: str) -> datetime | None:
 	"""
-	try to convert string to datetime, based on string length apply fmt
-	param s string with datetime
-	returns datetime object
+	Convert string-like values to UTC datetime.
+	Returns None for invalid/unparseable values so inserts become SQL NULL.
 	"""
-	fmt_selector = len(s)
-	datetimeobject = s
+	if s is None:
+		return None
+	if not isinstance(s, str):
+		s = str(s)
+	s = s.strip()
+	if not s:
+		return None
+
+	known_formats = {
+		20: fmt_20,
+		24: fmt_24,
+		26: fmt_26,
+		28: fmt_28,
+		30: fmt_30,
+		34: fmt_34,
+		36: fmt_36,
+	}
 	try:
-		match fmt_selector:
-			case 20:
-				datetimeobject = datetime.strptime(s, fmt_20).astimezone(pytz.timezone("UTC"))
-			case 24:
-				datetimeobject = datetime.strptime(s, fmt_24).astimezone(pytz.timezone("UTC"))
-			case 26:
-				datetimeobject = datetime.strptime(s, fmt_26).astimezone(pytz.timezone("UTC"))
-			case 28:
-				datetimeobject = datetime.strptime(s, fmt_28).astimezone(pytz.timezone("UTC"))
-			case 30:
-				datetimeobject = datetime.strptime(s, fmt_30).astimezone(pytz.timezone("UTC"))
-			case 34:
-				datetimeobject = datetime.strptime(s, fmt_34).astimezone(pytz.timezone("UTC"))
-			case 36:
-				datetimeobject = datetime.strptime(s, fmt_36).astimezone(pytz.timezone("UTC"))
-			case _:
-				pass  # logger.warning(f'could not match format for fmt_selector {fmt_selector} for {datecol} {f=}.\n sample:first= {df0[datecol][0]} middle= {df0[datecol][len(data)//2]} last= {df0[datecol][len(df0)-1]}\n')
+		fmt = known_formats.get(len(s))
+		if fmt:
+			dt = datetime.strptime(s, fmt)
+			if dt.tzinfo is None:
+				return dt.replace(tzinfo=pytz.UTC)
+			return dt.astimezone(pytz.UTC)
+
+		parsed = pd.to_datetime(s, errors="coerce", utc=True)
+		if pd.isna(parsed):
+			return None
+		return parsed.to_pydatetime()
 	except (ValueError, TypeError, KeyError) as e:
-		logger.error(f"dateconverter {type(e)} {e} {s=}")
-	finally:
-		return datetimeobject
-
-
-def colreplacer(df):
-	# todo for checking try :
-	# test = [float(k) for k in data['enginecoolanttemperaturef'].values ] # raises exception if not float
-	# test = [float(k) for k in data[columntocheck].values ] # raises exception if not float
-
-	for col in df.columns:
-		# df[col] = df[col].replace('.',',')
-		df[col] = df[col].replace("-", 0)
-		df[col] = df[col].replace("Â", "")
-		df[col] = df[col].replace("â", "")
-		df[col] = df[col].replace("°", "")
-		df[col] = df[col].replace("₂", "")
-		df[col] = df[col].replace("∞", "")
-		df[col] = df[col].replace("£", "")
-		df[col] = df[col].replace("\n", "")
-		df[col] = df[col].replace("612508207723425200000000000000000000000", 0)
-		df[col] = df[col].replace("340282346638528860000000000000000000000", 0)
-		df[col] = df[col].replace("-3402823618710077500000000000000000000", 0)
-		df[col] = df[col].replace("6.125082077234252e+38", 0)
-		df[col] = df[col].replace("3.4028234663852886e+38", 0)
-		df[col] = df[col].replace("-5.481e-05", 0)
-		df[col] = df[col].replace("â\x88\x9e", 0)
-		# â\x88\x9e
-		# -5.481e-05
-		# 6.125082077234252e+38
-		# 3.4028234663852886e+38
-		# 6.125082077234252e+38
-		# 612508207723425200000000000000000000000
-		# df[col] = rcol
-	# data = df.fill_null(0).fill_nan(0)
-	# df = data.to_pandas()
-	# df1 = df.rename(columns=ncc)
-
-
-def fix_bad_values(data: pd.DataFrame, f: str):
-	"""
-	search and replace bad values from databuffer
-	param: data dataframe, f filename (for ref)
-	returns fixed data if possible, else orginal
-	"""
-	# fixed_data = pd.DataFrame()
-	# 'â\x88\x9e' found in tracklog-2021-jul-05_17-53-16.csv
-	# badhex
-	# C3 A2 C2 88 C2 9E
-	# C3 82 C2 B0
-	# C3 A2 C2 82 C2 82
-	# C3 82 C2 B0
-	# Â°
-	try:
-		# needs_fix = [k for k in data.columns if '-' in data[k].values]
-		for c in data:
-			data[c] = data[c].replace("-", 0)
-			data[c] = data[c].replace("∞", 0)
-			data[c] = data[c].replace("NaN", 0)
-			data[c] = data[c].replace("6.125082077234252e+38", 0)
-			# 6.125082077234252e+38
-		# fixcount = 0
-		# for fix in needs_fix:
-
-		# 	data[fix] = data[fix].replace('340282346638528860000000000000000000000',0)
-		# 	data[fix] = data[fix].replace('-3402823618710077500000000000000000000',0)
-		# 	data[fix] = data[fix].replace('612508207723425200000000000000000000000',0)
-		# 	data[fix] = data[fix].replace('â\x88\x9e',0)
-		# 	fixcount += 1
-		# if fixcount>0:
-		# 	logger.debug(f'fixed {fixcount} things in {f}')
-		return data
-	except Exception as e:
-		logger.error(f"error in fixer: {type(e)} {e} for {f}")
-		raise e
-
-def read_profile(profile_fn: str):
-	# read profile.properties file, to extract some data
-	tripdate = None
-	try:
-		with open(profile_fn, "r") as f:
-			data = f.readlines()
-		if len(data) == 8 or len(data) == 6:
-			# pdata_date = str(data[1][1:]).strip('\n')
-			# tripdate = datetime.strptime(pdata_date ,'%a %b %d %H:%M:%S %Z%z %Y')
-			if len(data[1]) == 30:
-				tripdate = datetime.strptime((str(data[1][1:]).strip("\n")), fmt_30)
-			elif len(data[1]) == 36:
-				# Tue May 17 17:55:43 GMT+02:00 2022
-				tripdate = datetime.strptime((str(data[1][1:]).strip("\n")), fmt_36)
-			else:
-				logger.warning(f"unknown date format {data[1]}")
-				tripdate = data[1]
-		else:
-			logger.warning(f"profile.properties file {profile_fn} has {len(data)} lines {data}")
-	except Exception as e:
-		logger.error(f"unhandled {type(e)} {e}")
-	finally:
-		return tripdate
-
-
-def transfer_older_logs(args):
-	# transfer old tripLogs to new format
-	# todo read more info from profile.properties file
-	#
-
-	old_dirs = [
-		k
-		for k in Path(args.oldlogpath).glob("*")
-		if k.is_dir() and len(str(k.name)) == 13
-	]
-	# pick only directories with 13 digits
-
-	transfered_logs = []
-	# to keep track of the logs that have been transfered
-
-	logger.debug(f"found {len(old_dirs)} old tripLogs")
-	for od in old_dirs:
-		profile_fn = os.path.join(od, "profile.properties")
-		# old_timestamp = datetime.fromtimestamp(int(od.name)/1000).strftime("%Y-%b-%d_%H-%M-%S")
-		if Path(profile_fn).exists():
-			# read profile.properties file, to extract some data
-			profiledata = read_profile(profile_fn)
-		else:
-			logger.warning(f"no profile.properties file found in {od}")
-			profiledata = None
-		# rename log file to new format
-		if profiledata:
-			trip_date = profiledata.strftime("%Y-%b-%d_%H-%M-%S")
-			new_log_fn = Path(os.path.join(args.logpath, f"trackLog-{trip_date}.csv"))
-			if len(new_log_fn.name) != 33:
-				logger.warning(f"new log filename {new_log_fn} is not 33 chars long")
-			if Path(new_log_fn).exists():
-				logger.warning(f"file {new_log_fn} exists, skipping")
-			else:
-				# print(f'od: {od.name} -> {old_timestamp} pd: {profiledata} td: {trip_date}')
-				old_log_name = os.path.join(od, "trackLog.csv")
-				logger.debug(f"move/copy from {old_log_name} to {new_log_fn}")
-				try:
-					shutil.copyfile(old_log_name, new_log_fn)
-					transfered_logs.append(new_log_fn)
-				except Exception as e:
-					logger.error(f"Error {type(e)} {e} {old_log_name} -> {new_log_fn}")
-		else:
-			logger.warning(f"could not extract profiledata from {profile_fn}")
-	logger.info(f"transfered {len(transfered_logs)} of {len(old_dirs)} old tripLogs to {args.logpath}")
-	return transfered_logs
-
-if __name__ == "__main__":
-	pass
+		logger.debug(f"dateconverter {type(e)} {e} {s=}")
+		return None

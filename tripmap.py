@@ -7,39 +7,35 @@ from loguru import logger
 from datamodels import Torqlogs, TorqFile
 import matplotlib.pyplot as plt
 
-from plotutils import MAP_CACHE, PLOT_DIR
-from plotutils import plot_trip, combine_map_plot, download_maps
 # x = latitude y = longitude !
-
 
 def cli_main(args):
 	dburl = args.dburl  # 'sqlite:///torqfiskur.db'
 	engine = create_engine(dburl, echo=False, connect_args={'check_same_thread': False})
-	Session = sessionmaker(bind=engine)
-	session = Session()
-	print(args)
+	s = sessionmaker(bind=engine)
+	session = s()
 	if args.plotid:  # plot a single trip
-		print(f'plotting {args.plotid}')
-		plot_trip(args.plotid, session)
+		logger.debug(f'plotting {args.plotid}')
+		# plot_trip(args.plotid, session)
 		sys.exit(0)
 	elif args.combine:
-		print(f'combiner {args.combine}')
-		combine_map_plot(args.combine[0], args.combine[1], args.combine[2])
+		logger.debug(f'combiner {args.combine}')
+		# combine_map_plot(args.combine[0], args.combine[1], args.combine[2])
 		# combine_map_plot(f'{MAP_CACHE}/tripmap-0001.png', f'{PLOT_DIR}/testplot1.png')
 	elif args.dlmaps:  # download all maps from mapbox
-		download_maps(args, session)
+		# download_maps(args, session)
 		sys.exit(0)
 	elif args.plotall:  # make a plot of all trips - no maps
 		trips = [k.fileid for k in session.query(TorqFile.fileid).all()]
 		for idx,trip in enumerate(trips):
 			logger.debug(f'[{idx}/{len(trips)}] plotting {trip}')
-			pltfilename = f'{PLOT_DIR}/tripmap-{trip:04d}-plotly.png'  # padding
+			pltfilename = f'tripmap-{trip:04d}-plotly.png'  # padding
 			# fileid = str(trips.iloc[0].values[0])
-			df = pd.DataFrame([k for k in session.query(Torqlogs.latitude, Torqlogs.longitude).filter(Torqlogs.fileid == trip).all()])
+			df = pd.DataFrame([k for k in session.query(Torqlogs.latitude, Torqlogs.longitude).filter(Torqlogs.fileid == trip).all()])  # type: ignore
 			px = 1/plt.rcParams['figure.dpi']  # pixel in inches
 			fig,ax1 = plt.subplots(figsize=(800*px,600*px))
 			plt.axis('off')
-			df.plot(x="latitude", y="longitude", kind="scatter", ax=ax1, marker='.')
+			df.plot(x='latitude', y='longitude', kind='scatter', ax=ax1, marker='.')
 			plt.savefig(pltfilename, transparent=True, dpi=100)
 			# plt.gcf()
 			# plt.show()

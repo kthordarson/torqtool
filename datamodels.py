@@ -1,19 +1,110 @@
 import sys
-import uuid
+import re
+import hashlib
 from datetime import datetime
 import pandas as pd
 from loguru import logger
-from sqlalchemy import Column, DateTime, Float, ForeignKey, Integer, Text, text
+from sqlalchemy import Column, DateTime, Float, ForeignKey, Integer, Text, text, String, LargeBinary, UniqueConstraint
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-from sqlalchemy.sql.sqltypes import Double
+
+COLUMN_TYPES = {
+		'GPS_Time': String,
+		'Device_Time': String,
+		'Longitude': Float,
+		'Latitude': Float,
+		'GPS_Speed_Meterssecond': Float,
+		'Horizontal_Dilution_of_Precision': Float,
+		'Altitude': Float,
+		'Bearing': Float,
+		'Gx': Float,
+		'Gy': Float,
+		'Gz': Float,
+		'Gcalibrated': Float,
+		'Acceleration_SensorTotalg': Float,
+		'Acceleration_SensorX_axisg': Float,
+		'Acceleration_SensorY_axisg': Float,
+		'Acceleration_SensorZ_axisg': Float,
+		'Actual_engine_torque': Float,
+		'Air_Fuel_RatioMeasured1': Float,
+		'Android_device_Battery_Level': Integer,
+		'Average_trip_speedwhilst_moving_onlykmh': Float,
+		'Average_trip_speedwhilst_stopped_or_movingkmh': Float,
+		'Barometric_pressure_from_vehiclepsi': Float,
+		'CO_in_gkm_Averagegkm': Float,
+		'CO_in_gkm_Instantaneousgkm': Float,
+		'Distance_to_empty_Estimatedkm': Float,
+		'Distance_travelled_with_MILCEL_litkm': Float,
+		'Engine_Coolant_TemperatureC': Float,
+		'Engine_kW_At_the_wheelskW': Float,
+		'Engine_Load': Float,
+		'Engine_RPMrpm': Float,
+		'Fuel_cost_tripcost': Float,
+		'Fuel_flow_ratehourlhr': Float,
+		'Fuel_flow_rateminuteccmin': Float,
+		'Fuel_Rail_Pressurepsi': Float,
+		'Fuel_Remaining_Calculated_from_vehicle_profile': Float,
+		'Fuel_used_tripl': Float,
+		'GPS_Accuracym': Float,
+		'GPS_Altitudem': Float,
+		'GPS_Bearing': Float,
+		'GPS_Latitude': Float,
+		'GPS_Longitude': Float,
+		'GPS_Satellites': Integer,
+		'GPS_vs_OBD_Speed_differencekmh': Float,
+		'Horsepower_At_the_wheelshp': Float,
+		'Intake_Air_TemperatureC': Float,
+		'Intake_Manifold_Pressurepsi': Float,
+		'Kilometers_Per_LitreInstantkpl': Float,
+		'Kilometers_Per_LitreLong_Term_Averagekpl': Float,
+		'Litres_Per_100_KilometerInstantl100km': Float,
+		'Litres_Per_100_KilometerLong_Term_Averagel100km': Float,
+		'Mass_Air_Flow_Rategs': Float,
+		'Miles_Per_GallonInstantmpg': Float,
+		'Miles_Per_GallonLong_Term_Averagempg': Float,
+		'O2_Sensor1_Wide_Range_CurrentmA': Float,
+		'O2_Bank_1_Sensor_1_Wide_Range_Equivalence_Ratio': Float,
+		'O2_Bank_1_Sensor_1_Wide_Range_VoltageV': Float,
+		'Speed_GPSkmh': Float,
+		'Speed_OBDkmh': Float,
+		'TorqueNm': Float,
+		'Trip_average_KPLkpl': Float,
+		'Trip_average_Litres100_KMl100km': Float,
+		'Trip_average_MPGmpg': Float,
+		'Trip_Distancekm': Float,
+		'Trip_distance_stored_in_vehicle_profilekm': Float,
+		'Trip_TimeSince_journey_starts': Float,
+		'Trip_timewhilst_movings': Float,
+		'Trip_timewhilst_stationarys': Float,
+		'Turbo_Boost_Vacuum_Gaugepsi': Float,
+		'Voltage_OBD_AdapterV': Float,
+		'Volumetric_Efficiency_Calculated': Float,
+		'Ambient_air_tempC': Float,
+		'Cost_per_milekm_Instantkm': Float,
+		'Cost_per_milekm_Tripkm': Float,
+		'Positive_Kinetic_Energy_PKEkmhr': Float,
+		'Throttle_PositionManifold': Float,
+		'Voltage_Control_ModuleV': Float,
+		'O2_Sensor1_Wide_Range_Equivalence_Ratio': Float,
+		'O2_Sensor1_Wide_Range_VoltageV': Float,
+	}
+
+# Also support normalized Torq header variants (for example GPS_Time -> gpstime).
+for _col_name, _col_type in list(COLUMN_TYPES.items()):
+	_normalized = re.sub(r'[^A-Za-z0-9]+', '', _col_name).lower()
+	COLUMN_TYPES.setdefault(_normalized, _col_type)
+
 class Base(DeclarativeBase):
 	pass
 
-def genuuid():
-	return str(uuid.uuid4())
 
-# x = latitude y = longitude !
+def stable_fileid_from_csvhash(csvhash: str) -> int:
+	"""
+	Generate a deterministic signed 31-bit integer id from file hash.
+	Using 31-bit keeps compatibility with existing INTEGER columns.
+	"""
+	digest = hashlib.sha256(csvhash.encode("utf-8")).digest()
+	return int.from_bytes(digest[:4], "big") & 0x7FFFFFFF
 
 class Filestats(Base):
 	__tablename__ = 'filestats'
@@ -34,47 +125,61 @@ class Speeds(Base):
 
 class Startpos(Base):
 	__tablename__ = 'startpos'
-	startid: Mapped[int] = mapped_column(primary_key=True)
-	# fileid: Mapped[int] = mapped_column(ForeignKey('torqfiles.fileid'))
-	latstart = Column('latstart', Float, default=0, unique=False)
-	lonstart = Column('lonstart', Float, default=0, unique=False)
-	count = Column('count', Integer, default=0, unique=False)
-	label = Column('label', Text)
-
+	startid: Mapped[int] = mapped_column(Integer, primary_key=True)
+	latstart: Mapped[float | None] = mapped_column(Float, nullable=True)
+	lonstart: Mapped[float | None] = mapped_column(Float, nullable=True)
+	count: Mapped[int] = mapped_column(Integer, default=0)
+	label: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 class Endpos(Base):
 	__tablename__ = 'endpos'
 	endid: Mapped[int] = mapped_column(primary_key=True)
-	# fileid: Mapped[int] = mapped_column(ForeignKey('torqfiles.fileid'))
-	latend = Column('latend', Float, default=0, unique=False)
-	lonend = Column('lonend', Float, default=0, unique=False)
-	count = Column('count', Integer, default=0, unique=False)
-	label = Column('label', Text)
+	latend: Mapped[float | None] = mapped_column(Float, nullable=True)
+	lonend: Mapped[float | None] = mapped_column(Float, nullable=True)
+	count: Mapped[int] = mapped_column(Integer, default=0)
+	label: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 class TorqFile(Base):
 	__tablename__ = 'torqfiles'
 	fileid: Mapped[int] = mapped_column(primary_key=True)
-	# startid: Mapped[int] = mapped_column(ForeignKey('startpos.startid'))
-	startid = Column('startid', Integer, default=0, unique=False)
-	endid = Column('endid', Integer, default=0, unique=False)
+	startid: Mapped[int | None] = mapped_column(Integer, nullable=True)
+	endid: Mapped[int | None] = mapped_column(Integer, nullable=True)
 	csvfile = Column('csvfile', Text)
-	csvhash = Column('csvhash', Text)
-	import_date = Column('import_date', DateTime)
-	trip_start = Column('trip_start', DateTime)
-	trip_end = Column('trip_end', DateTime)
-	trip_duration = Column('trip_duration', Float)
-	readtime = Column('readtime', Float)
-	sendtime = Column('sendtime', Float)
-	startlon = Column('startlon', Float)
-	startlat = Column('startlat', Float)
-	endlon = Column('endlon', Float)
-	endlat = Column('endlat', Float)
+	# csvhash = Column('csvhash', Text, unique=True, nullable=False)
+	csvhash: Mapped[str] = mapped_column(String, unique=True, nullable=True)
+	import_date: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+	trip_start: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+	trip_end: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+	trip_duration: Mapped[float | None] = mapped_column(Float, nullable=True)
+	trip_distance: Mapped[int | None] = mapped_column(Integer, nullable=True)
+	readtime: Mapped[float | None] = mapped_column(Float, nullable=True)
+	sendtime: Mapped[float | None] = mapped_column(Float, nullable=True)
+	startlon: Mapped[float | None] = mapped_column(Float, nullable=True)
+	startlat: Mapped[float | None] = mapped_column(Float, nullable=True)
+	endlon: Mapped[float | None] = mapped_column(Float, nullable=True)
+	endlat: Mapped[float | None] = mapped_column(Float, nullable=True)
 	sent_rows = Column('sent_rows', Integer, default=0, unique=False)
 
-	def __init__(self, csvfile, csvhash):
+	def __init__(self, csvfile, csvhash, fileid=None):
+		self.fileid = fileid if fileid is not None else stable_fileid_from_csvhash(str(csvhash))
 		self.csvfile = csvfile
 		self.csvhash = csvhash
 		self.import_date = datetime.now()
+
+
+class MapImageCache(Base):
+	__tablename__ = 'mapimagecache'
+	__table_args__ = (
+		UniqueConstraint('selection_key', 'zoom', 'colormap', name='uq_mapimagecache_key'),
+	)
+	cacheid: Mapped[int] = mapped_column(primary_key=True)
+	fileid: Mapped[int | None] = mapped_column(ForeignKey('torqfiles.fileid'), nullable=True)
+	selection_key: Mapped[str] = mapped_column(Text, nullable=False)
+	zoom: Mapped[int] = mapped_column(Integer, nullable=False)
+	colormap: Mapped[str] = mapped_column(Text, nullable=False)
+	image_png: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+	created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+	updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
 class Torqtrips(Base):
 	__tablename__ = 'torqtrips'
@@ -83,24 +188,28 @@ class Torqtrips(Base):
 	csvfile = Column('csvfile', Text)
 	csvhash = Column('csvhash', Text)
 	distance = Column('distance', Integer)
+	trip_distance = Column('trip_distance', Integer)
 	fuelcost = Column('fuelcost', Integer)
 	fuelused = Column('fuelused', Integer)
 	distancewhilstconnectedtoobd = Column('distancewhilstconnectedtoobd', Integer)
 	tripdate = Column('tripdate', DateTime)
 	profile = Column('profile', Text)
 	time = Column('time', Integer)
+	triptime = Column('triptime', Integer)
 
-	def __init__(self, fileid=None, csvfile=None, csvhash=None, distance=None, fuelcost=None, fuelused=None, distancewhilstconnectedtoobd=None, tripdate=None, profile=None, triptime=None):
+	def __init__(self, fileid=0, csvfile=None, csvhash=None, distance=None, fuelcost=None, fuelused=None, distancewhilstconnectedtoobd=None, tripdate=None, profile=None, triptime=None):
 		self.fileid = fileid
 		self.csvfile = csvfile
 		self.csvhash = csvhash
 		self.distance = distance
+		self.trip_distance = distance
 		self.fuelcost = fuelcost
 		self.fuelused = fuelused
 		self.distancewhilstconnectedtoobd = distancewhilstconnectedtoobd
 		self.tripdate = tripdate
 		self.profile = profile
 		self.time = triptime
+		self.triptime = triptime
 	# def __repr__(self):
 	# 	return f'<Torqtrips id:{self.id} file:{self.fileid} {self.csvfile}>'
 
@@ -108,174 +217,15 @@ class Torqlogs(Base):
 	__tablename__ = 'torqlogs'
 	id: Mapped[int] = mapped_column(primary_key=True)
 	fileid: Mapped[int] = mapped_column(ForeignKey('torqfiles.fileid'))
-	# fileid = Mapped[int] = mapped_column(ForeignKey('torqfiles.fileid')) #
-	# fileid = Column('fileid', Integer)  # Mapped[int] = mapped_column(ForeignKey('torqfiles.fileid'))
-	gpstime = Column('gpstime', DateTime)
-	devicetime = Column('devicetime', DateTime)
-	longitude = Column('longitude', Double)  # 'longitude':np.float64,
-	latitude = Column('latitude', Double)
-	horizontaldilutionofprecision = Column('horizontaldilutionofprecision', Double)
-	bearing = Column('bearing', Double)
-	coingkmaveragegkm = Column('coingkmaveragegkm', Double)
-	coingkminstantaneousgkm = Column('coingkminstantaneousgkm', Double)
-	fuelflowrateminuteccmin = Column('fuelflowrateminuteccmin', Double)
-	milespergalloninstantmpg = Column('milespergalloninstantmpg', Double)
-	milespergallonlongtermaveragempg = Column('milespergallonlongtermaveragempg', Double)
-	accelerationsensortotalg = Column('accelerationsensortotalg', Double)
-	accelerationsensorxaxisg = Column('accelerationsensorxaxisg', Double)
-	accelerationsensoryaxisg = Column('accelerationsensoryaxisg', Double)
-	accelerationsensorzaxisg = Column('accelerationsensorzaxisg', Double)
-	androiddevicebatterylevel = Column('androiddevicebatterylevel', Double)
-	distancetoemptyestimatedkm = Column('distancetoemptyestimatedkm', Double)
-	engineload = Column('engineload', Double)
-	enginerpmrpm = Column('enginerpmrpm', Double)
-	fuelcosttripcost = Column('fuelcosttripcost', Double)
-	fuelflowratehourlhr = Column('fuelflowratehourlhr', Double)
-	fuelremainingcalculatedfromvehicleprofile = Column('fuelremainingcalculatedfromvehicleprofile', Double)
-	fuelusedtripl = Column('fuelusedtripl', Double)
-	gpsaccuracym = Column('gpsaccuracym', Double)
-	gpsaltitudem = Column('gpsaltitudem', Double)
-	gpsbearing = Column('gpsbearing', Double)
-	gpslatitude = Column('gpslatitude', Double)
-	gpslongitude = Column('gpslongitude', Double)
-	gpssatellites = Column('gpssatellites', Double)
-	gpsvsobdspeeddifferencekmh = Column('gpsvsobdspeeddifferencekmh', Double)
-	horsepoweratthewheelshp = Column('horsepoweratthewheelshp', Double)
-	kilometersperlitreinstantkpl = Column('kilometersperlitreinstantkpl', Double)
-	litresper100kilometerinstantl100km = Column('litresper100kilometerinstantl100km', Double)
-	massairflowrategs = Column('massairflowrategs', Double)
-	speedobdkmh = Column('speedobdkmh', Double)
-	voltageobdadapterv = Column('voltageobdadapterv', Double)
-	volumetricefficiencycalculated = Column('volumetricefficiencycalculated', Double)
-	speedgpskmh = Column('speedgpskmh', Double)
-	actualenginetorque = Column('actualenginetorque', Double)
-	averagetripspeedwhilststoppedormovingkmh = Column('averagetripspeedwhilststoppedormovingkmh', Double)
-	distancetravelledwithmilcellitkm = Column('distancetravelledwithmilcellitkm', Double)
-	kilometersperlitrelongtermaveragekpl = Column('kilometersperlitrelongtermaveragekpl', Double)
-	litresper100kilometerlongtermaveragel100km = Column('litresper100kilometerlongtermaveragel100km', Double)
-	tripaveragekplkpl = Column('tripaveragekplkpl', Double)
-	tripaveragelitres100kml100km = Column('tripaveragelitres100kml100km', Double)
-	tripaveragempgmpg = Column('tripaveragempgmpg', Double)
-	tripdistancekm = Column('tripdistancekm', Double)
-	tripdistancestoredinvehicleprofilekm = Column('tripdistancestoredinvehicleprofilekm', Double)
-	triptimesincejourneystarts = Column('triptimesincejourneystarts', Double)
-	triptimewhilstmovings = Column('triptimewhilstmovings', Double)
-	triptimewhilststationarys = Column('triptimewhilststationarys', Double)
-	gpsspeedkmh = Column('gpsspeedkmh', Double)
-	altitudem = Column('altitudem', Double)
-	gravityxg = Column('gravityxg', Double)
-	gravityyg = Column('gravityyg', Double)
-	gravityzg = Column('gravityzg', Double)
-	longitude = Column('longitude', Double) # 'longitude':np.float64,
-	latitude = Column('latitude', Double)
-	horizontaldilutionofprecision = Column('horizontaldilutionofprecision', Double)
-	bearing = Column('bearing', Double)
-	coingkmaveragegkm = Column('coingkmaveragegkm', Double)
-	coingkminstantaneousgkm = Column('coingkminstantaneousgkm', Double)
-	fuelflowrateminuteccmin = Column('fuelflowrateminuteccmin', Double)
-	milespergalloninstantmpg = Column('milespergalloninstantmpg', Double)
-	milespergallonlongtermaveragempg = Column('milespergallonlongtermaveragempg', Double)
-	accelerationsensortotalg = Column('accelerationsensortotalg', Double)
-	accelerationsensorxaxisg = Column('accelerationsensorxaxisg', Double)
-	accelerationsensoryaxisg = Column('accelerationsensoryaxisg', Double)
-	accelerationsensorzaxisg = Column('accelerationsensorzaxisg', Double)
-	androiddevicebatterylevel = Column('androiddevicebatterylevel', Double)
-	distancetoemptyestimatedkm = Column('distancetoemptyestimatedkm', Double)
-	engineload = Column('engineload', Double)
-	enginerpmrpm = Column('enginerpmrpm', Double)
-	fuelcosttripcost = Column('fuelcosttripcost', Double)
-	fuelflowratehourlhr = Column('fuelflowratehourlhr', Double)
-	fuelremainingcalculatedfromvehicleprofile = Column('fuelremainingcalculatedfromvehicleprofile', Double)
-	fuelusedtripl = Column('fuelusedtripl', Double)
-	gpsaccuracym = Column('gpsaccuracym', Double)
-	gpsaltitudem = Column('gpsaltitudem', Double)
-	gpsbearing = Column('gpsbearing', Double)
-	gpslatitude = Column('gpslatitude', Double)
-	gpslongitude = Column('gpslongitude', Double)
-	gpssatellites = Column('gpssatellites', Double)
-	gpsvsobdspeeddifferencekmh = Column('gpsvsobdspeeddifferencekmh', Double)
-	horsepoweratthewheelshp = Column('horsepoweratthewheelshp', Double)
-	kilometersperlitreinstantkpl = Column('kilometersperlitreinstantkpl', Double)
-	litresper100kilometerinstantl100km = Column('litresper100kilometerinstantl100km', Double)
-	massairflowrategs = Column('massairflowrategs', Double)
-	speedobdkmh = Column('speedobdkmh', Double)
-	voltageobdadapterv = Column('voltageobdadapterv', Double)
-	volumetricefficiencycalculated = Column('volumetricefficiencycalculated', Double)
-	speedgpskmh = Column('speedgpskmh', Double)
-	actualenginetorque = Column('actualenginetorque', Double)
-	averagetripspeedwhilststoppedormovingkmh = Column('averagetripspeedwhilststoppedormovingkmh', Double)
-	distancetravelledwithmilcellitkm = Column('distancetravelledwithmilcellitkm', Double)
-	kilometersperlitrelongtermaveragekpl = Column('kilometersperlitrelongtermaveragekpl', Double)
-	litresper100kilometerlongtermaveragel100km = Column('litresper100kilometerlongtermaveragel100km', Double)
-	tripaveragekplkpl = Column('tripaveragekplkpl', Double)
-	tripaveragelitres100kml100km = Column('tripaveragelitres100kml100km', Double)
-	tripaveragempgmpg = Column('tripaveragempgmpg', Double)
-	tripdistancekm = Column('tripdistancekm', Double)
-	tripdistancestoredinvehicleprofilekm = Column('tripdistancestoredinvehicleprofilekm', Double)
-	triptimesincejourneystarts = Column('triptimesincejourneystarts', Double)
-	triptimewhilstmovings = Column('triptimewhilstmovings', Double)
-	triptimewhilststationarys = Column('triptimewhilststationarys', Double)
-	gpsspeedkmh = Column('gpsspeedkmh', Double)
-	altitudem = Column('altitudem', Double)
-	gravityxg = Column('gravityxg', Double)
-	gravityyg = Column('gravityyg', Double)
-	gravityzg = Column('gravityzg', Double)
-	enginecoolanttemperaturef = Column('enginecoolanttemperaturef', Double)
-	fuelrailpressurekpa = Column('fuelrailpressurekpa', Double)
-	intakeairtemperaturef = Column('intakeairtemperaturef', Double)
-	intakemanifoldpressurekpa = Column('intakemanifoldpressurekpa', Double)
-	torqueftlb = Column('torqueftlb', Double)
-	turboboostvacuumgaugebar = Column('turboboostvacuumgaugebar', Double)
-	enginekwatthewheelskw = Column('enginekwatthewheelskw', Double)
-	averagetripspeedwhilstmovingonlykmh = Column('averagetripspeedwhilstmovingonlykmh', Double)
-	airfuelratiomeasured1 = Column('airfuelratiomeasured1', Double)
-	o2sensor1widerangecurrentma = Column('o2sensor1widerangecurrentma', Double)
-	o2bank1sensor1widerangeequivalenceratio = Column('o2bank1sensor1widerangeequivalenceratio', Double)
-	o2bank1sensor1widerangevoltagev = Column('o2bank1sensor1widerangevoltagev', Double)
-	positivekineticenergypkekmhr = Column('positivekineticenergypkekmhr', Double)
-	throttlepositionmanifold = Column('throttlepositionmanifold', Double)
-	barometricpressurefromvpsi = Column('barometricpressurefromvpsi', Double)
-	voltagecontrolmodulev = Column('voltagecontrolmodulev', Double)
-	costpermilekminstantkm = Column('costpermilekminstantkm', Double)
-	costpermilekmtripkm = Column('costpermilekmtripkm', Double)  # costpermilekmtripntkm
-	gpsspeedmeterssecond = Column('gpsspeedmeterssecond', Double)
-	altitude = Column('altitude', Double)
-	gx = Column('gx', Double)
-	gy = Column('gy', Double)
-	gz = Column('gz', Double)
-	gcalibrated = Column('gcalibrated', Double)
-	airfuelrationmeasure = Column('airfuelrationmeasure', Double)
-	torquefnm = Column('torquefnm', Double)
-	enginecoolanttemperaturec = Column('enginecoolanttemperaturec', Double)
-	fuelrailpressurepsi = Column('fuelrailpressurepsi', Double)
-	intakeairtemperaturec = Column('intakeairtemperaturec', Double)
-	intakemanifoldpressurepsi = Column('intakemanifoldpressurepsi', Double)
-	torquenm = Column('torquenm', Double)
-	turboboostvacuumgaugepsi = Column('turboboostvacuumgaugepsi', Double)
-	barometricpressurefromvehiclekpa = Column('barometricpressurefromvehiclekpa', Double)
-	ambientairtempf = Column('ambientairtempf', Double)
-	barometricpressurefromvehiclepsi = Column('barometricpressurefromvehiclepsi', Double)
-	ambientairtempc = Column('ambientairtempc', Double)
-	fuelpressurekpa = Column('fuelpressurekpa', Double)
-	percentageofcitydriving = Column('percentageofcitydriving', Double)
-	percentageofhighwaydriving = Column('percentageofhighwaydriving', Double)
-	percentageofidledriving = Column('percentageofidledriving', Double)
-	fuelpressurepsi = Column('fuelpressurepsi', Double)
-	airfuelratiocommanded1 = Column('airfuelratiocommanded1', Double)
-	distancetravelledsincecodesclearedkm = Column('distancetravelledsincecodesclearedkm', Double)
-	dpfpressurepsi = Column('dpfpressurepsi', Double)
-	dpftemperaturec = Column('dpftemperaturec', Double)
-	dpfpressurebar = Column('dpfpressurebar', Double)
-	driversdemandenginetorque = Column('driversdemandenginetorque', Double)
-	o2sensor1widerangeequivalenceratio = Column('o2sensor1widerangeequivalenceratio', Double)
-	o2sensor1widerangevoltagev = Column('o2sensor1widerangevoltagev', Double)
-	voltagecontrolmodulev = Column('voltagecontrolmodulev', Double)
-	volumetricefficiencycalculated = Column('volumetricefficiencycalculated', Double)
-	# 0200kphtimes dpfpressurepsi 030mphtimes 060mphtimes 14miletimes 18miletimes 1000kphtimes
+
+	# if DB column is "Longitude", map it to python attr "longitude"
+	longitude: Mapped[float | None] = mapped_column("Longitude", Float, nullable=True)
+	latitude: Mapped[float | None] = mapped_column("Latitude", Float, nullable=True)
+	speedgpskmh: Mapped[float | None] = mapped_column("speedgpskmh", Float, nullable=True)
+	gpsspeedkmh: Mapped[float | None] = mapped_column("gpsspeedkmh", Float, nullable=True)
 
 	def __init__(self, fileid):
 		self.fileid = fileid
-
 
 def database_dropall(engine):  # drop all tables
 	logger.warning(f'[database_dropall] engine:{engine}')
@@ -285,23 +235,88 @@ def database_dropall(engine):  # drop all tables
 def database_init(engine):  # create tables
 	try:
 		Base.metadata.create_all(bind=engine)
+		with engine.begin() as conn:
+			# Keep legacy databases aligned: enforce stable identity by hash.
+			conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_torqfiles_csvhash ON torqfiles(csvhash)"))
+			# Ensure torqfiles is properly linked to start/end position tables when supported by backend.
+			try:
+				conn.execute(
+					text(
+						"""
+						DO $$
+						BEGIN
+							IF NOT EXISTS (
+								SELECT 1
+								FROM pg_constraint
+								WHERE conname = 'torqfiles_startid_fkey'
+							) THEN
+								ALTER TABLE torqfiles
+								ADD CONSTRAINT torqfiles_startid_fkey
+								FOREIGN KEY (startid) REFERENCES startpos(startid)
+								ON UPDATE CASCADE ON DELETE SET NULL;
+							END IF;
+							IF NOT EXISTS (
+								SELECT 1
+								FROM pg_constraint
+								WHERE conname = 'torqfiles_endid_fkey'
+							) THEN
+								ALTER TABLE torqfiles
+								ADD CONSTRAINT torqfiles_endid_fkey
+								FOREIGN KEY (endid) REFERENCES endpos(endid)
+								ON UPDATE CASCADE ON DELETE SET NULL;
+							END IF;
+						END $$;
+						"""
+					)
+				)
+			except Exception as e:
+				# SQLite and older DB variants may not support PL/pgSQL blocks.
+				logger.debug(f"Skipping optional torqfiles FK constraint migration: {e} ({type(e)})")
+
+			# Unified view for start/end position analytics and grouping in GUI tools.
+			conn.execute(text("DROP VIEW IF EXISTS trip_start_end_summary"))
+			conn.execute(
+				text(
+					"""
+					CREATE VIEW trip_start_end_summary AS
+					SELECT
+						tf.fileid,
+						tf.startid,
+						tf.endid,
+						sp.latstart,
+						sp.lonstart,
+						sp.label AS start_label,
+						ep.latend,
+						ep.lonend,
+						ep.label AS end_label,
+						tt.tripdate,
+						tt.time AS trip_time_s,
+						COALESCE(tt.trip_distance, tt.distance) AS trip_distance_m
+					FROM torqfiles tf
+					LEFT JOIN startpos sp ON sp.startid = tf.startid
+					LEFT JOIN endpos ep ON ep.endid = tf.endid
+					LEFT JOIN torqtrips tt ON tt.fileid = tf.fileid
+					"""
+				)
+			)
 	except (OperationalError, AssertionError) as e:
 		logger.error(f'[dbinit] {type(e)} {e}')
 		sys.exit(-1)
 
-def send_torqfiles(filelist=[], session=None, debug=False):  # returns list of new files
+async def send_torqfiles(filelist, session, debug=False):  # returns list of new files
 	"""
 	send list of files to db
 	returns list of TorqFile objects to be processed and sent to db
 	"""
 	torqdbfiles = session.query(TorqFile).all()  # get list of files from db
-	hlist = pd.DataFrame(session.query(TorqFile.csvhash).all())
+	hlist = pd.DataFrame(session.query(TorqFile.csvhash).all())  # type: ignore
 	if debug:
 		logger.debug(f'filelist: {len(filelist)} dbfiles: {len(torqdbfiles)}  hashes: {len(hlist)} fl: {len(filelist)}')
 	newfiles = []
 	for idx,tf in enumerate(filelist):
 		csvfile = str(tf['csvfile'])
 		csvhash = tf['csvhash']
+		stable_fileid = stable_fileid_from_csvhash(csvhash)
 		if csvhash in hlist.values:  # [k.csvhash for k in torqdbfiles]:
 			# check existing entry
 			fid = session.execute(text(f'select fileid from torqfiles where csvhash="{csvhash}"')).one()[0]
@@ -309,9 +324,15 @@ def send_torqfiles(filelist=[], session=None, debug=False):  # returns list of n
 			if debug:
 				logger.warning(f'[st {idx}/{len(filelist)}] {csvfile} {fid=} already in db with {check}')  # {tf}')
 		else:
-			torqfile = TorqFile(csvfile=csvfile, csvhash=csvhash)
+			existing_by_id = session.query(TorqFile).filter(TorqFile.fileid == stable_fileid).first()
+			if existing_by_id and existing_by_id.csvhash != csvhash:
+				logger.error(
+					f"stable fileid collision for {csvfile}: fileid={stable_fileid} "
+					f"existing_hash={existing_by_id.csvhash} new_hash={csvhash}"
+				)
+				continue
+			torqfile = TorqFile(csvfile=csvfile, csvhash=csvhash, fileid=stable_fileid)
 			session.add(torqfile)
-
 			if debug:
 				pass   # logger.info(f'[st {idx}/{len(filelist)}] {csvfile} not in db tf: {tf} torqfile: {torqfile}')
 			newfiles.append(torqfile)

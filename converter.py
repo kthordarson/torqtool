@@ -1,22 +1,19 @@
 #!/usr/bin/python3
+import asyncio
 import argparse
 import sys
-from datetime import datetime
 from hashlib import md5
 from pathlib import Path
 import pandas as pd
 import polars as pl
 from loguru import logger
-import sqlalchemy
 from sqlalchemy import text
 from sqlalchemy.exc import DataError, IntegrityError, OperationalError
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import sessionmaker, Session
 import sqlite3
-from datamodels import TorqFile, database_init
-from schemas import dataschema
-from utils import get_parser, get_engine_session, MIN_FILESIZE, transfer_older_logs, convert_string_to_datetime
-from fixers import run_fixer, get_cols, check_and_fix_logs
-from updatetripdata import update_torqfile
+from datamodels import TorqFile, database_init, stable_fileid_from_csvhash
+from utils import get_parser, get_engine_session, MIN_FILESIZE, convert_string_to_datetime, read_csvs_to_dataframe_and_insert
+from schemas import canonicalize_columns
 
 pd.set_option("future.no_silent_downcasting", True)
 
@@ -37,85 +34,100 @@ pd.set_option("future.no_silent_downcasting", True)
 class Polarsreaderror(Exception):
 	pass
 
-def read_csv_file(logfile:str, args:argparse.Namespace):
+
+def _normalized_col_name(value: str) -> str:
+	return "".join(ch.lower() for ch in str(value) if ch.isalnum())
+
+
+def _resolve_col_name(columns: list[str], candidates: list[str]) -> str | None:
+	if not columns:
+		return None
+
+	# Exact match first.
+	for candidate in candidates:
+		if candidate in columns:
+			return candidate
+
+	# Fallback to normalized matching for odd encodings/spaces/symbols.
+	norm_map = {_normalized_col_name(col): col for col in columns}
+	for candidate in candidates:
+		resolved = norm_map.get(_normalized_col_name(candidate))
+		if resolved:
+			return resolved
+
+	return None
+
+async def read_csv_file(logfile:str, args:argparse.Namespace):
 	"""
-	read csv file
-	param: logfile = full path and name of file
-	param: schema to use
-	param: newcolumns = dict with sanatized column names, generated with new_columns_collector
-	returns pandas dataframe, with sanatized column names
-	raises Polarsreaderror if something goes wrong
+	Optimized version that combines filtering operations and reduces conversions
 	"""
-	# todo handle missing gpstime, if not present, copy from devicetime
-	nullvals = ['-','∞']
+	nullvals = ['-','∞','340282346638528860000000000000000000000']
 	try:
-		data0 = pl.read_csv(logfile, ignore_errors=True, try_parse_dates=True, truncate_ragged_lines=True, n_threads=4, use_pyarrow=True, null_values=nullvals, schema=dataschema)  # , infer_schema=True
-	except pl.exceptions.ShapeError as e:
+		# Use lazy evaluation to improve performance
+		data = pl.scan_csv(logfile, ignore_errors=True, try_parse_dates=True, truncate_ragged_lines=True, null_values=nullvals)
+		columns = data.columns
+
+		time_col = _resolve_col_name(columns, ['gpstime', 'GPS_Time', 'GPS Time'])
+		if not time_col:
+			logger.warning(f"Skipping {logfile} - missing GPS time column")
+			return pd.DataFrame()
+
+		# Apply all filters in one operation
+		data = data.filter((pl.col(time_col) != '-') & (pl.col(time_col) != 'GPS Time'))
+
+		# Collect the data only once
+		data = data.collect()
+
+		# Early check for empty dataframe
+		if data.is_empty():
+			logger.warning(f'Empty dataset after filtering {logfile}')
+			return pd.DataFrame()
+
+		# Check trip duration more efficiently
+		first_time = convert_string_to_datetime(data[time_col][0])
+		last_time = convert_string_to_datetime(data[time_col][-1])
+		if first_time and last_time:
+			tripdur = (last_time - first_time).total_seconds()
+		else:
+			tripdur = 0
+
+		if tripdur > 86400:
+			logger.warning(f'Not Skipping {logfile} - trip duration too long: {tripdur}s')
+			# return pd.DataFrame()
+
+		# Check for duplicate trips in one database call
+		session = get_engine_session(args)
+		try:
+			ts_temp = session.query(TorqFile).filter(TorqFile.trip_start == first_time).all()
+			if ts_temp:
+				logger.warning(f"Skipping {logfile} - already in db with trip_start: {first_time}")
+				return pd.DataFrame()
+
+			df = data.to_pandas()
+			df = df.rename(columns=canonicalize_columns(list(df.columns)))
+
+			return df
+		finally:
+			session.close()
+
+	except (pl.exceptions.ShapeError,
+			pl.exceptions.ComputeError,
+			pl.exceptions.DuplicateError) as e:
 		logger.error(f"{type(e)} {e} {logfile}")
-		raise e
-	except pl.exceptions.ComputeError as e:
-		logger.error(f"{type(e)} {e} {logfile}")
-		raise e
-	except pl.exceptions.DuplicateError as e:
-		msg = f"{type(e)} {e} {logfile}"
-		logger.error(msg)
 		raise e
 	except pl.exceptions.NoDataError as e:
 		msg = f"NoDataError {type(e)} {e} {logfile}"
 		logger.error(msg)
 		raise Polarsreaderror(msg)
 
-	data = data0.filter(pl.col('gpstime') != '-')
-	if len(data) != len(data0):
-		logger.warning(f'filtered {len(data0)-len(data)} rows with - in gpstime {logfile}')
-	dupe_rows = [(idx,k) for idx,k in enumerate(data['gpstime']) if 'GPS Time' in k]
-	if len(dupe_rows) > 0:
-		logger.warning(f"found {len(dupe_rows)} dupe GPS Time in {logfile} ")
-	for row in dupe_rows:
-		datebefore = convert_string_to_datetime(data['gpstime'][row[0]-1])
-		dateafter = convert_string_to_datetime(data['gpstime'][row[0]+1])
-		date_diff = (dateafter - datebefore).total_seconds()
-		if date_diff > 60:  # todo check drop or fix file here ?
-			logger.warning(f"skipping {logfile} {row} date_diff:{date_diff} dupe GPS Time ")
-			return pd.DataFrame()
-	data_filter = data.filter(pl.col('gpstime') != 'GPS Time')
-	if len(data) != len(data_filter):
-		logger.warning(f'filtered {len(data)-len(data_filter)} rows with - in GPS Time {logfile}')
-
-	# check trip duration....
-	# starttime = convert_string_to_datetime(data_filter['gpstime'][0])
-	tripdur = (convert_string_to_datetime(data_filter['gpstime'][-1]) - convert_string_to_datetime(data_filter['gpstime'][0])).total_seconds()
-	if tripdur > 86400:  # todo maybe split file here ?
-		logger.warning(f'skipping {logfile} {tripdur=}')
-		return pd.DataFrame()
-
-	trip_start = convert_string_to_datetime(data_filter['gpstime'][0])
-	engine, session = get_engine_session(args)
-	ts_temp = session.query(TorqFile).filter(TorqFile.trip_start == trip_start).all()
-	if len(ts_temp) > 0:
-		logger.warning(f"skipping {logfile} already in db trip_start: {trip_start}")
-		[logger.warning(f"\t{k.fileid=} trip_start: {k.trip_start}") for k in ts_temp]
-		return pd.DataFrame()
-	if tripdur > 86400:  # todo maybe split file here ?
-		logger.warning(f'skipping {logfile} {tripdur=}')
-		return pd.DataFrame()
-	df = data_filter.to_pandas()
-
-	# check if trip with same start time already in db
-	# if so, skip this file
-	return df
-
-def send_data_to_db(args: argparse.Namespace,
-	data: pd.DataFrame,
-	csvfilename: str,
-	insertid: bool = True,
-):
+async def send_data_to_db(args: argparse.Namespace, data: pd.DataFrame, csvfilename: str, insertid: bool = True):
 	"""
 	send this csvdata to database, catch all exceptions in here
 	return dict {'fileid': fileid, 'rows': len(data)}
 	"""
-	engine, session = get_engine_session(args)
+	session = get_engine_session(args)
 	csvhash = md5(open(csvfilename, "rb").read()).hexdigest()
+	stable_fileid = stable_fileid_from_csvhash(csvhash)
 	# fileinfo = {
 	# 	'dtripstart': data['gpstime'][0],
 	# 	'dtripend': data['gpstime'][len(data)-1],
@@ -125,9 +137,18 @@ def send_data_to_db(args: argparse.Namespace,
 	# 	'dlonend': float(data['longitude'][len(data)-1]),}
 	# user only stem part of filename in db
 	try:
-		t = TorqFile(csvfile=Path(csvfilename).parts[-1], csvhash=csvhash)
-		session.add(t)
-		session.commit()
+		t = session.query(TorqFile).filter(TorqFile.csvhash == csvhash).first()
+		if t is None:
+			existing_by_id = session.query(TorqFile).filter(TorqFile.fileid == stable_fileid).first()
+			if existing_by_id and existing_by_id.csvhash != csvhash:
+				logger.error(
+					f"stable fileid collision for {csvfilename}: fileid={stable_fileid} "
+					f"existing_hash={existing_by_id.csvhash} new_hash={csvhash}"
+				)
+				return None
+			t = TorqFile(csvfile=Path(csvfilename).parts[-1], csvhash=csvhash, fileid=stable_fileid)
+			session.add(t)
+			session.commit()
 	except IntegrityError as e:
 		# session.close()
 		logger.error(f"{type(e)} {e} from {csvfilename}")
@@ -138,150 +159,118 @@ def send_data_to_db(args: argparse.Namespace,
 	data = pd.concat((data, fileidcol), axis=1)
 
 	try:
-		_ = data.to_sql("torqlogs", con=engine, if_exists="append", index=False)
+		# _ = data.to_sql("torqlogs", con=engine, if_exists="append", index=False)
+		_ = data.to_sql("torqlogs", con=session.get_bind(), if_exists="append", index=False, method='multi', chunksize=args.sqlchunksize)
 		send_results["sent_rows"] = session.execute(text(f"select count(*) from torqlogs where fileid={t.fileid} ; ")).one()[0]
-		logger.debug(f'{csvfilename=} {t.fileid=} sent {len(data)} rows to db  sentrows: {send_results["sent_rows"]}')
+		# logger.debug(f'fileid {t.fileid} sent {len(data)} rows to db  sent_rows: {send_results["sent_rows"]}')
 	except DataError as e:
 		logger.warning(f"{type(e)} {e.args[0]} {csvfilename=}")
-	except (sqlalchemy.exc.OperationalError, OperationalError, sqlite3.OperationalError,) as e:
+	except (OperationalError, sqlite3.OperationalError,) as e:
 		logger.error(f"{type(e)} {e} {csvfilename=}")
 	except Exception as e:
 		logger.error(f"unhandled {type(e)} {e} ")
 	finally:
 		session.close()
-		return send_results
+	return send_results
 
-def gethash(filename: str):
-	# #if args.debug:
-	# 	logger.debug(f'Sent {len(data)} rows from {fn} id:{fileid} to database {args.dbmode}')
-	return md5(open(filename, "rb").read()).hexdigest()
+async def calculate_hash(path):
+	"""Calculate MD5 hash of a file asynchronously"""
+	loop = asyncio.get_running_loop()
+	return await loop.run_in_executor(
+		None,
+		lambda: md5(open(path, "rb").read()).hexdigest()
+	)
 
-def get_files_to_send(session: sessionmaker, args):
-	"""
-	scan logpath for csv files, check if they have already been sent to data base
-	returns list of files not in the database, filenames as str, NOT Path!
-	# todo determine if file is split or not, if split, split it and send both parts
-	# todo check if file has been imported, if not, import it
-	# e.g. check filename and/or hash
-	"""
+async def get_files_to_send(session: Session, args):
+	"""More efficient file processing that caches hashes using async"""
+	# Get all hashes from database in one query
 	alldbfiles = session.query(TorqFile).all()
-	hashlist = [k.csvhash for k in alldbfiles]
-	# csvfiles = [{'csvhash': gethash(k), 'csvfile':str(k)} for k in Path(args.logpath).glob("**/trackLog*.csv") if k.stat().st_size > MIN_FILESIZE]
-	csvfiles = [{'csvhash': gethash(k), 'csvfile':str(k)} for k in Path(args.logpath).glob("**/trackLog*.csv") if k.stat().st_size > MIN_FILESIZE and gethash(k) not in hashlist]
-	return [k['csvfile'] for k in csvfiles]
+	hashlist = set([k.csvhash for k in alldbfiles])  # Use set for O(1) lookups
 
-def cli_main(args):
+	# Get all CSV files first
+	csv_paths = list(Path(args.logpath).glob("**/trackLog*.csv"))
+	logger.info(f"Found {len(csv_paths)} CSV files to process")
+
+	# Filter by size first to avoid unnecessary hash calculations
+	csv_paths = [p for p in csv_paths if p.stat().st_size > MIN_FILESIZE]
+	logger.info(f"{len(csv_paths)} files exceed minimum size")
+
+	# Calculate hashes concurrently
+	tasks = [calculate_hash(path) for path in csv_paths]
+	file_hashes = await asyncio.gather(*tasks)
+
+	# Filter files that aren't in database
+	result = []
+	for path, file_hash in zip(csv_paths, file_hashes):
+		if file_hash not in hashlist:
+			result.append(str(path))
+
+	return result
+
+async def process_batch(batch_files, args):
+	tasks = []
+	for csvfilename in batch_files:
+		tasks.append(process_single_file(csvfilename, args))
+	return await asyncio.gather(*tasks, return_exceptions=True)
+
+async def process_single_file(csvfilename, args):
+	try:
+		data = await read_csv_file(logfile=csvfilename, args=args)
+		if len(data) == 0:
+			logger.warning(f'no data in {csvfilename}')
+			return None
+
+		# Extract metadata here once
+		metadata = None
+		if not data.empty:
+			metadata = {
+				'dtripstart': data['gpstime'][0],
+				'dtripend': data['gpstime'][len(data)-1],
+				'dlatstart': float(data['latitude'][0]),
+				'dlonstart': float(data['longitude'][0]),
+				'dlatend': float(data['latitude'][len(data)-1]),
+				'dlonend': float(data['longitude'][len(data)-1]),
+			}
+
+		send_result = await send_data_to_db(args, data, csvfilename)
+		# Return metadata with the result
+		return {'file': csvfilename, 'result': send_result, 'metadata': metadata}
+	except Exception as e:
+		logger.error(f"Error processing {csvfilename}: {type(e)} {e}")
+		return None
+
+async def cli_main(args):
 	if args.dbinfo:
+		tables = ['columnstats', 'filestats', 'speeds', 'torqfiles', 'torqtrips', 'endpos', 'startpos', 'mapimagecache', 'torqlogs']
+		print(f'checking {len(tables)}')
 		logcount = 0
 		try:
-			engine, session = get_engine_session(args)
-			logcount = session.execute(text("select count(*) from torqlogs"))
+			session = get_engine_session(args)  # , session
+			with session.get_bind().connect() as conn:  # type: ignore
+				for t in tables:
+					try:
+						count = conn.execute(text(f"select count(*) from {t}")).one()[0]
+						logger.info(f'{t}: {count}')
+					except Exception as e:
+						logger.error(f'Error counting {t}: {type(e)} {e}')
+				# logcount = conn.execute(text("select count(*) from torqlogs")).all()
 		except Exception as e:
 			logger.error(f'error {type(e)} {e}')
 			sys.exit(-1)
-		finally:
-			logger.info(f'{logcount=}')
 	elif args.scanpath:
-		# first collect sanatized column headers
-		# ncc, errorfiles = new_columns_collector(logdir=args.logpath)
-		# check if any of the files in args.logpath have been read, skip these
-		# todo getfiles to read
-		engine, session = get_engine_session(args)
+		logger.debug(f'using {args.dbmode} database at {args.dbfile}')
 		try:
-			database_init(engine)
-		except AssertionError as e:
-			logger.error(f"[maindbinit] {e} exit")
+			session = get_engine_session(args)  # , session
+			database_init(session.get_bind())
+			sess = sessionmaker(bind=session.get_bind())
+			s = sess()
+			logcount = s.execute(text("select count(*) from torqlogs")).all()
+			logger.info(f'{logcount=}')
+			s.close()
+			read_csvs_to_dataframe_and_insert(args)
+		except Exception as e:
+			logger.error(f'error {type(e)} {e}')
 			sys.exit(-1)
-
-		with session.no_autoflush:
-			newfiles = get_files_to_send(session, args=args)
-		if args.db_limit:
-			logger.debug(f'{args=}')
-			newfiles = newfiles[: int(args.db_limit)]
-		for idx, csvfilename in enumerate(newfiles):
-			readstart = datetime.now()
-			logger.debug(f'[{idx}/{len(newfiles)}] reading {Path(csvfilename).name} {Path(csvfilename).stat().st_size} bytes')
-			try:
-				data = read_csv_file(logfile=csvfilename, args=args)
-			except Polarsreaderror as e:
-				logger.error(f"polarsreaderror {type(e)} {e} for {csvfilename}")
-				continue
-			except IndexError as e:
-				logger.error(f"{type(e)} {e} for {csvfilename}")
-				session.close()
-				continue
-			except Exception as e:
-				logger.error(f"unhandled {type(e)} {e} for {csvfilename}")
-				session.close()
-				continue
-			if len(data) == 0:
-				logger.warning(f'no data in {csvfilename}')
-				continue
-			# if read ok, send data
-			readt = (datetime.now()-readstart).total_seconds()
-			# logger.info(f'[{idx}/{len(newfiles)}] readt: {readt}')
-			sendstart = datetime.now()
-			try:
-				send_result = send_data_to_db(args, data, csvfilename)
-			except Exception as e:
-				logger.error(f"unhandled {type(e)} {e} for {csvfilename}")
-				continue
-			if send_result['sent_rows'] == 0:
-				logger.warning(f'[{idx}/{len(newfiles)}] sent_rows = 0 {Path(csvfilename).name} {Path(csvfilename).stat().st_size} t: {datetime.now()-sendstart} res: {send_result}')
-			else:
-				logger.info(f'[{idx}/{len(newfiles)}] send {Path(csvfilename).name} {Path(csvfilename).stat().st_size} t: {datetime.now()-sendstart} res: {send_result["sent_rows"]}')
-				# update torqfiles db with stats
-				sendt = (datetime.now()-sendstart).total_seconds()
-				fileinfo = {
-					'fileid': send_result['fileid'],
-					'sent_rows': send_result['sent_rows'],
-					'sendtime': sendt,
-					'readtime': readt,
-					'dtripstart': data['gpstime'][0],
-					'dtripend': data['gpstime'][len(data)-1],
-					'dlatstart': float(data['latitude'][0]),
-					'dlonstart': float(data['longitude'][0]),
-					'dlatend': float(data['latitude'][len(data)-1]),
-					'dlonend': float(data['longitude'][len(data)-1]),
-				}
-				session.close()
-				try:
-					upchk = update_torqfile(args, fileinfo)
-					logger.info(f'[{idx}/{len(newfiles)}] updone: {upchk} tr: {datetime.now()-readstart} ts: {datetime.now()-sendstart} rtst:{readt}/{sendt}')
-				except ValueError as e:
-					logger.error(f"update_torqfile {type(e)} {e} for {csvfilename}")
-		sys.exit(0)
-	if args.fixer:
-		# fixer mode
-		# read all log files, fix bad chars, remove them
-		# update database, mark the log file as fixed
-		# check_and_fix_logs(logfiles)
-		run_fixer(args)
-		sys.exit(0)
-	if args.getcols:
-		# get columns from all log files in the path
-		stats, columns = get_cols(args.logpath, debug=args.debug)
-		# columns = sorted(columns, key=lambda x: columns[x]['count'], reverse=True)
-		columns = sorted(columns, key=lambda x: (columns[x]["count"], columns[x]), reverse=True)
-		for c in columns:
-			if "date" in c or "time" in c:
-				lineout = f"{c} = Column('{c}', DateTime)"
-			else:
-				lineout = f"{c} = Column('{c}', DOUBLE)"  # Column('longitude', DOUBLE)
-			logger.debug(f'{lineout=}')
-		# print(f'{columns=}')
-		sys.exit(0)
-	if args.transfer:
-		# oldlogpath root of the old tripLogs files, containing subfolder, each name as unix timestamp of the trip
-		# each sub folder contains a log file and profile.properties file
-		# step one, transfer older logs to new location with new filenames
-		new_old_logs = transfer_older_logs(args)
-		logger.debug(f"transfered {len(new_old_logs)} old logs")
-		# step two, read each log file, remove bad chars
-		fixed = check_and_fix_logs(new_old_logs, args)
-		logger.debug(f"{fixed=}")
-		sys.exit(0)
-
 
 def get_args(appname):
 	parser = get_parser(appname)
@@ -292,7 +281,8 @@ def get_args(appname):
 
 def main():
 	args = get_args(appname="converter")
-	cli_main(args)
+	asyncio.run(cli_main(args))
+	# cli_main(args)
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 import polars as pl
-from polars import String,Float64,Int64
-from pathlib import Path
-from loguru import logger
+# from polars import String,Float64,Int64
+import re
+import unicodedata
 
 dataschema = {'gpstime': pl.String,
 'devicetime': pl.String,
@@ -198,13 +198,13 @@ ncc = {
     "Cost per mile/km (Instant)($/km)": "costpermilekminstantkm",
     "Cost per mile/km (Trip)($/km)": "costpermilekmtripkm",
     "Fuel pressure(kpa)": "fuelpressurekpa",
-    "Torque(Nm)": "torquefnm",
+    "Torque(Nm)": "torquenm",
     "Acceleration Sensor(Total)(g)": "accelerationsensortotalg",
     "Acceleration Sensor(X axis)(g)": "accelerationsensorxaxisg",
     "Acceleration Sensor(Y axis)(g)": "accelerationsensoryaxisg",
     "Acceleration Sensor(Z axis)(g)": "accelerationsensorzaxisg",
     "Actual engine % torque(%)": "actualenginetorque",
-    "Air Fuel Ratio(Measured)(:1)": "airfuelrationmeasure",
+    "Air Fuel Ratio(Measured)(:1)": "airfuelratiomeasured1",
     "Altitude": "altitudem",
     "Altitude(m)": "altitudem",
     "Ambient air temp(°C)": "ambientairtempc",
@@ -212,7 +212,7 @@ ncc = {
     "Android device Battery Level(%)": "androiddevicebatterylevel",
     "Average trip speed(whilst moving only)(km/h)": "averagetripspeedwhilstmovingonlykmh",
     "Average trip speed(whilst stopped or moving)(km/h)": "averagetripspeedwhilststoppedormovingkmh",
-    "Barometric pressure (from vehicle)(psi)": "barometricpressurefromvpsi",
+    "Barometric pressure (from vehicle)(psi)": "barometricpressurefromvehiclepsi",
     "Bearing": "bearing",
     "CO₂ in g/km (Average)(g/km)": "coingkmaveragegkm",
     "CO₂ in g/km (Instantaneous)(g/km)": "coingkminstantaneousgkm",
@@ -362,6 +362,40 @@ ncc = {
     "Turbo Pressure Control(bar)": "turbo_pressure_controlbar",
 }
 
+
+def _strip_accents(value: str) -> str:
+    return "".join(
+        ch for ch in unicodedata.normalize("NFKD", value) if not unicodedata.combining(ch)
+    )
+
+
+def _normalize_lookup_key(value: str) -> str:
+    value = str(value).strip().replace("\ufeff", "")
+    value = value.replace("Â", "")
+    value = _strip_accents(value)
+    value = re.sub(r"\s+", " ", value)
+    return value
+
+
+def _fallback_column_name(value: str) -> str:
+    key = _normalize_lookup_key(value).lower()
+    return re.sub(r"[^a-z0-9]+", "", key)
+
+
+_NCC_LOOKUP = { _normalize_lookup_key(k): v for k, v in ncc.items() }
+
+
+def canonicalize_column_name(column_name: str) -> str:
+    lookup = _normalize_lookup_key(column_name)
+    mapped = _NCC_LOOKUP.get(lookup)
+    if mapped:
+        return mapped
+    return _fallback_column_name(lookup)
+
+
+def canonicalize_columns(columns: list[str]) -> dict[str, str]:
+    return {col: canonicalize_column_name(col) for col in columns}
+
 schema_datatypes = {
     # 'fileid': pl.Int64,
     # 'gpstime': DateTime,
@@ -482,28 +516,6 @@ schema_datatypes = {
     'o2sensor1widerangeequivalenceratio': pl.Float64,
     'o2sensor1widerangevoltagev': pl.Float64,
 }
-
-def get_csv_headers(args):
-    csvfiles = [str(k) for k in Path(args.logpath).glob("*.csv.colfixbak")]
-    headers = []
-    for file in csvfiles:
-        df = pl.read_csv(file, ignore_errors=True, n_rows=1, truncate_ragged_lines=True)
-        # headers.extend(df.columns)
-        headers.extend(list(set([k for k in df.columns])))
-    allheaders = list(set([k for k in headers]))
-    logger.info(f'found {len(allheaders)} / {len(headers)}  headers')
-    return allheaders
-
-def merge_colum_data(new_ncc: list, ncc: dict):
-    import re
-
-    # Convert new_ncc to a dictionary with sanitized keys
-    new_ncc_dict = {s: re.sub(r"\W+", "", s.lower().replace(" ", "_")) for s in new_ncc}
-
-    # Merge ncc and new_ncc_dict
-    merged_ncc = {**ncc, **new_ncc_dict}
-    return merged_ncc
-
 
 if __name__ == "__main__":
     pass
