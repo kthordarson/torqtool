@@ -32,7 +32,8 @@ class BasemapWorker(QObject):
 				"zoom": cast(Any, self.zoom),
 				"wait": 0.5,
 				"max_retries": 1,
-				"n_connections": 4,
+				# Keep tile fetch single-threaded to avoid joblib/loky callbacks during app shutdown.
+				"n_connections": 1,
 			}
 			if source is not None:
 				kwargs["source"] = source

@@ -1,4 +1,5 @@
 import io
+import time
 from typing import Any, cast
 import numpy as np
 import pandas as pd
@@ -28,7 +29,7 @@ from .trip_plot_worker import TripPlotWorker
 from .position_manager_window import PositionManagerWindow
 from .start_end_window import StartEndWindow
 from .pandas_model import PandasModel
-from ._helpers import _normalize_col_name, format_duration
+from ._helpers import _normalize_col_name, format_duration, _ORPHAN_QTHREADS, _release_orphan_thread
 
 
 class MainWindow(QMainWindow):
@@ -77,6 +78,7 @@ class MainWindow(QMainWindow):
 		self._plot_async_threshold = 60
 		self._plot_request_context: dict[int, dict[str, Any]] = {}
 		self._active_threads: set[QThread] = set()
+		self._closing = False
 		self._position_manager_window: PositionManagerWindow | None = None
 		self._start_end_window: StartEndWindow | None = None
 		self._position_manager_embedded_widget: QWidget | None = None
@@ -2350,6 +2352,8 @@ class MainWindow(QMainWindow):
 			return {}
 
 	def _start_async_basemap(self, bounds: tuple[float, float, float, float], zoom: int, fileids: list[int], colormap_name: str, metric_name: str):
+		if self._closing:
+			return
 		xmin, xmax, ymin, ymax = bounds
 		if xmax <= xmin or ymax <= ymin:
 			return
@@ -2375,6 +2379,8 @@ class MainWindow(QMainWindow):
 		thread.finished.connect(worker.deleteLater)
 		thread.finished.connect(thread.deleteLater)
 		thread.finished.connect(lambda t=thread: self._active_threads.discard(t))
+		thread.finished.connect(lambda: setattr(self, '_basemap_thread', None))
+		thread.finished.connect(lambda: setattr(self, '_basemap_worker', None))
 
 		self._basemap_worker = worker
 		self._basemap_thread = thread
@@ -2386,6 +2392,8 @@ class MainWindow(QMainWindow):
 		thread.start()
 
 	def _on_basemap_loaded(self, img, ext, request_id: int):
+		if self._closing:
+			return
 		try:
 			if request_id != self._basemap_request_id:
 				return
@@ -2409,6 +2417,8 @@ class MainWindow(QMainWindow):
 			self._basemap_request_context.pop(request_id, None)
 
 	def _on_basemap_error(self, err: str, request_id: int):
+		if self._closing:
+			return
 		try:
 			if request_id != self._basemap_request_id:
 				return
@@ -2419,27 +2429,63 @@ class MainWindow(QMainWindow):
 		# Tile/network failures should not break UI interaction.
 		print(f"{self} Basemap load failed: {err} (request_id={request_id}) current_id={self._basemap_request_id}")
 
-	def _shutdown_thread(self, thread: QThread | None, name: str):
+	def _shutdown_thread(self, thread: QThread | None, name: str) -> bool:
 		if self.args.debug:
 			logger.debug(f"Stopping thread {name} {thread} from {self} active threads: {len(self._active_threads)})")
 		if thread is None:
-			return
+			return True
 		try:
 			if not thread.isRunning():
-				return
+				return True
 		except RuntimeError as e:
 			if self.args.debug:
 				logger.error(f"RuntimeError checking thread.isRunning() for '{name}': {e} ({type(e)})")
-			return
+			return True
 		if thread.currentThread() is thread:
-			return
+			return False
 		thread.requestInterruption()
 		thread.quit()
 		if not thread.wait(3000):
 			if self.args.debug:
 				logger.warning(f"Thread '{name}' did not stop in time; terminating")
 			thread.terminate()
-			thread.wait(1000)
+			stopped = thread.wait(1000)
+			return bool(stopped)
+		return True
+
+	@staticmethod
+	def _thread_is_running(thread: QThread | None) -> bool:
+		if thread is None:
+			return False
+		try:
+			return bool(thread.isRunning())
+		except RuntimeError:
+			return False
+
+	def _detach_running_threads_for_close(self) -> None:
+		threads: set[QThread] = set()
+		if self._thread_is_running(self._basemap_thread):
+			threads.add(cast(QThread, self._basemap_thread))
+		if self._thread_is_running(self._initial_trips_thread):
+			threads.add(cast(QThread, self._initial_trips_thread))
+		if self._thread_is_running(self._plot_data_thread):
+			threads.add(cast(QThread, self._plot_data_thread))
+		for t in list(self._active_threads):
+			if self._thread_is_running(t):
+				threads.add(t)
+		for t in threads:
+			_ORPHAN_QTHREADS.add(t)
+			try:
+				t.finished.connect(lambda thr=t: _release_orphan_thread(thr))
+			except RuntimeError:
+				_release_orphan_thread(t)
+		self._active_threads.clear()
+		self._basemap_thread = None
+		self._basemap_worker = None
+		self._initial_trips_thread = None
+		self._initial_trips_worker = None
+		self._plot_data_thread = None
+		self._plot_data_worker = None
 
 	def _mw_force_reload_basemap(self):
 		"""Evict DB cache for the current trip selection and re-fetch basemap from network."""
@@ -2546,10 +2592,17 @@ class MainWindow(QMainWindow):
 			return False
 
 	def closeEvent(self, event: QCloseEvent):
+		self._closing = True
+		close_started = time.monotonic()
 		self._shutdown_thread(self._basemap_thread, "basemap")
 		self._shutdown_thread(self._initial_trips_thread, "initial_trips")
+		self._shutdown_thread(self._plot_data_thread, "plot_data")
 		for idx, t in enumerate(list(self._active_threads)):
 			self._shutdown_thread(t, f"active_{idx}")
+		if any(self._thread_is_running(t) for t in list(self._active_threads)) or self._thread_is_running(self._basemap_thread) or self._thread_is_running(self._plot_data_thread):
+			if self.args.debug:
+				logger.warning(f"Closing with running workers after {time.monotonic() - close_started:.2f}s; detaching threads")
+			self._detach_running_threads_for_close()
 		super().closeEvent(event)
 
 	def on_row_selected(self, selected, deselected):
