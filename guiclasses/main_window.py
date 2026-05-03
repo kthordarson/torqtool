@@ -226,8 +226,24 @@ class MainWindow(QMainWindow):
 		stats_scroll = QScrollArea()
 		stats_scroll.setWidget(self.stats_label)
 		stats_scroll.setWidgetResizable(True)
+		all_metrics_title = QLabel("All Metrics")
+		all_metrics_title_font = QFont()
+		all_metrics_title_font.setPointSize(9)
+		all_metrics_title_font.setBold(True)
+		all_metrics_title.setFont(all_metrics_title_font)
+		self.all_metrics_table = QTableView()
+		self.all_metrics_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+		self.all_metrics_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+		self.all_metrics_table.setSortingEnabled(True)
+		self.all_metrics_table.verticalHeader().setVisible(False)
+		self.all_metrics_table.setFont(QFont("Monospace", 7))
+		self._all_metrics_df = pd.DataFrame(columns=["metric", "min", "avg", "max"])
+		self._set_all_metrics_table_model(self._all_metrics_df)
+		self.all_metrics_table.setMaximumHeight(180)
 		stats_layout.addWidget(stats_title)
-		stats_layout.addWidget(stats_scroll)
+		stats_layout.addWidget(stats_scroll, stretch=3)
+		stats_layout.addWidget(all_metrics_title)
+		stats_layout.addWidget(self.all_metrics_table, stretch=2)
 
 		# Right panel: plots on top, metric list + stats below, zoom at bottom
 		right_panel = QWidget()
@@ -868,6 +884,21 @@ class MainWindow(QMainWindow):
 		if selection_model is not None:
 			selection_model.selectionChanged.connect(lambda *_: self.on_metric_selection_changed())
 
+	def _set_all_metrics_table_model(self, df: pd.DataFrame):
+		self._all_metrics_df = df.reset_index(drop=True)
+		display_columns = ["metric", "min", "avg", "max"]
+		self.all_metrics_table_model = PandasModel(self._all_metrics_df, display_columns=display_columns)
+		self.all_metrics_table.setModel(self.all_metrics_table_model)
+		hdr = self.all_metrics_table.horizontalHeader()
+		hdr.setStretchLastSection(False)
+		hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+		self.all_metrics_table.resizeColumnsToContents()
+		if self.all_metrics_table.model() is not None:
+			self.all_metrics_table.setColumnWidth(0, 186)
+			self.all_metrics_table.setColumnWidth(1, 68)
+			self.all_metrics_table.setColumnWidth(2, 68)
+			self.all_metrics_table.setColumnWidth(3, 68)
+
 	def _set_label_groups_table_model(self, df: pd.DataFrame):
 		self._label_groups_df = df.reset_index(drop=True)
 		display_columns = ["label", "start_points", "end_points", "total_points", "total_count"]
@@ -1328,6 +1359,7 @@ class MainWindow(QMainWindow):
 	def _start_async_plot_for_fileids(self, fileids: list[int]):
 		if not fileids:
 			self.stats_label.setText("No trip selected")
+			self._set_all_metrics_table_model(pd.DataFrame(columns=["metric", "min", "avg", "max"]))
 			return
 
 		selected_metrics = self._get_selected_metrics()
@@ -1803,6 +1835,7 @@ class MainWindow(QMainWindow):
 	def _plot_for_fileids(self, fileids: list[int]):
 		if not fileids:
 			self.stats_label.setText("No trip selected")
+			self._set_all_metrics_table_model(pd.DataFrame(columns=["metric", "min", "avg", "max"]))
 			return
 
 		colormap_name = self._current_colormap
@@ -1916,26 +1949,35 @@ class MainWindow(QMainWindow):
 		suggestion = get_analysis_suggestion(category)
 		lines.append(f"  [{suggestion['analysis_type']}]  {suggestion['visualization']}")
 
-		if all_metric_stats:
-			grouped = group_metrics_by_category(list(all_metric_stats.keys()))
-			lines.append(f"\n{'─' * W}")
-			lines.append("ALL METRICS  (min / avg / max):")
-			for cat, cat_metrics in grouped.items():
-				cat_lines: list[str] = []
-				for disp, u, orig in cat_metrics:
-					stats = all_metric_stats.get(orig)
-					if stats:
-						u_s = f" {u}" if u else ""
-						cat_lines.append(
-							f"  {disp:<28s}  "
-							f"{stats['min']:.1f}/{stats['avg']:.1f}/{stats['max']:.1f}{u_s}"
-						)
-				if cat_lines:
-					lines.append(f"\n{cat.value}:")
-					lines.extend(cat_lines)
-
 		lines.append("\n" + "═" * W)
 		return "\n".join(lines)
+
+	def _build_all_metrics_table_df(self, all_metric_stats: dict | None) -> pd.DataFrame:
+		if not all_metric_stats:
+			return pd.DataFrame(columns=["metric", "min", "avg", "max"])
+
+		rows: list[dict[str, Any]] = []
+		grouped = group_metrics_by_category(list(all_metric_stats.keys()))
+		for _, cat_metrics in grouped.items():
+			for display_name, unit, original_metric in cat_metrics:
+				stats = all_metric_stats.get(original_metric)
+				if not stats:
+					continue
+				metric_label = f"{display_name} ({unit})" if unit else display_name
+				rows.append(
+					{
+						"metric": metric_label,
+						"min": round(float(stats.get("min", 0.0)), 2),
+						"avg": round(float(stats.get("avg", 0.0)), 2),
+						"max": round(float(stats.get("max", 0.0)), 2),
+					}
+				)
+
+		table_df = pd.DataFrame(rows, columns=["metric", "min", "avg", "max"])
+		if not table_df.empty:
+			table_df.sort_values(by="metric", inplace=True)
+			table_df.reset_index(drop=True, inplace=True)
+		return table_df
 
 	def _update_stats_panel(self, fileids: list[int], metric_values: list[float], all_lat: list[float], all_lon: list[float], metric_name: str):
 		trip_count = len(fileids)
@@ -1959,6 +2001,7 @@ class MainWindow(QMainWindow):
 		)
 
 		self.stats_label.setText(stats_text)
+		self._set_all_metrics_table_model(self._build_all_metrics_table_df(all_metric_stats))
 
 	def _update_timeseries_plot(
 		self,
@@ -2267,3 +2310,4 @@ class MainWindow(QMainWindow):
 		else:
 			self._populate_metric_columns(None)
 			self.stats_label.setText("No trip selected")
+			self._set_all_metrics_table_model(pd.DataFrame(columns=["metric", "min", "avg", "max"]))
