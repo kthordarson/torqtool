@@ -71,6 +71,7 @@ class MainWindow(QMainWindow):
 		self._plot_data_request_id = 0
 		self._plot_async_threshold = 60
 		self._plot_request_context: dict[int, dict[str, Any]] = {}
+		self._preview_render_min_interval_s = 0.25
 		self._active_threads: set[QThread] = set()
 		self._closing = False
 		self._position_manager_window: PositionManagerWindow | None = None
@@ -226,6 +227,13 @@ class MainWindow(QMainWindow):
 		stats_scroll = QScrollArea()
 		stats_scroll.setWidget(self.stats_label)
 		stats_scroll.setWidgetResizable(True)
+		stats_left_panel = QWidget()
+		stats_left_layout = QVBoxLayout(stats_left_panel)
+		stats_left_layout.setContentsMargins(0, 0, 0, 0)
+		stats_left_layout.setSpacing(2)
+		stats_left_layout.addWidget(stats_title)
+		stats_left_layout.addWidget(stats_scroll)
+
 		all_metrics_title = QLabel("All Metrics")
 		all_metrics_title_font = QFont()
 		all_metrics_title_font.setPointSize(9)
@@ -239,11 +247,18 @@ class MainWindow(QMainWindow):
 		self.all_metrics_table.setFont(QFont("Monospace", 7))
 		self._all_metrics_df = pd.DataFrame(columns=["metric", "min", "avg", "max"])
 		self._set_all_metrics_table_model(self._all_metrics_df)
-		self.all_metrics_table.setMaximumHeight(180)
-		stats_layout.addWidget(stats_title)
-		stats_layout.addWidget(stats_scroll, stretch=3)
-		stats_layout.addWidget(all_metrics_title)
-		stats_layout.addWidget(self.all_metrics_table, stretch=2)
+		stats_right_panel = QWidget()
+		stats_right_layout = QVBoxLayout(stats_right_panel)
+		stats_right_layout.setContentsMargins(0, 0, 0, 0)
+		stats_right_layout.setSpacing(2)
+		stats_right_layout.addWidget(all_metrics_title)
+		stats_right_layout.addWidget(self.all_metrics_table)
+
+		stats_content_splitter = QSplitter(Qt.Orientation.Horizontal)
+		stats_content_splitter.addWidget(stats_left_panel)
+		stats_content_splitter.addWidget(stats_right_panel)
+		stats_content_splitter.setSizes([430, 310])
+		stats_layout.addWidget(stats_content_splitter)
 
 		# Right panel: plots on top, metric list + stats below, zoom at bottom
 		right_panel = QWidget()
@@ -1388,6 +1403,9 @@ class MainWindow(QMainWindow):
 			"selected_metric": selected_metric,
 			"colormap_name": self._current_colormap,
 			"preview_trips": {},
+			"last_preview_render_ts": 0.0,
+			"last_preview_render_done": 0,
+			"preview_render_min_interval_s": float(self._preview_render_min_interval_s),
 		}
 
 		sample_step = self._sample_step()
@@ -1456,6 +1474,23 @@ class MainWindow(QMainWindow):
 			self.stats_label.setText(f"Loading trip paths... ({done}/{max(1,total)})")
 			return
 
+		# QWebEngine can emit SharedImage mailbox errors when HTML is replaced too frequently.
+		# Throttle interim preview redraws while still rendering the final preview frame.
+		is_final_preview = done >= max(1, total)
+		last_preview_render_ts = float(ctx.get("last_preview_render_ts", 0.0) or 0.0)
+		last_preview_render_done = int(ctx.get("last_preview_render_done", 0) or 0)
+		preview_render_min_interval_s = float(ctx.get("preview_render_min_interval_s", 0.25) or 0.25)
+		now = time.monotonic()
+		should_render_preview = is_final_preview
+		if not should_render_preview:
+			if last_preview_render_ts <= 0.0:
+				should_render_preview = True
+			elif done > last_preview_render_done and (now - last_preview_render_ts) >= preview_render_min_interval_s:
+				should_render_preview = True
+		if not should_render_preview:
+			self.stats_label.setText(f"Loading trip paths... ({done}/{max(1,total)})")
+			return
+
 		fileids = _cast(list, ctx.get("fileids", []))
 		colormap_name = _cast(str, ctx.get("colormap_name", self._current_colormap))
 		trip_list = list(preview_trips.values())
@@ -1466,6 +1501,8 @@ class MainWindow(QMainWindow):
 				self._mw_current_fileids = fileids
 			self._overlay_start_end_points(m, fileids, bounds)
 			self.map_canvas.display_map(m)
+		ctx["last_preview_render_ts"] = now
+		ctx["last_preview_render_done"] = done
 		self.stats_label.setText(f"Loading trip paths... ({done}/{max(1,total)})")
 
 	def _cancel_async_plot_load(self):
