@@ -61,6 +61,7 @@ class MainWindow(QMainWindow):
 		self._mw_current_fileids: list[int] = []
 		self._mw_last_metric: str = 'speedobdkmh'
 		self._metric_summary_cache: dict[tuple[int, ...], pd.DataFrame] = {}
+		self._metric_source_df = pd.DataFrame(columns=["name", "min", "max", "avg"])
 		self._label_groups_df = pd.DataFrame(columns=["label", "start_points", "end_points", "total_points", "total_count"])
 		self._start_end_points_df = pd.DataFrame(columns=["pos_type", "pos_id", "lat", "lon", "count", "label_group"])
 		self._label_group_mode: str = "label"
@@ -204,6 +205,18 @@ class MainWindow(QMainWindow):
 		metric_title_font.setPointSize(9)
 		metric_title_font.setBold(True)
 		metric_title.setFont(metric_title_font)
+		metric_filter_row = QWidget()
+		metric_filter_layout = QHBoxLayout(metric_filter_row)
+		metric_filter_layout.setContentsMargins(1, 1, 1, 1)
+		metric_filter_layout.setSpacing(4)
+		metric_filter_layout.addWidget(metric_title)
+		self.metric_filter_edit = QLineEdit()
+		self.metric_filter_edit.setPlaceholderText("Filter metric names")
+		self.metric_filter_edit.setClearButtonEnabled(True)
+		self.metric_filter_edit.setFixedWidth(220)
+		self.metric_filter_edit.textChanged.connect(self._on_metric_filter_changed)
+		metric_filter_layout.addWidget(self.metric_filter_edit)
+		metric_filter_layout.addStretch()
 		self.metric_table = QTableView()
 		self.metric_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
 		self.metric_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
@@ -213,7 +226,7 @@ class MainWindow(QMainWindow):
 		self.metric_table.setFont(mono_font)
 		self._metric_df = pd.DataFrame(columns=["name", "min", "max", "avg"])
 		self._set_metric_table_model(self._metric_df)
-		metric_panel_layout.addWidget(metric_title)
+		metric_panel_layout.addWidget(metric_filter_row)
 		metric_panel_layout.addWidget(self.metric_table)
 
 		# Stats panel (scrollable)
@@ -917,7 +930,14 @@ class MainWindow(QMainWindow):
 		return valid_metrics[0] if valid_metrics else ""
 
 	def _set_metric_table_model(self, df: pd.DataFrame):
-		self._metric_df = df.reset_index(drop=True)
+		self._metric_source_df = df.reset_index(drop=True)
+		filter_text = self.metric_filter_edit.text().strip().casefold() if hasattr(self, "metric_filter_edit") else ""
+		if filter_text and not self._metric_source_df.empty:
+			self._metric_df = self._metric_source_df[
+				self._metric_source_df["name"].astype(str).str.casefold().str.contains(filter_text, na=False, regex=False)
+			].reset_index(drop=True)
+		else:
+			self._metric_df = self._metric_source_df.copy()
 		self.metric_table_model = PandasModel(self._metric_df)
 		self.metric_table.setModel(self.metric_table_model)
 		self.metric_table.horizontalHeader().setStretchLastSection(True)
@@ -925,6 +945,24 @@ class MainWindow(QMainWindow):
 		selection_model = self.metric_table.selectionModel()
 		if selection_model is not None:
 			selection_model.selectionChanged.connect(lambda *_: self.on_metric_selection_changed())
+
+	def _on_metric_filter_changed(self, text: str) -> None:
+		prev_selected = set(self._get_selected_metrics())
+		self._set_metric_table_model(self._metric_source_df)
+
+		selection_model = self.metric_table.selectionModel()
+		if selection_model is None:
+			return
+
+		self._suppress_metric_selection_handler = True
+		try:
+			selection_model.clearSelection()
+			for row in range(len(self._metric_df.index)):
+				metric_name = str(self._metric_df.iloc[row]["name"])
+				if metric_name in prev_selected:
+					self.metric_table.selectRow(row)
+		finally:
+			self._suppress_metric_selection_handler = False
 
 	def _set_all_metrics_table_model(self, df: pd.DataFrame):
 		self._all_metrics_df = df.reset_index(drop=True)
