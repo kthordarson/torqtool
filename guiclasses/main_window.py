@@ -739,7 +739,10 @@ class MainWindow(QMainWindow):
 	def on_metric_selection_changed(self):
 		self._invalidate_and_cancel_active_plot_load("Metric selection changed")
 		if self._get_selected_metrics():
-			self._plot_refresh_timer.start(200)
+			if self.left_tabs.currentIndex() == 3 and self._get_selected_label_groups():
+				self._trigger_label_groups_trip_plot()
+			else:
+				self._plot_refresh_timer.start(200)
 
 	def _on_toggle_all_start_end(self, checked: bool):
 		self._show_all_start_end_points = bool(checked)
@@ -1092,6 +1095,46 @@ class MainWindow(QMainWindow):
 		labels = self._get_selected_label_groups()
 		if labels:
 			self._plot_label_groups_on_map(labels)
+			if self._get_selected_metrics():
+				self._trigger_label_groups_trip_plot()
+
+	def _trigger_label_groups_trip_plot(self) -> None:
+		"""Silently select and async-plot trips for the currently selected label groups."""
+		labels = self._get_selected_label_groups()
+		if not labels:
+			return
+
+		placeholders = ", ".join(f":lbl{idx}" for idx in range(len(labels)))
+		params = {f"lbl{idx}": label for idx, label in enumerate(labels)}
+
+		label_expr_start = "COALESCE(NULLIF(TRIM(sp.label), ''), '(no label)')"
+		label_expr_end = "COALESCE(NULLIF(TRIM(ep.label), ''), '(no label)')"
+		if self._label_group_mode == "start":
+			where_clause = f"{label_expr_start} IN ({placeholders})"
+		elif self._label_group_mode == "end":
+			where_clause = f"{label_expr_end} IN ({placeholders})"
+		else:
+			where_clause = f"({label_expr_start} IN ({placeholders}) OR {label_expr_end} IN ({placeholders}))"
+
+		query = text(
+			f"""
+			SELECT DISTINCT tf.fileid AS fileid
+			FROM torqfiles tf
+			LEFT JOIN startpos sp ON tf.startid = sp.startid
+			LEFT JOIN endpos ep ON tf.endid = ep.endid
+			WHERE {where_clause}
+			"""
+		)
+		try:
+			with self.engine.connect() as conn:
+				rows = conn.execute(query, params).mappings().all()
+		except Exception as e:
+			logger.error(f"Failed to query trips for label groups: {e} ({type(e)})")
+			return
+
+		fileids = sorted({int(r["fileid"]) for r in rows if r.get("fileid") is not None})
+		if fileids:
+			self._select_trips_by_fileids(fileids, "No visible trips match the selected labels.", force_async_plot=True)
 
 	def _get_selected_label_groups(self) -> list[str]:
 		selection_model = self.label_groups_table.selectionModel()

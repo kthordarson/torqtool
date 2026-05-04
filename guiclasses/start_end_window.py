@@ -57,6 +57,7 @@ class StartEndWindow(QMainWindow):
         self.group_mode_combo.addItem("Start + End pair", "pair")
         self.group_mode_combo.addItem("Start position", "start")
         self.group_mode_combo.addItem("End position", "end")
+        self.group_mode_combo.addItem("Label (ignore IDs)", "label")
         self.group_mode_combo.setFixedWidth(170)
         self.group_mode_combo.currentIndexChanged.connect(self._on_group_mode_changed)
         top_row.addWidget(self.group_mode_combo)
@@ -283,6 +284,8 @@ class StartEndWindow(QMainWindow):
             return f"S{start_id} {row.get('start_label', '')}"
         if self._group_mode == "end":
             return f"E{end_id} {row.get('end_label', '')}"
+        if self._group_mode == "label":
+            return f"{row.get('start_label', '')} -> {row.get('end_label', '')}"
         return (
             f"S{start_id} {row.get('start_label', '')}"
             f" -> E{end_id} {row.get('end_label', '')}"

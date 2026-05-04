@@ -207,10 +207,6 @@ class PositionManagerWindow(QMainWindow):
         self.reload_map_btn = QPushButton("Reload map")
         self.reload_map_btn.setFixedSize(88, 24)
         map_controls_layout.addStretch()
-        map_controls_layout.addWidget(self.hide_labeled_chk)
-        map_controls_layout.addWidget(self.label_filter_chk)
-        map_controls_layout.addWidget(self.label_filter_edit)
-        map_controls_layout.addWidget(self.show_labeled_points_chk)
         map_controls_layout.addWidget(self.toggle_labels_btn)
         map_controls_layout.addWidget(self.zoom_in_btn)
         map_controls_layout.addWidget(self.zoom_out_step_btn)
@@ -225,12 +221,21 @@ class PositionManagerWindow(QMainWindow):
         button_row.addStretch()
         editor_layout.addLayout(button_row)
 
+        filter_row = QHBoxLayout()
+        filter_row.setSpacing(6)
+        filter_row.addWidget(self.hide_labeled_chk)
+        filter_row.addWidget(self.show_labeled_points_chk)
+        filter_row.addWidget(self.label_filter_chk)
+        filter_row.addWidget(self.label_filter_edit)
+        filter_row.addStretch()
+        editor_layout.addLayout(filter_row)
+
         right_stack = QSplitter(Qt.Orientation.Vertical)
         right_stack.addWidget(left_panel)
         right_stack.addWidget(editor)
         right_stack.setCollapsible(0, False)
         right_stack.setCollapsible(1, False)
-        right_stack.setSizes([760, 230])
+        right_stack.setSizes([900, 230])
 
         h_splitter.addWidget(table_panel)
         h_splitter.addWidget(right_stack)
@@ -409,7 +414,20 @@ class PositionManagerWindow(QMainWindow):
         if not source_rows:
             return
         source_rows = list(dict.fromkeys(source_rows))
-        self._select_rows_by_indices(source_rows, select_table=True, zoom_to_points=(len(source_rows) == 1))
+        self._select_rows_by_indices(source_rows, select_table=True, zoom_to_points=False)
+        # Zoom map to fit all points in the selected group(s)
+        group_df = self.df_positions.loc[self.df_positions.index.isin(source_rows)]
+        lats = pd.to_numeric(group_df["latitude"], errors="coerce").dropna()
+        lons = pd.to_numeric(group_df["longitude"], errors="coerce").dropna()
+        if not lats.empty:
+            if len(lats) == 1:
+                self.map_canvas.set_view(float(lats.iloc[0]), float(lons.iloc[0]), 14)
+            else:
+                pad = 0.002
+                self.map_canvas.zoom_full(
+                    float(lats.min()) - pad, float(lons.min()) - pad,
+                    float(lats.max()) + pad, float(lons.max()) + pad,
+                )
 
     def _on_min_count_filter_changed(self, value: int):
         self._min_count_filter = int(value)
