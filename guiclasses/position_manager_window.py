@@ -1023,12 +1023,15 @@ class PositionManagerWindow(QMainWindow):
         launched_by: str,
         worker: object | None = None,
     ) -> None:
+        launcher = str(launched_by)
+        if "." not in launcher:
+            launcher = f"{self.__class__.__module__}.{self.__class__.__name__}.{launcher}"
         self._thread_registry[id(thread)] = {
             "thread": thread,
             "thread_id": id(thread),
             "owner_name": str(owner_name),
             "task_name": str(task_name),
-            "launched_by": str(launched_by),
+            "launched_by": launcher,
             "worker_name": type(worker).__name__ if worker is not None else "",
             "started_at": time.time(),
         }

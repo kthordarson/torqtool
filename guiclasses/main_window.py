@@ -71,6 +71,8 @@ class MainWindow(QMainWindow):
 		self._plot_data_worker: TripPlotWorker | None = None
 		self._plot_data_request_id = 0
 		self._plot_async_threshold = 60
+		self._force_next_plot_async = False
+		self._suppress_metric_selection_handler = False
 		self._plot_request_context: dict[int, dict[str, Any]] = {}
 		self._preview_render_min_interval_s = 0.25
 		self._active_threads: set[QThread] = set()
@@ -752,6 +754,8 @@ class MainWindow(QMainWindow):
 		self._apply_trip_filters(auto_select_latest=False)
 
 	def on_metric_selection_changed(self):
+		if self._suppress_metric_selection_handler:
+			return
 		self._invalidate_and_cancel_active_plot_load("Metric selection changed")
 		if self._get_selected_metrics():
 			if self.left_tabs.currentIndex() == 3 and self._get_selected_label_groups():
@@ -1011,7 +1015,7 @@ class MainWindow(QMainWindow):
 		thread.finished.connect(thread.deleteLater)
 		thread.finished.connect(lambda t=thread: self._active_threads.discard(t))
 		thread.finished.connect(lambda t=thread: self._thread_registry.pop(id(t), None))
-		thread.finished.connect(lambda: setattr(self, '_initial_trips_thread', None))
+		thread.finished.connect(lambda t=thread: self._on_initial_trips_thread_finished(t))
 
 		self._initial_trips_worker = worker
 		self._initial_trips_thread = thread
@@ -1295,6 +1299,7 @@ class MainWindow(QMainWindow):
 		selected_fileids = self._get_selected_fileids(matching_rows)
 		self._populate_metric_columns(selected_fileids if selected_fileids else None)
 		if selected_fileids and force_async_plot:
+			self._force_next_plot_async = True
 			self._start_async_plot_for_fileids(selected_fileids)
 		else:
 			self._plot_refresh_timer.start(120)
@@ -1333,16 +1338,20 @@ class MainWindow(QMainWindow):
 		if selection_model is None:
 			return
 
-		selection_model.clearSelection()
-		restored_any = False
-		for row in range(len(self._metric_df.index)):
-			metric_name = str(self._metric_df.iloc[row]["name"])
-			if metric_name in prev_selected:
-				self.metric_table.selectRow(row)
-				restored_any = True
+		self._suppress_metric_selection_handler = True
+		try:
+			selection_model.clearSelection()
+			restored_any = False
+			for row in range(len(self._metric_df.index)):
+				metric_name = str(self._metric_df.iloc[row]["name"])
+				if metric_name in prev_selected:
+					self.metric_table.selectRow(row)
+					restored_any = True
 
-		if not restored_any:
-			self.metric_table.selectRow(0)
+			if not restored_any:
+				self.metric_table.selectRow(0)
+		finally:
+			self._suppress_metric_selection_handler = False
 
 		logger.debug(
 			f"Populated metric table with {len(self._metric_df)} metrics "
@@ -1436,7 +1445,10 @@ class MainWindow(QMainWindow):
 		rows = sorted(set(index.row() for index in self.table.selectionModel().selectedRows()))
 		if rows:
 			logger.debug(f"refresh_plot triggered with {len(rows)} selected row(s): {rows[:5]}{'...' if len(rows) > 5 else ''}")
-			if len(rows) >= self._plot_async_threshold:
+			selected_metrics = self._get_selected_metrics()
+			multi_metric_async = len(rows) > 1 and len(selected_metrics) > 1
+			if self._force_next_plot_async or len(rows) >= self._plot_async_threshold or multi_metric_async:
+				self._force_next_plot_async = False
 				self._start_async_plot_for_rows(rows)
 				return
 			self._plot_for_rows(rows)
@@ -1450,6 +1462,7 @@ class MainWindow(QMainWindow):
 			self.stats_label.setText("No trip selected")
 			self._set_all_metrics_table_model(pd.DataFrame(columns=["metric", "min", "avg", "max"]))
 			return
+		self._force_next_plot_async = False
 
 		self._invalidate_and_cancel_active_plot_load(None)
 
@@ -1471,6 +1484,11 @@ class MainWindow(QMainWindow):
 			self.stats_label.setText("Missing required torqlogs columns for plotting")
 			return
 
+		worker_metric_names = [self._resolve_actual_torqlogs_column(name) or name for name in selected_metrics]
+		speed_metric_col = self._preferred_speed_metric_column()
+		if speed_metric_col and speed_metric_col not in worker_metric_names:
+			worker_metric_names.append(speed_metric_col)
+
 		self._plot_data_request_id += 1
 		request_id = self._plot_data_request_id
 		self._plot_request_context[request_id] = {
@@ -1479,8 +1497,10 @@ class MainWindow(QMainWindow):
 			"selected_metric": selected_metric,
 			"colormap_name": self._current_colormap,
 			"preview_trips": {},
+			"preview_bounds": None,
 			"last_preview_render_ts": 0.0,
 			"last_preview_render_done": 0,
+			"preview_render_mode": "first_and_final" if len(fileids) >= 10 else "throttled",
 			"preview_render_min_interval_s": float(self._preview_render_min_interval_s),
 		}
 
@@ -1500,7 +1520,7 @@ class MainWindow(QMainWindow):
 			lon_col,
 			time_col,
 			sample_step,
-			metric_names=[self._resolve_actual_torqlogs_column(name) or name for name in selected_metrics],
+			metric_names=worker_metric_names,
 		)
 		worker.moveToThread(thread)
 
@@ -1517,7 +1537,7 @@ class MainWindow(QMainWindow):
 		thread.finished.connect(thread.deleteLater)
 		thread.finished.connect(lambda t=thread: self._active_threads.discard(t))
 		thread.finished.connect(lambda t=thread: self._thread_registry.pop(id(t), None))
-		thread.finished.connect(lambda: setattr(self, '_plot_data_thread', None))
+		thread.finished.connect(lambda t=thread: self._on_plot_data_thread_finished(t))
 
 		self._plot_data_worker = worker
 		self._plot_data_thread = thread
@@ -1559,29 +1579,45 @@ class MainWindow(QMainWindow):
 			self.stats_label.setText(f"Loading trip paths... ({done}/{max(1,total)})")
 			return
 
-		# QWebEngine can emit SharedImage mailbox errors when HTML is replaced too frequently.
-		# Throttle interim preview redraws while still rendering the final preview frame.
+		# Avoid flickering: for large selections use first_and_final mode — render once when the
+		# first trip arrives (so something appears immediately) then skip every intermediate
+		# preview and only render again on completion.  For small selections use a throttled
+		# interval so progress is visible without excessive reloads.
 		is_final_preview = done >= max(1, total)
+		preview_render_mode = str(ctx.get("preview_render_mode", "throttled") or "throttled")
 		last_preview_render_ts = float(ctx.get("last_preview_render_ts", 0.0) or 0.0)
 		last_preview_render_done = int(ctx.get("last_preview_render_done", 0) or 0)
 		preview_render_min_interval_s = float(ctx.get("preview_render_min_interval_s", 0.25) or 0.25)
 		now = time.monotonic()
-		should_render_preview = is_final_preview
-		if not should_render_preview:
-			if last_preview_render_ts <= 0.0:
-				should_render_preview = True
-			elif done > last_preview_render_done and (now - last_preview_render_ts) >= preview_render_min_interval_s:
-				should_render_preview = True
+		if preview_render_mode == "first_and_final":
+			# Only two renders: first arrival + final result
+			should_render_preview = is_final_preview or last_preview_render_ts <= 0.0
+		else:
+			should_render_preview = is_final_preview
+			if not should_render_preview:
+				if last_preview_render_ts <= 0.0:
+					should_render_preview = True
+				elif done > last_preview_render_done and (now - last_preview_render_ts) >= preview_render_min_interval_s:
+					should_render_preview = True
 		if not should_render_preview:
 			self.stats_label.setText(f"Loading trip paths... ({done}/{max(1,total)})")
 			return
 
 		fileids = _cast(list, ctx.get("fileids", []))
 		colormap_name = _cast(str, ctx.get("colormap_name", self._current_colormap))
+		preview_bounds = _cast(tuple[float, float, float, float] | None, ctx.get("preview_bounds"))
 		trip_list = list(preview_trips.values())
-		m, bounds = self._build_trip_folium_map(trip_list, fileids, colormap_name)
+		m, bounds = self._build_trip_folium_map(
+			trip_list,
+			fileids,
+			colormap_name,
+			render_phase="preview",
+			bounds_override=preview_bounds,
+		)
 		if m is not None:
 			if bounds:
+				if preview_bounds is None:
+					ctx["preview_bounds"] = bounds
 				self._mw_full_bounds_latlon = bounds
 				self._mw_current_fileids = fileids
 			self._overlay_start_end_points(m, fileids, bounds)
@@ -1596,7 +1632,7 @@ class MainWindow(QMainWindow):
 			self.cancel_plot_load_btn.setEnabled(False)
 			return
 		if thread.isRunning():
-			thread.requestInterruption()
+			self._request_thread_stop(thread, "plot_data")
 			self.stats_label.setText("Cancelling background load...")
 		self.cancel_plot_load_btn.setEnabled(False)
 
@@ -1606,10 +1642,45 @@ class MainWindow(QMainWindow):
 			return
 		self._plot_data_request_id += 1
 		self._plot_request_context.clear()
-		thread.requestInterruption()
+		self._request_thread_stop(thread, "plot_data")
 		self.cancel_plot_load_btn.setEnabled(False)
 		if reason:
 			self.stats_label.setText(f"{reason}; cancelling previous background load...")
+
+	def _on_initial_trips_thread_finished(self, finished_thread: QThread) -> None:
+		if self._initial_trips_thread is finished_thread:
+			self._initial_trips_thread = None
+			self._initial_trips_worker = None
+
+	def _on_plot_data_thread_finished(self, finished_thread: QThread) -> None:
+		if self._plot_data_thread is finished_thread:
+			self._plot_data_thread = None
+			self._plot_data_worker = None
+
+	def _request_thread_stop(self, thread: QThread | None, name: str) -> None:
+		if thread is None:
+			return
+		try:
+			if not thread.isRunning():
+				return
+		except RuntimeError:
+			return
+		thread.requestInterruption()
+		thread.quit()
+		QTimer.singleShot(2000, lambda t=thread, n=name: self._terminate_thread_if_running(t, n))
+
+	def _terminate_thread_if_running(self, thread: QThread | None, name: str) -> None:
+		if thread is None:
+			return
+		try:
+			if not thread.isRunning():
+				return
+		except RuntimeError:
+			return
+		if self.args.debug:
+			logger.warning(f"Force-terminating still-running thread '{name}'")
+		thread.terminate()
+		thread.wait(1000)
 
 	def _on_async_plot_data_loaded(self, request_id: int, payload: object) -> None:
 		if request_id != self._plot_data_request_id:
@@ -1659,7 +1730,7 @@ class MainWindow(QMainWindow):
 					}
 
 		fileid_color_map = self._build_fileid_color_map(fileids, colormap_name)
-		m, bounds = self._build_trip_folium_map(trips, fileids, colormap_name)
+		m, bounds = self._build_trip_folium_map(trips, fileids, colormap_name, render_phase="final")
 
 		if m is not None:
 			self._overlay_start_end_points(m, fileids, bounds)
@@ -1911,24 +1982,53 @@ class MainWindow(QMainWindow):
 		cycle_length = self._colormap_cycle_length(colormap_name)
 		return {int(fileid): cmap(idx % cycle_length) for idx, fileid in enumerate(fileids)}
 
+	def _preferred_speed_metric_column(self) -> str | None:
+		for req_name in ("speedgpskmh", "gpsspeedkmh", "speedobdkmh"):
+			actual_col = self._resolve_actual_torqlogs_column(req_name)
+			if actual_col:
+				return actual_col
+		return None
+
+	def _speed_values_for_map_item(self, item: dict[str, Any]) -> list[float]:
+		metrics_payload = item.get("metrics") if isinstance(item.get("metrics"), dict) else {}
+		if metrics_payload:
+			for speed_col in (
+				self._resolve_actual_torqlogs_column("speedgpskmh"),
+				self._resolve_actual_torqlogs_column("gpsspeedkmh"),
+				self._resolve_actual_torqlogs_column("speedobdkmh"),
+			):
+				if not speed_col:
+					continue
+				raw_vals = metrics_payload.get(speed_col)
+				if isinstance(raw_vals, list) and raw_vals:
+					return pd.to_numeric(pd.Series(raw_vals), errors="coerce").fillna(0.0).tolist()
+
+		raw_speed = item.get("speed")
+		if isinstance(raw_speed, list) and raw_speed:
+			return pd.to_numeric(pd.Series(raw_speed), errors="coerce").fillna(0.0).tolist()
+		return []
+
 	def _build_trip_folium_map(
 		self,
 		trip_data_list: list[dict],
 		fileids: list[int],
 		colormap_name: str,
+		render_phase: str = "final",
+		bounds_override: tuple[float, float, float, float] | None = None,
 	) -> tuple[folium.Map | None, tuple[float, float, float, float] | None]:
 		all_lat: list[float] = []
 		all_lon: list[float] = []
-		speed_vals = []
+		has_speed_data = False
 		for item in trip_data_list:
 			all_lat.extend(item.get("lat", []))
 			all_lon.extend(item.get("lon", []))
+			has_speed_data = has_speed_data or bool(self._speed_values_for_map_item(item))
 		if not all_lat:
 			if self.args.debug:
 				logger.warning(f"No latitude data available in trip data list, cannot build folium map. trip_data_list: {len(trip_data_list)} fileids: {len(fileids)} {fileids[0:3]}")
 			return None, None
 
-		bounds = self._compute_plot_bounds_latlon(all_lat, all_lon)
+		bounds = bounds_override or self._compute_plot_bounds_latlon(all_lat, all_lon)
 		if bounds is None:
 			if self.args.debug:
 				logger.warning(f"Failed to compute plot bounds, cannot build folium map. trip_data_list: {len(trip_data_list)} fileids: {len(fileids)} {fileids[0:3]}")
@@ -1946,7 +2046,7 @@ class MainWindow(QMainWindow):
 		for idx, item in enumerate(trip_data_list):
 			lat_vals = item.get("lat", [])
 			lon_vals = item.get("lon", [])
-			speed_vals = item.get("speed", [])
+			speed_vals = self._speed_values_for_map_item(item)
 			fileid = int(item.get("fileid", -1))
 			if not lat_vals:
 				continue
@@ -1976,10 +2076,16 @@ class MainWindow(QMainWindow):
 			)
 			layer.add_to(m)
 		if self.args.debug:
-			if len(speed_vals) > 0:
-				logger.debug(f"Added trip fileid={fileid} to map with {len(lat_vals)} points, base color {base_hex}, radius range [{max(2.0, min(8.0, min(speed_vals) / 10.0 * self._dot_size_scale + 2.0)):.1f}, {max(2.0, min(8.0, max(speed_vals) / 10.0 * self._dot_size_scale + 2.0)):.1f}]")
+			if render_phase == "preview":
+				logger.debug(
+					f"Preview map update: loaded={len(trip_data_list)}/{len(fileids)} trips, "
+					f"bounds={bounds}, speed_data_ready={has_speed_data}"
+				)
 			else:
-				logger.debug(f"Added trip fileid={fileid} to map with {len(lat_vals)} points, base color {base_hex}, no speed data for radius scaling. folium map: {m} bounds: {bounds} trip_data_list: {len(trip_data_list)} fileids: {len(fileids)} {fileids[0:3]}")
+				logger.debug(
+					f"Final map render: trips={len(trip_data_list)}, bounds={bounds}, "
+					f"speed_data_ready={has_speed_data}"
+				)
 		return m, bounds
 
 	def _plot_for_rows(self, rows):
@@ -2392,7 +2498,11 @@ class MainWindow(QMainWindow):
 			return False
 		try:
 			return bool(thread.isRunning())
-		except RuntimeError:
+		except RuntimeError as e:
+			logger.warning(f"RuntimeError checking thread.isRunning(): {e} ({type(e)})")
+			return False
+		except Exception as e:
+			logger.warning(f"Error checking thread.isRunning(): {e} ({type(e)})")
 			return False
 
 	def _register_thread(
@@ -2403,12 +2513,15 @@ class MainWindow(QMainWindow):
 		launched_by: str,
 		worker: object | None = None,
 	) -> None:
+		launcher = str(launched_by)
+		if "." not in launcher:
+			launcher = f"{self.__class__.__module__}.{self.__class__.__name__}.{launcher}"
 		self._thread_registry[id(thread)] = {
 			"thread": thread,
 			"thread_id": id(thread),
 			"owner_name": str(owner_name),
 			"task_name": str(task_name),
-			"launched_by": str(launched_by),
+			"launched_by": launcher,
 			"worker_name": type(worker).__name__ if worker is not None else "",
 			"started_at": time.time(),
 		}
@@ -2437,7 +2550,11 @@ class MainWindow(QMainWindow):
 		if not meta:
 			return False
 		thread = cast(QThread | None, meta.get("thread"))
-		task_name = str(meta.get("task_name") or f"thread_{thread_id}")
+		try:
+			task_name = str(meta.get("task_name") or f"thread_{thread_id}")
+		except Exception as e:
+			logger.warning(f"Error getting task name for thread_id={thread_id}: {e} ({type(e)})")
+			task_name = f"thread_{thread_id}"
 		return self._shutdown_thread(thread, task_name)
 
 	def _stop_task_from_monitor(self, thread_id: int) -> bool:
