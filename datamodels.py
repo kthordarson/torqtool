@@ -239,9 +239,10 @@ def database_init(engine):  # create tables
 		Base.metadata.create_all(bind=engine)
 		with engine.begin() as conn:
 			logger.debug(f"dbinit for: {conn.dialect.name} engine {engine}")
+			# Keep legacy databases aligned: enforce stable identity by hash.
+			# conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_torqfiles_csvhash ON torqfiles(csvhash)"))
+
 			if conn.dialect.name != "sqlite":
-				# Keep legacy databases aligned: enforce stable identity by hash.
-				conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_torqfiles_csvhash ON torqfiles(csvhash)"))
 				# Ensure torqfiles is properly linked to start/end position tables when supported by backend.
 				try:
 					conn.execute(
@@ -305,6 +306,9 @@ def database_init(engine):  # create tables
 			)
 	except (OperationalError, AssertionError) as e:
 		logger.error(f'[dbinit] {type(e)} {e}')
+		sys.exit(-1)
+	except Exception as e:
+		logger.error(f'[dbinit] Unexpected error: {type(e)} {e}')
 		sys.exit(-1)
 
 async def send_torqfiles(filelist, session, debug=False):  # returns list of new files

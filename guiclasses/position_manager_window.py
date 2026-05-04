@@ -3,6 +3,7 @@ import time
 from typing import Any, cast
 
 import folium
+from folium.utilities import JsCode
 import pandas as pd
 from loguru import logger
 from sqlalchemy import text
@@ -660,7 +661,7 @@ class PositionManagerWindow(QMainWindow):
                 "type": "Feature",
                 "geometry": {"type": "Point", "coordinates": [lon, lat]},
                 "properties": {
-                    "row_index": int(idx),
+                    "row_index": int(idx),  # type: ignore
                     "pos_id": pos_id,
                     "pos_type": pos_type,
                     "color": color,
@@ -669,7 +670,7 @@ class PositionManagerWindow(QMainWindow):
                 },
             })
 
-        on_each_feature = (
+        on_each_feature = JsCode(
             "function(feature, layer) {"
             "  layer.on('click', function(e) {"
             "    var p = feature.properties;"

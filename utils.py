@@ -16,6 +16,7 @@ from sqlalchemy import DateTime
 from sqlalchemy import create_engine, text, MetaData, Table, Column, Float, String, Integer
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy import inspect
+from sqlalchemy.exc import IntegrityError
 from psycopg2.errors import UniqueViolation
 from commonformats import fmt_20, fmt_24, fmt_26, fmt_28, fmt_30, fmt_34, fmt_36
 from datamodels import database_init, COLUMN_TYPES
@@ -267,6 +268,45 @@ def _collapse_duplicate_dataframe_columns(df: pd.DataFrame, csvfile: Path) -> pd
 	# Build all columns in one concat to avoid block fragmentation warnings.
 	return pd.concat(series_list, axis=1).copy()
 
+
+def _extract_trip_start_from_dataframe(df: pd.DataFrame) -> datetime | None:
+	"""
+	Extract the earliest trip timestamp from the full file content.
+	Uses gpstime first, then devicetime.
+	"""
+	if df.empty:
+		return None
+
+	norm_col_map = {_normalize_col_name(c): c for c in df.columns}
+	time_col_raw = norm_col_map.get('gpstime') or norm_col_map.get('devicetime')
+	if not time_col_raw:
+		return None
+
+	parsed_datetimes: list[datetime] = []
+	for value in df[time_col_raw].tolist():
+		if pd.isna(value):
+			continue
+		dt = None
+		if isinstance(value, pd.Timestamp):
+			dt = value.to_pydatetime()
+		elif isinstance(value, datetime):
+			dt = value
+		else:
+			dt = convert_string_to_datetime(str(value))
+
+		if dt is None:
+			continue
+		if dt.tzinfo is None:
+			dt = dt.replace(tzinfo=pytz.UTC)
+		else:
+			dt = dt.astimezone(pytz.UTC)
+		parsed_datetimes.append(dt)
+
+	if not parsed_datetimes:
+		return None
+
+	return min(parsed_datetimes)
+
 def update_trip_and_file_for_fileid(conn, fileid):
 	"""
 	Update TorqFile and Torqtrips for a single fileid after inserting its data.
@@ -421,7 +461,6 @@ def update_trip_and_file_for_fileid(conn, fileid):
 		"trip_distance": trip_distance
 	})
 	logger.debug(f'Updated fileid {fileid}: trip_start={trip_start}, trip_end={trip_end}, duration={trip_duration}, distance={trip_distance}, rows={row_count}')
-
 def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs') -> None:
 	"""
 	Read all CSV files into a DataFrame, normalize column names, and insert into SQLite table.
@@ -437,7 +476,7 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs') -> None:
 	csv_files = list(Path(args.logpath).glob("**/trackLog*.csv"))
 	if not csv_files:
 		logger.warning("No CSV files found")
-		return None, pd_columns
+		return None
 
 	# First pass: Collect and validate headers from all files
 	all_columns = set()
@@ -449,8 +488,8 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs') -> None:
 	try:
 		database_init(session.get_bind())
 	except Exception as e:
-		logger.error(f"Error initializing database: {e}")
-		return None, pd_columns
+		logger.error(f"Error initializing database: {e} {type(e)}")
+		return None
 
 	for file_idx, csvfile in enumerate(csv_files):
 		linecount = 0
@@ -488,34 +527,35 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs') -> None:
 				logger.warning(f"Skipping {csvfile} - invalid column names")
 				continue
 
-			# Check if a file with the same trip_start date already exists in the DB.
-			# Primary: extract date from filename (trackLog-YYYY-Mon-DD_HH-MM-SS.csv).
-			# Fallback: parse date from first CSV data row.
-			trip_start_date = None
-			filename_match = re.match(r'trackLog-(\d{4}-[A-Za-z]{3}-\d{2})', csvfile.stem)
-			if filename_match:
-				try:
-					trip_start_date = datetime.strptime(filename_match.group(1), '%Y-%b-%d').date()
-				except ValueError:
-					trip_start_date = None
-			if trip_start_date is None and not df.empty:
+			# Check if a file with the same trip_start datetime already exists in the DB.
+			# Primary: parse datetime from first CSV data row (matches final trip_start derivation).
+			# Fallback: extract datetime from filename (trackLog-YYYY-Mon-DD_HH-MM-SS.csv).
+			trip_start_datetime = None
+			if not df.empty:
 				norm_col_map = {_normalize_col_name(c): c for c in df.columns}
 				time_col_raw = norm_col_map.get('gpstime') or norm_col_map.get('devicetime')
 				if time_col_raw is not None:
 					first_val = df[time_col_raw].iloc[0]
 					trip_start_dt = convert_string_to_datetime(str(first_val)) if pd.notna(first_val) else None
 					if trip_start_dt is not None:
-						trip_start_date = trip_start_dt.date()
-			if trip_start_date is not None:
-				with session.get_bind().connect() as chk_conn:
+						trip_start_datetime = trip_start_dt
+			if trip_start_datetime is None:
+				filename_match = re.match(r'trackLog-(\d{4}-[A-Za-z]{3}-\d{2}_\d{2}-\d{2}-\d{2})', csvfile.stem)
+				if filename_match:
+					try:
+						trip_start_datetime = datetime.strptime(filename_match.group(1), '%Y-%b-%d_%H-%M-%S').replace(tzinfo=pytz.UTC)
+					except ValueError:
+						trip_start_datetime = None
+			if trip_start_datetime is not None:
+				with session.get_bind().connect() as chk_conn:  # type: ignore[union-attr]
 					if chk_conn.dialect.name == 'sqlite':
-						date_sql = text("SELECT fileid FROM torqfiles WHERE trip_start IS NOT NULL AND date(trip_start) = :ts_date")
+						date_sql = text("SELECT fileid FROM torqfiles WHERE trip_start IS NOT NULL AND datetime(trip_start) = datetime(:ts_dt)")
 					else:
-						date_sql = text("SELECT fileid FROM torqfiles WHERE trip_start IS NOT NULL AND trip_start::date = :ts_date")
-					existing_trip = chk_conn.execute(date_sql, {"ts_date": str(trip_start_date)}).first()
+						date_sql = text("SELECT fileid FROM torqfiles WHERE trip_start IS NOT NULL AND trip_start = CAST(:ts_dt AS timestamp)")
+					existing_trip = chk_conn.execute(date_sql, {"ts_dt": trip_start_datetime.strftime('%Y-%m-%d %H:%M:%S')}).first()
 				if existing_trip:
 					skipped_count += 1
-					logger.warning(f"[{file_idx}/{len(csv_files)}] Skipping {csvfile} - trip_start date {trip_start_date} already in DB (fileid {existing_trip[0]})")
+					logger.warning(f"[{file_idx}/{len(csv_files)}] Skipping {csvfile} - trip_start datetime {trip_start_datetime} already in DB (fileid {existing_trip[0]})")
 					continue
 
 			all_columns.update(normalized_columns)
@@ -528,7 +568,7 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs') -> None:
 			}
 
 		except Exception as e:
-			logger.error(f"Error reading headers from {csvfile}: {e}")
+			logger.error(f"Error reading headers from {csvfile}: {e} {type(e)}")
 			continue
 	if args.debug and skipped_count > 0:
 		logger.debug(f'skipped {skipped_count} files that were already processed based on hash')
@@ -569,7 +609,7 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs') -> None:
 		normalized_actual_columns = {
 			_normalize_col_name(col_name): col_name for col_name in actual_table_columns
 		}
-
+		fileid = None
 		try:
 			for csv_idx, (csvfile, normalized_columns, csvhash) in enumerate(valid_files):
 				# SQLAlchemy 2.x may start a transaction implicitly (autobegin).
@@ -591,7 +631,23 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs') -> None:
 							except Exception as e:
 								logger.warning(f"Could not convert column {col} to datetime: {e} {type(e)} in {csvfile}")
 
-					# Create TorqFile entry with required metadata.
+					# Pre-send duplicate check from full file content (uses minimum trip timestamp).
+					trip_start_candidate = _extract_trip_start_from_dataframe(df)
+					if trip_start_candidate is not None:
+						if conn.dialect.name == 'sqlite':
+							date_sql = text("SELECT fileid FROM torqfiles WHERE trip_start IS NOT NULL AND datetime(trip_start) = datetime(:ts_dt)")
+						else:
+							date_sql = text("SELECT fileid FROM torqfiles WHERE trip_start IS NOT NULL AND trip_start = CAST(:ts_dt AS timestamp)")
+						existing_trip = conn.execute(date_sql, {"ts_dt": trip_start_candidate.strftime('%Y-%m-%d %H:%M:%S')}).first()
+						if existing_trip:
+							skipped_count += 1
+							logger.warning(
+								f"[{csv_idx}/{len(valid_files)}] Skipping {csvfile} - duplicate trip_start "
+								f"{trip_start_candidate} already exists (fileid {existing_trip[0]})"
+							)
+							continue
+
+					# Create TorqFile entry only after duplicate check passes.
 					result = conn.execute(
 						text("INSERT INTO torqfiles (csvfile, csvhash, import_date) VALUES (:csvfile, :csvhash, :import_date) RETURNING fileid"),
 						{"csvfile": str(csvfile), "csvhash": csvhash, "import_date": datetime.now()}
@@ -679,6 +735,15 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs') -> None:
 					if conn.in_transaction():
 						conn.rollback()
 					continue
+				except IntegrityError as e:
+					if conn.in_transaction():
+						conn.rollback()
+					err = str(getattr(e, "orig", e)).lower()
+					if "uq_torqfiles_trip_start" in err or "trip_start" in err and "duplicate" in err:
+						logger.warning(f"Skipping {csvfile} with fileid {fileid} due to duplicate trip_start: {e}")
+						continue
+					logger.error(f"Integrity error for {csvfile} with fileid {fileid}: {e}")
+					continue
 				except Exception as e:
 					if conn.in_transaction():
 						conn.rollback()
@@ -688,9 +753,9 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs') -> None:
 					continue
 
 		except Exception as e:
-			logger.error(f"Transaction failed: {e} {type(e)}")
-			raise
-
+			errmsg = f"Transaction failed: {e} {type(e)}"
+			logger.error(errmsg)
+			raise Exception(errmsg)
 	# engine.dispose()
 	return None
 

@@ -2,6 +2,7 @@ import io
 import json
 import time
 from typing import Any, cast
+from folium.utilities import JsCode
 import numpy as np
 import pandas as pd
 import folium
@@ -991,7 +992,7 @@ class MainWindow(QMainWindow):
 			self._start_end_overlay_data.append(dict(point))
 
 		if features:
-			on_each_feature = (
+			on_each_feature = JsCode(
 				"function(feature, layer) {"
 				"  layer.on('click', function(e) {"
 				"    e.originalEvent.stopPropagation();"
@@ -1432,7 +1433,7 @@ class MainWindow(QMainWindow):
 		table_df = self.df_trips.reset_index(drop=True)
 		matching_rows = [
 			int(idx)
-			for idx, fid in enumerate(pd.to_numeric(table_df.get("fileid"), errors="coerce").fillna(-1).astype(int).tolist())
+			for idx, fid in enumerate(pd.to_numeric(table_df.get("fileid"), errors="coerce").fillna(-1).astype(int).tolist())  # type: ignore
 			if fid in fileids
 		]
 		if not matching_rows:
