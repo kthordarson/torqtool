@@ -1850,10 +1850,14 @@ class MainWindow(QMainWindow):
 			all_lat.extend(item.get("lat", []))
 			all_lon.extend(item.get("lon", []))
 		if not all_lat:
+			if self.args.debug:
+				logger.warning(f"No latitude data available in trip data list, cannot build folium map. trip_data_list: {len(trip_data_list)} fileids: {len(fileids)} {fileids[0:3]}")
 			return None, None
 
 		bounds = self._compute_plot_bounds_latlon(all_lat, all_lon)
 		if bounds is None:
+			if self.args.debug:
+				logger.warning(f"Failed to compute plot bounds, cannot build folium map. trip_data_list: {len(trip_data_list)} fileids: {len(fileids)} {fileids[0:3]}")
 			return None, None
 		lat_min, lon_min, lat_max, lon_max = bounds
 		clat = (lat_min + lat_max) / 2
@@ -1901,7 +1905,7 @@ class MainWindow(QMainWindow):
 			if len(speed_vals) > 0:
 				logger.debug(f"Added trip fileid={fileid} to map with {len(lat_vals)} points, base color {base_hex}, radius range [{max(2.0, min(8.0, min(speed_vals) / 10.0 * self._dot_size_scale + 2.0)):.1f}, {max(2.0, min(8.0, max(speed_vals) / 10.0 * self._dot_size_scale + 2.0)):.1f}]")
 			else:
-				logger.debug(f"Added trip fileid={fileid} to map with {len(lat_vals)} points, base color {base_hex}, no speed data for radius scaling")
+				logger.debug(f"Added trip fileid={fileid} to map with {len(lat_vals)} points, base color {base_hex}, no speed data for radius scaling. folium map: {m} bounds: {bounds} trip_data_list: {len(trip_data_list)} fileids: {len(fileids)} {fileids[0:3]}")
 		return m, bounds
 
 	def _plot_for_rows(self, rows):

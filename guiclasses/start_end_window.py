@@ -76,6 +76,7 @@ class StartEndWindow(QMainWindow):
         self.groups_table.setSortingEnabled(True)
         self.groups_table.verticalHeader().setVisible(False)
         self.groups_table.setFont(QFont("Monospace", self._table_font_size))
+        self.groups_table.clicked.connect(self._on_group_row_clicked)
 
         left_panel = QWidget()
         self.left_panel = left_panel
@@ -148,6 +149,18 @@ class StartEndWindow(QMainWindow):
                 continue
             fileids.extend(self._group_to_fileids.get(group_name, []))
         return sorted(set(int(fid) for fid in fileids))
+
+    def _fileids_for_index(self, index) -> list[int]:
+        if index is None or not index.isValid():
+            return []
+        model = self.groups_table.model()
+        if model is None:
+            return []
+        group_index = model.index(int(index.row()), 0)
+        group_name = str(model.data(group_index, Qt.ItemDataRole.DisplayRole) or "")
+        if not group_name:
+            return []
+        return sorted(set(int(fid) for fid in self._group_to_fileids.get(group_name, [])))
 
     def _preview_points_for_fileids(self, fileids: list[int]) -> None:
         self._active_fileids = list(fileids)
@@ -326,6 +339,15 @@ class StartEndWindow(QMainWindow):
             return
         self._cancel_parent_background_plot_load("Start/End row click changed")
         self._preview_points_for_fileids(self._selected_group_fileids())
+
+    def _on_group_row_clicked(self, index):
+        if self._grouped_df.empty:
+            return
+        self._cancel_parent_background_plot_load("Start/End row clicked")
+        fileids = self._selected_group_fileids()
+        if not fileids:
+            fileids = self._fileids_for_index(index)
+        self._preview_points_for_fileids(fileids)
 
     def _build_start_end_map(self, df: pd.DataFrame) -> folium.Map | None:
         start_df = df[df["latstart"].notna() & df["lonstart"].notna()]
