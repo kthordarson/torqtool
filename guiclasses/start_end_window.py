@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QTableView,
     QAbstractItemView,
     QPushButton,
+    QLineEdit,
 )
 
 from .map_canvas import FoliumMapView
@@ -61,6 +62,12 @@ class StartEndWindow(QMainWindow):
         self.group_mode_combo.setFixedWidth(170)
         self.group_mode_combo.currentIndexChanged.connect(self._on_group_mode_changed)
         top_row.addWidget(self.group_mode_combo)
+        self.group_filter_edit = QLineEdit()
+        self.group_filter_edit.setPlaceholderText("Filter group labels")
+        self.group_filter_edit.setClearButtonEnabled(True)
+        self.group_filter_edit.setFixedWidth(220)
+        self.group_filter_edit.textChanged.connect(self._on_group_filter_changed)
+        top_row.addWidget(self.group_filter_edit)
         self.plot_selected_btn = QPushButton("Plot selected")
         self.plot_selected_btn.setFixedHeight(24)
         self.plot_selected_btn.clicked.connect(self._plot_selected_groups)
@@ -320,6 +327,11 @@ class StartEndWindow(QMainWindow):
             )
 
         grouped_df = pd.DataFrame(rows, columns=["group", "trips", "distance_km", "avg_time_min", "latest_trip"])
+        filter_text = self.group_filter_edit.text().strip().casefold() if hasattr(self, "group_filter_edit") else ""
+        if filter_text and not grouped_df.empty:
+            grouped_df = grouped_df[
+                grouped_df["group"].astype(str).str.casefold().str.contains(filter_text, na=False)
+            ].copy()
         if not grouped_df.empty:
             grouped_df.sort_values(by=["trips", "distance_km"], ascending=[False, False], inplace=True)
             grouped_df["latest_trip"] = pd.to_datetime(grouped_df["latest_trip"], errors="coerce").dt.strftime("%Y-%m-%d %H:%M")
@@ -334,6 +346,11 @@ class StartEndWindow(QMainWindow):
     def _on_group_mode_changed(self, index: int):
         self._cancel_parent_background_plot_load("Start/End grouping changed")
         self._group_mode = str(self.group_mode_combo.currentData() or "pair")
+        self._refresh_group_table()
+        self._preview_points_for_fileids([])
+
+    def _on_group_filter_changed(self, text: str) -> None:
+        self._cancel_parent_background_plot_load("Start/End group filter changed")
         self._refresh_group_table()
         self._preview_points_for_fileids([])
 
