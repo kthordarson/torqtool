@@ -45,6 +45,7 @@ class PositionManagerWindow(QMainWindow):
         self._pending_close = False
         self._pending_close_started_at: float | None = None
         self._active_threads: set[QThread] = set()
+        self._thread_registry: dict[int, dict[str, Any]] = {}
         self._restore_after_reload: dict[str, Any] | None = None
         self._min_count_filter = 0
         self._current_sort_column: int = -1
@@ -487,9 +488,17 @@ class PositionManagerWindow(QMainWindow):
         thread.finished.connect(thread.deleteLater)
         thread.finished.connect(self._on_load_thread_finished)
         thread.finished.connect(lambda t=thread: self._active_threads.discard(t))
+        thread.finished.connect(lambda t=thread: self._thread_registry.pop(id(t), None))
         self._load_thread = thread
         self._load_worker = worker
         self._active_threads.add(thread)
+        self._register_thread(
+            thread,
+            owner_name="PositionManagerWindow",
+            task_name="Positions load",
+            launched_by="load_positions",
+            worker=worker,
+        )
         if self.args.debug:
             logger.debug(f"Started position load worker thread {thread}. active threads: {len(self._active_threads)}")
         thread.start()
@@ -515,7 +524,11 @@ class PositionManagerWindow(QMainWindow):
         logger.debug(f"PositionManagerWindow requesting stop for thread '{name}'")
         thread.requestInterruption()
         thread.quit()
-        return False
+        if not thread.wait(3000):
+            logger.warning(f"PositionManagerWindow thread '{name}' did not stop in time; terminating")
+            thread.terminate()
+            return bool(thread.wait(1000))
+        return True
 
     def _detach_running_threads_for_close(self):
         threads: set[QThread] = set()
@@ -1001,6 +1014,43 @@ class PositionManagerWindow(QMainWindow):
         except RuntimeError as e:
             logger.warning(f"RuntimeError calling thread.isRunning(): {e} ({type(e)})")
             return False
+
+    def _register_thread(
+        self,
+        thread: QThread,
+        owner_name: str,
+        task_name: str,
+        launched_by: str,
+        worker: object | None = None,
+    ) -> None:
+        self._thread_registry[id(thread)] = {
+            "thread": thread,
+            "thread_id": id(thread),
+            "owner_name": str(owner_name),
+            "task_name": str(task_name),
+            "launched_by": str(launched_by),
+            "worker_name": type(worker).__name__ if worker is not None else "",
+            "started_at": time.time(),
+        }
+
+    def get_running_tasks(self) -> list[dict[str, Any]]:
+        tasks: list[dict[str, Any]] = []
+        for meta in self._thread_registry.values():
+            thread = cast(QThread | None, meta.get("thread"))
+            if not self._thread_is_running(thread):
+                continue
+            entry = dict(meta)
+            entry["running"] = True
+            tasks.append(entry)
+        return sorted(tasks, key=lambda item: float(item.get("started_at", 0.0)))
+
+    def stop_tracked_task(self, thread_id: int) -> bool:
+        meta = self._thread_registry.get(int(thread_id))
+        if not meta:
+            return False
+        thread = cast(QThread | None, meta.get("thread"))
+        task_name = str(meta.get("task_name") or f"thread_{thread_id}")
+        return bool(self._shutdown_thread(thread, task_name))
 
     def closeEvent(self, event: QCloseEvent):
         if self._any_worker_running():

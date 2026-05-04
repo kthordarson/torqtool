@@ -29,6 +29,7 @@ from .trip_plot_worker import TripPlotWorker
 from .position_manager_window import PositionManagerWindow
 from .start_end_window import StartEndWindow
 from .pandas_model import PandasModel
+from .tasks_window import TasksWindow
 from ._helpers import _normalize_col_name, format_duration, _ORPHAN_QTHREADS, _release_orphan_thread
 
 
@@ -73,9 +74,11 @@ class MainWindow(QMainWindow):
 		self._plot_request_context: dict[int, dict[str, Any]] = {}
 		self._preview_render_min_interval_s = 0.25
 		self._active_threads: set[QThread] = set()
+		self._thread_registry: dict[int, dict[str, Any]] = {}
 		self._closing = False
 		self._position_manager_window: PositionManagerWindow | None = None
 		self._start_end_window: StartEndWindow | None = None
+		self._task_window = None
 		self._position_manager_embedded_widget: QWidget | None = None
 		self._start_end_embedded_widget: QWidget | None = None
 		self._positions_tab_container: QWidget | None = None
@@ -485,6 +488,18 @@ class MainWindow(QMainWindow):
 		start_end_action = QAction("Start/&End grouped trips", self)
 		start_end_action.triggered.connect(self._open_start_end_window)
 		tools_menu.addAction(start_end_action)
+		tasks_action = QAction("&Tasks", self)
+		tasks_action.triggered.connect(self._open_tasks_window)
+		tools_menu.addAction(tasks_action)
+
+	def _open_tasks_window(self) -> None:
+		if self._task_window is None:
+			self._task_window = TasksWindow(self._collect_running_tasks, self._stop_task_from_monitor, self)
+			self._task_window.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
+		self._task_window.show()
+		self._task_window.setWindowState(self._task_window.windowState() & ~Qt.WindowState.WindowMinimized)
+		self._task_window.raise_()
+		self._task_window.activateWindow()
 
 	def _open_position_manager(self):
 		if hasattr(self, "left_tabs") and self.left_tabs is not None:
@@ -995,11 +1010,19 @@ class MainWindow(QMainWindow):
 		thread.finished.connect(worker.deleteLater)
 		thread.finished.connect(thread.deleteLater)
 		thread.finished.connect(lambda t=thread: self._active_threads.discard(t))
+		thread.finished.connect(lambda t=thread: self._thread_registry.pop(id(t), None))
 		thread.finished.connect(lambda: setattr(self, '_initial_trips_thread', None))
 
 		self._initial_trips_worker = worker
 		self._initial_trips_thread = thread
 		self._active_threads.add(thread)
+		self._register_thread(
+			thread,
+			owner_name="MainWindow",
+			task_name="Initial trips load",
+			launched_by="_start_async_initial_trips_load",
+			worker=worker,
+		)
 		if self.args.debug:
 			logger.debug(f'Starting initial trips load in thread {thread} active threads: {len(self._active_threads)})')
 		thread.start()
@@ -1493,11 +1516,19 @@ class MainWindow(QMainWindow):
 		thread.finished.connect(worker.deleteLater)
 		thread.finished.connect(thread.deleteLater)
 		thread.finished.connect(lambda t=thread: self._active_threads.discard(t))
+		thread.finished.connect(lambda t=thread: self._thread_registry.pop(id(t), None))
 		thread.finished.connect(lambda: setattr(self, '_plot_data_thread', None))
 
 		self._plot_data_worker = worker
 		self._plot_data_thread = thread
 		self._active_threads.add(thread)
+		self._register_thread(
+			thread,
+			owner_name="MainWindow",
+			task_name="Trip plot background load",
+			launched_by="_load_plot_data_async",
+			worker=worker,
+		)
 		thread.start()
 
 	def _on_async_plot_preview(self, request_id: int, payload: object) -> None:
@@ -2363,6 +2394,62 @@ class MainWindow(QMainWindow):
 			return bool(thread.isRunning())
 		except RuntimeError:
 			return False
+
+	def _register_thread(
+		self,
+		thread: QThread,
+		owner_name: str,
+		task_name: str,
+		launched_by: str,
+		worker: object | None = None,
+	) -> None:
+		self._thread_registry[id(thread)] = {
+			"thread": thread,
+			"thread_id": id(thread),
+			"owner_name": str(owner_name),
+			"task_name": str(task_name),
+			"launched_by": str(launched_by),
+			"worker_name": type(worker).__name__ if worker is not None else "",
+			"started_at": time.time(),
+		}
+
+	def get_running_tasks(self) -> list[dict[str, Any]]:
+		tasks: list[dict[str, Any]] = []
+		for meta in self._thread_registry.values():
+			thread = cast(QThread | None, meta.get("thread"))
+			if not self._thread_is_running(thread):
+				continue
+			entry = dict(meta)
+			entry["running"] = True
+			tasks.append(entry)
+		return sorted(tasks, key=lambda item: float(item.get("started_at", 0.0)))
+
+	def _collect_running_tasks(self) -> list[dict[str, Any]]:
+		tasks = self.get_running_tasks()
+		if self._position_manager_window is not None and hasattr(self._position_manager_window, "get_running_tasks"):
+			tasks.extend(self._position_manager_window.get_running_tasks())
+		if self._start_end_window is not None and hasattr(self._start_end_window, "get_running_tasks"):
+			tasks.extend(self._start_end_window.get_running_tasks())
+		return sorted(tasks, key=lambda item: float(item.get("started_at", 0.0)))
+
+	def stop_tracked_task(self, thread_id: int) -> bool:
+		meta = self._thread_registry.get(int(thread_id))
+		if not meta:
+			return False
+		thread = cast(QThread | None, meta.get("thread"))
+		task_name = str(meta.get("task_name") or f"thread_{thread_id}")
+		return self._shutdown_thread(thread, task_name)
+
+	def _stop_task_from_monitor(self, thread_id: int) -> bool:
+		if self.stop_tracked_task(thread_id):
+			return True
+		if self._position_manager_window is not None and hasattr(self._position_manager_window, "stop_tracked_task"):
+			if self._position_manager_window.stop_tracked_task(thread_id):
+				return True
+		if self._start_end_window is not None and hasattr(self._start_end_window, "stop_tracked_task"):
+			if self._start_end_window.stop_tracked_task(thread_id):
+				return True
+		return False
 
 	def _shutdown_thread(self, thread: QThread | None, name: str) -> bool:
 		if self.args.debug:
