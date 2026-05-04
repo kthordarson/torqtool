@@ -55,6 +55,8 @@ class PositionManagerWindow(QMainWindow):
         self._label_filter_active: bool = False
         self._label_filter_text: str = ""
         self._hide_labeled_active: bool = False
+        self._visible_on_map_filter_active: bool = False
+        self._visible_map_bounds: tuple[float, float, float, float] | None = None
         self._updating_selection: bool = False
         self._pending_pick_call: tuple[list[int], bool] | None = None
         self._group_mode: str = "label"
@@ -172,6 +174,8 @@ class PositionManagerWindow(QMainWindow):
         self.hide_labeled_chk = QCheckBox("Hide labeled")
         self.show_labeled_points_chk = QCheckBox("Hide labeled points")
         self.show_labeled_points_chk.setChecked(False)
+        self.visible_on_map_chk = QCheckBox("Table: only points visible on map")
+        self.visible_on_map_chk.setChecked(False)
         form.addRow("Type", self.pos_type_combo)
         form.addRow("ID", self.pos_id_spin)
         form.addRow("Latitude", self.lat_spin)
@@ -212,12 +216,15 @@ class PositionManagerWindow(QMainWindow):
         map_btn_row.addWidget(self.reload_map_btn)
         map_btn_row.addStretch()
         editor_layout.addLayout(map_btn_row)
+        self.deselect_all_btn = QPushButton("Deselect all")
+        self.deselect_all_btn.setFixedHeight(24)
         button_row.addWidget(self.refresh_btn)
         button_row.addWidget(self.new_btn)
         button_row.addWidget(self.save_btn)
         button_row.addWidget(self.apply_label_btn)
         button_row.addWidget(self.delete_btn)
         button_row.addWidget(self.sort_similar_btn)
+        button_row.addWidget(self.deselect_all_btn)
         button_row.addStretch()
         editor_layout.addLayout(button_row)
 
@@ -225,6 +232,7 @@ class PositionManagerWindow(QMainWindow):
         filter_row.setSpacing(6)
         filter_row.addWidget(self.hide_labeled_chk)
         filter_row.addWidget(self.show_labeled_points_chk)
+        filter_row.addWidget(self.visible_on_map_chk)
         filter_row.addWidget(self.label_filter_chk)
         filter_row.addWidget(self.label_filter_edit)
         filter_row.addStretch()
@@ -246,6 +254,7 @@ class PositionManagerWindow(QMainWindow):
         self.setCentralWidget(central)
 
         self.map_canvas.bridge.point_clicked.connect(self._on_map_point_clicked)
+        self.map_canvas.bridge.map_view_changed.connect(self._on_map_view_changed)
         self.refresh_btn.clicked.connect(self.load_positions)
         self.new_btn.clicked.connect(self._start_new_entry)
         self.save_btn.clicked.connect(self.save_entry)
@@ -261,9 +270,11 @@ class PositionManagerWindow(QMainWindow):
         self.reload_map_btn.clicked.connect(self._force_reload_basemap)
         self.positions_table.horizontalHeader().sortIndicatorChanged.connect(self._on_sort_indicator_changed)
         self.hide_labeled_chk.toggled.connect(self._on_label_filter_changed)
+        self.visible_on_map_chk.toggled.connect(self._on_visible_on_map_filter_changed)
         self.label_filter_chk.toggled.connect(self._on_label_filter_changed)
         self.label_filter_edit.textChanged.connect(self._on_label_filter_changed)
         self.label_edit.returnPressed.connect(self._on_label_return_pressed)
+        self.deselect_all_btn.clicked.connect(self._deselect_all)
 
         self.load_positions()
 
@@ -328,6 +339,14 @@ class PositionManagerWindow(QMainWindow):
                 filtered_df = filtered_df[mask]
             else:
                 filtered_df = filtered_df[filtered_df["label"].astype(str).str.strip() != ""]
+        if self._visible_on_map_filter_active and self._visible_map_bounds is not None and not filtered_df.empty:
+            south, west, north, east = self._visible_map_bounds
+            lat = pd.to_numeric(filtered_df["latitude"], errors="coerce")
+            lon = pd.to_numeric(filtered_df["longitude"], errors="coerce")
+            filtered_df = filtered_df[
+                lat.between(south, north, inclusive="both") &
+                lon.between(west, east, inclusive="both")
+            ]
         return filtered_df
 
     @staticmethod
@@ -455,6 +474,56 @@ class PositionManagerWindow(QMainWindow):
         if self._selected_row_indices:
             self._select_rows_by_indices(self._selected_row_indices, select_table=True, zoom_to_points=False)
 
+    def _on_visible_on_map_filter_changed(self, checked: bool) -> None:
+        self._visible_on_map_filter_active = bool(checked)
+        if not self._visible_on_map_filter_active:
+            self._visible_map_bounds = None
+            self._set_table_model()
+            if self._selected_row_indices:
+                self._select_rows_by_indices(self._selected_row_indices, select_table=True, zoom_to_points=False)
+            return
+
+        self.map_canvas.get_visible_bounds(self._on_visible_bounds_received)
+
+    def _on_visible_bounds_received(self, bounds) -> None:
+        self._visible_map_bounds = self._parse_bounds(bounds)
+        self._set_table_model()
+        if self._selected_row_indices:
+            self._select_rows_by_indices(self._selected_row_indices, select_table=True, zoom_to_points=False)
+
+    @staticmethod
+    def _parse_bounds(bounds) -> tuple[float, float, float, float] | None:
+        if not isinstance(bounds, dict):
+            return None
+        try:
+            south_raw = bounds.get("south")
+            west_raw = bounds.get("west")
+            north_raw = bounds.get("north")
+            east_raw = bounds.get("east")
+            if south_raw is None or west_raw is None or north_raw is None or east_raw is None:
+                return None
+            south = float(south_raw)
+            west = float(west_raw)
+            north = float(north_raw)
+            east = float(east_raw)
+            return (south, west, north, east)
+        except Exception as e:
+            logger.debug(f"Unable to parse map bounds: {e} ({type(e)})")
+            return None
+
+    def _on_map_view_changed(self, data_str: str) -> None:
+        if not self._visible_on_map_filter_active:
+            return
+        try:
+            payload = json.loads(data_str)
+        except Exception as e:
+            logger.debug(f"Unable to parse map view changed payload: {e} ({type(e)})")
+            return
+        self._visible_map_bounds = self._parse_bounds(payload)
+        self._set_table_model()
+        if self._selected_row_indices:
+            self._select_rows_by_indices(self._selected_row_indices, select_table=True, zoom_to_points=False)
+
     def _update_label_completer(self) -> None:
         labels = sorted(set(
             str(v) for v in self.df_positions["label"].dropna()
@@ -468,10 +537,22 @@ class PositionManagerWindow(QMainWindow):
         elif self._selected_row_index is not None:
             self.save_entry()
 
+    def _deselect_all(self) -> None:
+        self._selected_row_index = None
+        self._selected_row_indices = []
+        self._clear_selection_markers()
+        if self.positions_table.selectionModel() is not None:
+            self._updating_selection = True
+            try:
+                self.positions_table.selectionModel().clearSelection()
+            finally:
+                self._updating_selection = False
+        self.selected_info.setText("Select a start/end point from the map or table")
+
     def _on_toggle_labeled_points(self, checked: bool):
         # Checkbox meaning: checked => hide labeled points.
         self._show_labeled_points = not bool(checked)
-        self._plot_positions()
+        self._plot_positions(preserve_view=True)
         if self._selected_row_indices:
             QTimer.singleShot(500, lambda: self._draw_selection_markers(self._selected_row_indices))
 
@@ -588,7 +669,7 @@ class PositionManagerWindow(QMainWindow):
         self._clear_selection_markers()
         self._set_table_model()
         self._update_label_completer()
-        self._plot_positions()
+        self._plot_positions(preserve_view=True)
 
         restore_state = self._restore_after_reload
         self._restore_after_reload = None
@@ -619,7 +700,7 @@ class PositionManagerWindow(QMainWindow):
         QMessageBox.warning(self, "Load Failed", error_message)
         self.selected_info.setText("Failed to load positions")
 
-    def _plot_positions(self):
+    def _plot_positions(self, preserve_view: bool = False):
         if self.df_positions.empty:
             self._full_bounds_latlon = None
             self.map_canvas.show_empty("No start/end points available")
@@ -637,9 +718,8 @@ class PositionManagerWindow(QMainWindow):
 
         if not self._show_labeled_points:
             plot_df = plot_df[self._unlabeled_mask(plot_df["label"])]
-            if self.args.debug or len(plot_df) == 0:
+            if self.args.debug and len(plot_df) == 0:
                 logger.warning(f"Plotting positions: show_labeled_points is {self._show_labeled_points}, filtered out labeled points, remaining count: {len(plot_df)}")
-                return                
             if self.args.debug and len(plot_df) > 0:
                 logger.debug(f"Plotting positions: show_labeled_points is {self._show_labeled_points}, filtered out labeled points, remaining count: {len(plot_df)}")
 
@@ -671,10 +751,12 @@ class PositionManagerWindow(QMainWindow):
             lat = float(row["latitude"])
             lon = float(row["longitude"])
             count = max(1, int(row.get("count", 1)))
-            label = str(row.get("label", "")).strip()
+            label_raw = row.get("label", None)
+            label_txt = "" if pd.isna(label_raw) else str(label_raw).strip()
+            missing_label = (not label_txt) or label_txt.casefold() == "none"
             color = "blue" if pos_type == "start" else "red"
             radius = max(4.0, min(12.0, count * 0.5 + 4.0))
-            tooltip_str = f"{pos_id}: {label}" if label else str(pos_id)
+            tooltip_str = f"{pos_id}: {label_txt}" if not missing_label else f"{pos_id}: (no label)"
             if not self._show_point_labels:
                 tooltip_str = str(pos_id)
             features.append({
@@ -687,13 +769,22 @@ class PositionManagerWindow(QMainWindow):
                     "color": color,
                     "radius": radius,
                     "tt": tooltip_str,
+                    "always_label": bool(self._show_point_labels),
+                    "missing_label": bool(missing_label),
                 },
             })
 
         on_each_feature = JsCode(
             "function(feature, layer) {"
+            "  var p = feature.properties;"
+            "  layer.bindTooltip(String(p.tt), {"
+            "    permanent: !!p.always_label,"
+            "    sticky: !p.always_label,"
+            "    direction: 'top',"
+            "    className: p.missing_label ? 'missing-label-tip' : '',"
+            "    opacity: 0.92"
+            "  });"
             "  layer.on('click', function(e) {"
-            "    var p = feature.properties;"
             "    var d = JSON.stringify({row_index: p.row_index, pos_id: p.pos_id, pos_type: p.pos_type});"
             "    new QWebChannel(qt.webChannelTransport, function(ch) {"
             "      ch.objects.bridge.on_point_clicked(d);"
@@ -712,13 +803,23 @@ class PositionManagerWindow(QMainWindow):
                 "fill": True,
                 "fillOpacity": 0.75,
             },
-            tooltip=folium.GeoJsonTooltip(fields=["tt"], aliases=[""]),
             name="positions",
             on_each_feature=on_each_feature,
         )
         geojson_layer.add_to(m)
 
-        self.map_canvas.display_map(m)
+        cast(Any, m.get_root()).header.add_child(folium.Element(
+            "<style>"
+            ".missing-label-tip {"
+            "  background: #ffe770 !important;"
+            "  border: 1px solid #c1a400 !important;"
+            "  color: #1f1f1f !important;"
+            "  font-weight: 600;"
+            "}"
+            "</style>"
+        ))
+
+        self.map_canvas.display_map(m, preserve_view=preserve_view)
 
     def _on_map_point_clicked(self, data_str: str) -> None:
         try:
@@ -775,7 +876,7 @@ class PositionManagerWindow(QMainWindow):
     def _on_toggle_labels(self, checked: bool) -> None:
         self._show_point_labels = bool(checked)
         self.toggle_labels_btn.setText("Labels on" if checked else "Labels off")
-        self._plot_positions()
+        self._plot_positions(preserve_view=True)
 
     def _sort_table_by_similar_latlon(self):
         if self._table_model is None:
@@ -885,7 +986,7 @@ class PositionManagerWindow(QMainWindow):
             self.map_canvas.zoom_full(*self._full_bounds_latlon)
 
     def _force_reload_basemap(self) -> None:
-        self._plot_positions()
+        self._plot_positions(preserve_view=True)
 
     def _start_new_entry(self):
         self._selected_row_index = None
