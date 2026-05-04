@@ -2578,10 +2578,12 @@ class MainWindow(QMainWindow):
 		agg_parts: list[str] = []
 		col_map: list[tuple[str, str]] = []
 		seen_actual_cols: set[str] = set()
+		collapsed_alias_count = 0
 		for metric in metric_columns:
 			actual = self._resolve_actual_torqlogs_column(metric)
 			if actual and actual in numeric_cols:
 				if actual in seen_actual_cols:
+					collapsed_alias_count += 1
 					continue
 				seen_actual_cols.add(actual)
 				agg_parts.append(
@@ -2590,6 +2592,12 @@ class MainWindow(QMainWindow):
 					f'MAX(CAST("{actual}" AS FLOAT)) AS "_s_{metric}_max"'
 				)
 				col_map.append((metric, actual))
+
+		if self.args.debug and collapsed_alias_count > 0:
+			logger.debug(
+				f"Collapsed {collapsed_alias_count} alias metric name(s) into {len(seen_actual_cols)} unique torqlogs column(s) "
+				f"for selected trips={sorted(int(fid) for fid in fileids)}"
+			)
 
 		if not agg_parts:
 			return {}
