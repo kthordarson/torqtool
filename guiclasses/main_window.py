@@ -1445,9 +1445,7 @@ class MainWindow(QMainWindow):
 		rows = sorted(set(index.row() for index in self.table.selectionModel().selectedRows()))
 		if rows:
 			logger.debug(f"refresh_plot triggered with {len(rows)} selected row(s): {rows[:5]}{'...' if len(rows) > 5 else ''}")
-			selected_metrics = self._get_selected_metrics()
-			multi_metric_async = len(rows) > 1 and len(selected_metrics) > 1
-			if self._force_next_plot_async or len(rows) >= self._plot_async_threshold or multi_metric_async:
+			if self._force_next_plot_async or len(rows) > 1:
 				self._force_next_plot_async = False
 				self._start_async_plot_for_rows(rows)
 				return
