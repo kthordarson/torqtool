@@ -375,6 +375,10 @@ def update_trip_and_file_for_fileid(conn, fileid):
 				trip_distance = float(sum(distances))
 			else:
 				trip_distance = 0.0
+	except TypeError as e:
+		logger.warning(f"Error calculating trip_distance for fileid {fileid}: {e} {type(e)}")
+		trip_distance = 0.0
+
 	except Exception as e:
 		logger.error(f"Error calculating trip_distance for fileid {fileid}: {e} {type(e)}")
 		trip_distance = 0.0
@@ -449,11 +453,16 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs') -> None:
 		return None, pd_columns
 
 	for file_idx, csvfile in enumerate(csv_files):
+		linecount = 0
 		try:
-			if csvfile.stat().st_size < MIN_FILESIZE:
-				with open(csvfile, 'rb') as f:
-					d = f.readlines()
-				linecount = len(d)
+			with open(csvfile, 'rb') as f:
+				d = f.readlines()
+			linecount = len(d)
+		except Exception as e:
+			logger.error(f"Error counting lines in {csvfile}: {e} {type(e)}")
+			continue
+		try:
+			if csvfile.stat().st_size < MIN_FILESIZE or linecount < args.min_row_count:
 				logger.warning(f"Skipping {csvfile} - file size too small {csvfile.stat().st_size} min {MIN_FILESIZE} lines {linecount}")
 				continue
 
