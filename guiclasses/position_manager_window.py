@@ -170,8 +170,8 @@ class PositionManagerWindow(QMainWindow):
         self.label_filter_edit.setEnabled(False)
         self.label_filter_edit.setFixedWidth(180)
         self.hide_labeled_chk = QCheckBox("Hide labeled")
-        self.show_labeled_points_chk = QCheckBox("Show points with labels")
-        self.show_labeled_points_chk.setChecked(True)
+        self.show_labeled_points_chk = QCheckBox("Hide labeled points")
+        self.show_labeled_points_chk.setChecked(False)
         form.addRow("Type", self.pos_type_combo)
         form.addRow("ID", self.pos_id_spin)
         form.addRow("Latitude", self.lat_spin)
@@ -319,7 +319,7 @@ class PositionManagerWindow(QMainWindow):
         if self._min_count_filter > 0 and not filtered_df.empty:
             filtered_df = filtered_df[filtered_df["count"] >= self._min_count_filter]
         if self._hide_labeled_active and not filtered_df.empty:
-            filtered_df = filtered_df[filtered_df["label"].astype(str).str.strip() == ""]
+            filtered_df = filtered_df[self._unlabeled_mask(filtered_df["label"])]
         if self._label_filter_active and not filtered_df.empty:
             if self._label_filter_text:
                 mask = filtered_df["label"].astype(str).str.contains(
@@ -329,6 +329,11 @@ class PositionManagerWindow(QMainWindow):
             else:
                 filtered_df = filtered_df[filtered_df["label"].astype(str).str.strip() != ""]
         return filtered_df
+
+    @staticmethod
+    def _unlabeled_mask(series: pd.Series) -> pd.Series:
+        stripped = series.fillna("").astype(str).str.strip()
+        return series.isna() | stripped.eq("") | stripped.str.casefold().eq("none")
 
     def _on_group_mode_changed(self, index: int):
         mode = str(self.group_mode_combo.currentData() or "label")
@@ -464,7 +469,8 @@ class PositionManagerWindow(QMainWindow):
             self.save_entry()
 
     def _on_toggle_labeled_points(self, checked: bool):
-        self._show_labeled_points = bool(checked)
+        # Checkbox meaning: checked => hide labeled points.
+        self._show_labeled_points = not bool(checked)
         self._plot_positions()
         if self._selected_row_indices:
             QTimer.singleShot(500, lambda: self._draw_selection_markers(self._selected_row_indices))
@@ -617,16 +623,26 @@ class PositionManagerWindow(QMainWindow):
         if self.df_positions.empty:
             self._full_bounds_latlon = None
             self.map_canvas.show_empty("No start/end points available")
+            if self.args.debug:
+                logger.warning("Plotting positions: no start/end points available")
             return
 
         plot_df = self.df_positions
-        if not self._show_labeled_points:
-            plot_df = plot_df[plot_df["label"].astype(str).str.strip() == ""]
-
         if plot_df.empty:
             self._full_bounds_latlon = None
             self.map_canvas.show_empty("No points for current filter")
+            if self.args.debug:
+                logger.warning("Plotting positions: no points to plot after filtering")
             return
+
+        if not self._show_labeled_points:
+            plot_df = plot_df[self._unlabeled_mask(plot_df["label"])]
+            if self.args.debug or len(plot_df) == 0:
+                logger.warning(f"Plotting positions: show_labeled_points is {self._show_labeled_points}, filtered out labeled points, remaining count: {len(plot_df)}")
+                return                
+            if self.args.debug and len(plot_df) > 0:
+                logger.debug(f"Plotting positions: show_labeled_points is {self._show_labeled_points}, filtered out labeled points, remaining count: {len(plot_df)}")
+
 
         self._visible_row_indices = set(int(i) for i in plot_df.index.tolist())
 
@@ -640,7 +656,11 @@ class PositionManagerWindow(QMainWindow):
 
         clat = (lat_min + lat_max) / 2
         clon = (lon_min + lon_max) / 2
-        m = folium.Map(location=[clat, clon], zoom_start=8)
+        try:
+            m = folium.Map(location=[clat, clon], zoom_start=8)
+        except ValueError as e:
+            logger.error(f"Error creating folium Map: {e} ({type(e)})")
+            m = folium.Map(location=[0, 0], zoom_start=2)
         m.fit_bounds([[lat_min - pad_lat, lon_min - pad_lon], [lat_max + pad_lat, lon_max + pad_lon]])
 
         # Build GeoJSON features
