@@ -5,8 +5,7 @@ from typing import Any, cast
 import numpy as np
 import pandas as pd
 import folium
-import matplotlib.pyplot as plt
-import matplotlib.image as mpimg
+from matplotlib import colormaps
 import matplotlib.colors as mcolors
 from loguru import logger
 from sqlalchemy import text, inspect
@@ -26,10 +25,7 @@ from .map_canvas import FoliumMapView
 from .time_series_canvas import TimeSeriesCanvas
 from .trip_list_worker import TripListWorker
 from .trip_plot_worker import TripPlotWorker
-from .position_manager_window import PositionManagerWindow
-from .start_end_window import StartEndWindow
 from .pandas_model import PandasModel
-from .tasks_window import TasksWindow
 from ._helpers import _normalize_col_name, format_duration, _ORPHAN_QTHREADS, _release_orphan_thread
 
 
@@ -79,8 +75,8 @@ class MainWindow(QMainWindow):
 		self._active_threads: set[QThread] = set()
 		self._thread_registry: dict[int, dict[str, Any]] = {}
 		self._closing = False
-		self._position_manager_window: PositionManagerWindow | None = None
-		self._start_end_window: StartEndWindow | None = None
+		self._position_manager_window: Any | None = None
+		self._start_end_window: Any | None = None
 		self._task_window = None
 		self._position_manager_embedded_widget: QWidget | None = None
 		self._start_end_embedded_widget: QWidget | None = None
@@ -443,7 +439,8 @@ class MainWindow(QMainWindow):
 		self._set_label_groups_table_model(self._label_groups_df)
 		QTimer.singleShot(0, self._start_async_initial_trips_load)
 		QTimer.singleShot(0, self._populate_label_groups_table)
-		QTimer.singleShot(0, self._populate_metric_columns)
+		# Defer metric summary loading until trips are loaded and a selection exists.
+		# Running _populate_metric_columns() here scans all torqlogs rows and delays startup.
 		self._create_menu_bar()
 		logger.debug("MainWindow initialized and UI set up")
 
@@ -509,6 +506,7 @@ class MainWindow(QMainWindow):
 
 	def _open_tasks_window(self) -> None:
 		if self._task_window is None:
+			from .tasks_window import TasksWindow
 			self._task_window = TasksWindow(self._collect_running_tasks, self._stop_task_from_monitor, self)
 			self._task_window.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
 		self._task_window.show()
@@ -522,6 +520,7 @@ class MainWindow(QMainWindow):
 			self.left_tabs.setCurrentIndex(2)
 			return
 		if self._position_manager_window is None:
+			from .position_manager_window import PositionManagerWindow
 			self._position_manager_window = PositionManagerWindow(self.args, self.engine, self)
 		self._position_manager_window.show()
 		self._position_manager_window.raise_()
@@ -533,6 +532,7 @@ class MainWindow(QMainWindow):
 			self.left_tabs.setCurrentIndex(1)
 			return
 		if self._start_end_window is None:
+			from .start_end_window import StartEndWindow
 			self._start_end_window = StartEndWindow(self.args, self.engine, self)
 		self._start_end_window.show()
 		self._start_end_window.raise_()
@@ -544,6 +544,7 @@ class MainWindow(QMainWindow):
 		if self._positions_tab_layout is None or self._positions_tab_container is None:
 			return
 		if self._position_manager_window is None:
+			from .position_manager_window import PositionManagerWindow
 			self._position_manager_window = PositionManagerWindow(self.args, self.engine, self)
 			if hasattr(self._position_manager_window, "set_table_font_size"):
 				self._position_manager_window.set_table_font_size(self._trip_table_font_size)
@@ -563,6 +564,7 @@ class MainWindow(QMainWindow):
 		if self._start_end_tab_layout is None or self._start_end_tab_container is None:
 			return
 		if self._start_end_window is None:
+			from .start_end_window import StartEndWindow
 			self._start_end_window = StartEndWindow(self.args, self.engine, self)
 			if hasattr(self._start_end_window, "set_table_font_size"):
 				self._start_end_window.set_table_font_size(self._trip_table_font_size)
@@ -2018,7 +2020,7 @@ class MainWindow(QMainWindow):
 		return 10
 
 	def _build_fileid_color_map(self, fileids: list[int], colormap_name: str) -> dict[int, tuple[float, float, float, float]]:
-		cmap = plt.colormaps[colormap_name]
+		cmap = colormaps[colormap_name]
 		cycle_length = self._colormap_cycle_length(colormap_name)
 		return {int(fileid): cmap(idx % cycle_length) for idx, fileid in enumerate(fileids)}
 
@@ -2084,7 +2086,7 @@ class MainWindow(QMainWindow):
 		m = folium.Map(location=[clat, clon], zoom_start=int(self.zoom_combo.currentText()))
 		m.fit_bounds([[lat_min, lon_min], [lat_max, lon_max]])
 
-		cmap = plt.colormaps[colormap_name]
+		cmap = colormaps[colormap_name]
 		fileid_color_map = self._build_fileid_color_map(fileids, colormap_name)
 
 		for idx, item in enumerate(trip_data_list):
@@ -2312,6 +2314,7 @@ class MainWindow(QMainWindow):
 		ax.clear()
 		cached_img = self._load_cached_timeseries_image(fileids, metric_names, colormap_name)
 		if cached_img is not None:
+			import matplotlib.image as mpimg
 			img = mpimg.imread(io.BytesIO(cached_img), format='png')
 			ax.imshow(img, extent=(0, 1, 0, 1), transform=ax.transAxes, aspect='auto', zorder=0)
 			ax.set_axis_off()
@@ -2319,7 +2322,7 @@ class MainWindow(QMainWindow):
 			logger.debug(f"Loaded cached timeseries image for metrics={metric_names}, trips={fileids}")
 			return
 		ax.set_axis_on()
-		cmap = plt.colormaps[colormap_name]
+		cmap = colormaps[colormap_name]
 		cycle_length = self._colormap_cycle_length(colormap_name)
 		linestyles = ['-', '--', ':', '-.']
 		multi_metric = len(metric_names) > 1
