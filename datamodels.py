@@ -178,6 +178,8 @@ class MapImageCache(Base):
 	zoom: Mapped[int] = mapped_column(Integer, nullable=False)
 	colormap: Mapped[str] = mapped_column(Text, nullable=False)
 	image_png: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+	hit_count: Mapped[int] = mapped_column(Integer, default=0)
+	last_used: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 	created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 	updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 

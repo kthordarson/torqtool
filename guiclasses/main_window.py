@@ -488,6 +488,9 @@ class MainWindow(QMainWindow):
 
 		# Cache menu
 		cache_menu = menu_bar.addMenu("&Cache")
+		cache_stats_action = QAction("Show Cache &Stats", self)
+		cache_stats_action.triggered.connect(self._show_map_cache_stats)
+		cache_menu.addAction(cache_stats_action)
 		clear_map_cache_action = QAction("Clear &Map Image Cache", self)
 		clear_map_cache_action.triggered.connect(self._clear_map_image_cache)
 		cache_menu.addAction(clear_map_cache_action)
@@ -616,6 +619,78 @@ class MainWindow(QMainWindow):
 			logger.error(f"Failed to clear mapimagecache: {e} ({type(e)})")
 			QMessageBox.warning(self, "Cache Clear Failed", f"Could not clear mapimagecache:\n{e}")
 
+	def _show_map_cache_stats(self) -> None:
+		try:
+			with self.engine.connect() as conn:
+				summary_row = conn.execute(
+					text(
+						"""
+						SELECT
+							COUNT(*) AS cache_entries,
+							COALESCE(SUM(COALESCE(hit_count, 0)), 0) AS total_hits,
+							MAX(last_used) AS last_used_max,
+							MIN(created_at) AS first_created,
+							MAX(updated_at) AS last_updated
+						FROM mapimagecache
+						"""
+					)
+				).mappings().first()
+
+				top_rows = conn.execute(
+					text(
+						"""
+						SELECT
+							selection_key,
+							colormap,
+							zoom,
+							COALESCE(hit_count, 0) AS hit_count,
+							last_used,
+							LENGTH(image_png) AS image_bytes
+						FROM mapimagecache
+						ORDER BY COALESCE(hit_count, 0) DESC, updated_at DESC
+						LIMIT 10
+						"""
+					)
+				).mappings().all()
+
+			summary = summary_row or {}
+			entries = int(summary.get("cache_entries") or 0)
+			total_hits = int(summary.get("total_hits") or 0)
+			last_used = summary.get("last_used_max")
+			first_created = summary.get("first_created")
+			last_updated = summary.get("last_updated")
+
+			summary_text = (
+				f"Entries: {entries}\n"
+				f"Total hits: {total_hits}\n"
+				f"Last used: {last_used or 'N/A'}\n"
+				f"First created: {first_created or 'N/A'}\n"
+				f"Last updated: {last_updated or 'N/A'}"
+			)
+
+			detail_lines = [
+				"Top cache entries (by hit count)",
+				"hits | bytes | zoom | colormap | last_used | selection_key",
+			]
+			for row in top_rows:
+				hits = int(row.get("hit_count") or 0)
+				image_bytes = int(row.get("image_bytes") or 0)
+				zoom = int(row.get("zoom") or -1)
+				colormap = str(row.get("colormap") or "")
+				used = row.get("last_used") or "N/A"
+				key = str(row.get("selection_key") or "")
+				detail_lines.append(f"{hits:4d} | {image_bytes:6d} | {zoom:4d} | {colormap:8s} | {used} | {key}")
+
+			msg = QMessageBox(self)
+			msg.setIcon(QMessageBox.Icon.Information)
+			msg.setWindowTitle("Map Cache Stats")
+			msg.setText(summary_text)
+			msg.setDetailedText("\n".join(detail_lines))
+			msg.exec()
+		except Exception as e:
+			logger.error(f"Failed to load map cache stats: {e} ({type(e)})")
+			QMessageBox.warning(self, "Cache Stats Failed", f"Could not query map cache stats:\n{e}")
+
 	def _set_colormap(self, colormap_name: str):
 		self._invalidate_and_cancel_active_plot_load("Color change requested")
 		self._current_colormap = colormap_name
@@ -632,10 +707,47 @@ class MainWindow(QMainWindow):
 		self._plot_refresh_timer.start(300)
 
 	def on_dot_size_changed(self, value: int):
-		self._invalidate_and_cancel_active_plot_load("Dot size changed")
 		self._dot_size_scale = float(value) / 100.0
 		self.dot_size_value_label.setText(f"{self._dot_size_scale:.2f}x")
+		# Re-render from in-memory trip cache so dot size updates are instant and do not reload data.
+		if self._rerender_current_map_from_cache():
+			return
+		self._invalidate_and_cancel_active_plot_load("Dot size changed")
 		self._plot_refresh_timer.start(120)
+
+	def _rerender_current_map_from_cache(self) -> bool:
+		fileids = list(self._mw_current_fileids)
+		metric_name = str(self._mw_last_metric or "")
+		if not fileids or not metric_name or metric_name == "labels":
+			return False
+
+		trip_data_list: list[dict[str, Any]] = []
+		for fileid in fileids:
+			cache_key = (int(fileid), metric_name)
+			plot_data = self._trip_plot_cache.get(cache_key)
+			if not plot_data:
+				return False
+			trip_data_list.append(
+				{
+					"fileid": int(fileid),
+					"lat": list(plot_data.get("lat", [])),
+					"lon": list(plot_data.get("lon", [])),
+					"speed": list(plot_data.get("speed", [])),
+					"time": list(plot_data.get("time", [])),
+				}
+			)
+
+		if not trip_data_list:
+			return False
+
+		m, bounds = self._build_trip_folium_map(trip_data_list, fileids, self._current_colormap, render_phase="final")
+		if m is None:
+			return False
+		self._overlay_start_end_points(m, fileids, bounds)
+		if bounds:
+			self._mw_full_bounds_latlon = bounds
+		self.map_canvas.display_map(m)
+		return True
 
 	def _sample_step(self) -> int:
 		pct = max(1, min(100, int(self._point_sample_percent)))
@@ -1039,6 +1151,8 @@ class MainWindow(QMainWindow):
 			"ext_east": 'ALTER TABLE mapimagecache ADD COLUMN ext_east DOUBLE PRECISION',
 			"ext_south": 'ALTER TABLE mapimagecache ADD COLUMN ext_south DOUBLE PRECISION',
 			"ext_north": 'ALTER TABLE mapimagecache ADD COLUMN ext_north DOUBLE PRECISION',
+			"hit_count": 'ALTER TABLE mapimagecache ADD COLUMN hit_count INTEGER DEFAULT 0',
+			"last_used": 'ALTER TABLE mapimagecache ADD COLUMN last_used TIMESTAMP NULL',
 		}
 		with self.engine.begin() as conn:
 			for col_name, sql_stmt in alter_statements.items():
@@ -1954,12 +2068,25 @@ class MainWindow(QMainWindow):
 			LIMIT 1
 			"""
 		)
-		with self.engine.connect() as conn:
-			row = conn.execute(q, {
+		with self.engine.begin() as conn:
+			params = {
 				"selection_key": selection_key,
 				"zoom": -1,
 				"colormap": colormap,
-			}).first()
+			}
+			row = conn.execute(q, params).first()
+			if row and row[0] is not None:
+				conn.execute(
+					text(
+						"""
+						UPDATE mapimagecache
+						SET hit_count = COALESCE(hit_count, 0) + 1,
+							last_used = CURRENT_TIMESTAMP
+						WHERE selection_key = :selection_key AND zoom = :zoom AND colormap = :colormap
+						"""
+					),
+					params,
+				)
 		return bytes(row[0]) if row and row[0] is not None else None
 
 	def _save_cached_timeseries_image(self, fileids: list[int], metric_names: list[str], colormap: str):
@@ -1970,8 +2097,8 @@ class MainWindow(QMainWindow):
 		image_bytes = buf.getvalue()
 		upsert_sql = text(
 			"""
-			INSERT INTO mapimagecache (fileid, selection_key, zoom, colormap, image_png, ext_west, ext_east, ext_south, ext_north, created_at, updated_at)
-			VALUES (:fileid, :selection_key, :zoom, :colormap, :image_png, :ext_west, :ext_east, :ext_south, :ext_north, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+			INSERT INTO mapimagecache (fileid, selection_key, zoom, colormap, image_png, ext_west, ext_east, ext_south, ext_north, hit_count, last_used, created_at, updated_at)
+			VALUES (:fileid, :selection_key, :zoom, :colormap, :image_png, :ext_west, :ext_east, :ext_south, :ext_north, 0, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
 			ON CONFLICT(selection_key, zoom, colormap)
 			DO UPDATE SET
 				fileid = excluded.fileid,
