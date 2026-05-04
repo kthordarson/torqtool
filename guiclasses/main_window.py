@@ -161,12 +161,12 @@ class MainWindow(QMainWindow):
 		self._mw_reload_map_btn.clicked.connect(self._mw_force_reload_basemap)
 		main_layout.addWidget(self._mw_reload_map_btn)
 		sample_label = QLabel("Pts %:")
-		self.sample_percent_spin = QSpinBox()
-		self.sample_percent_spin.setRange(1, 100)
-		self.sample_percent_spin.setValue(self._point_sample_percent)
+		self.sample_percent_spin = QComboBox()
+		self.sample_percent_spin.addItems(["5", "10", "50", "100"])
+		self.sample_percent_spin.setCurrentText(str(self._point_sample_percent))
 		self.sample_percent_spin.setFixedWidth(72)
 		self.sample_percent_spin.setToolTip("Approximate percentage of torqlogs points to render")
-		self.sample_percent_spin.valueChanged.connect(self._on_sampling_changed)
+		self.sample_percent_spin.currentTextChanged.connect(self._on_sampling_changed)
 		self.sample_refresh_btn = QPushButton("Refresh")
 		self.sample_refresh_btn.setFixedHeight(24)
 		self.sample_refresh_btn.clicked.connect(lambda: self._plot_refresh_timer.start(50))
@@ -685,7 +685,7 @@ class MainWindow(QMainWindow):
 		parts = [f"{int(fid)}:{self._sample_step_for_fileid(int(fid))}" for fid in sorted(fileids)]
 		return "|".join(parts)
 
-	def _on_sampling_changed(self, value: int):
+	def _on_sampling_changed(self, value: int | str):
 		self._invalidate_and_cancel_active_plot_load("Sampling changed")
 		self._point_sample_percent = max(1, min(100, int(value)))
 		self._trip_plot_cache.clear()
@@ -1985,6 +1985,8 @@ class MainWindow(QMainWindow):
 			actual_col = self._resolve_actual_torqlogs_column(req_name)
 			if actual_col:
 				return actual_col
+		if self.args.debug:
+			logger.warning("No preferred speed metric column found in torqlogs, speed-based coloring will be unavailable")
 		return None
 
 	def _speed_values_for_map_item(self, item: dict[str, Any]) -> list[float]:
@@ -1996,6 +1998,8 @@ class MainWindow(QMainWindow):
 				self._resolve_actual_torqlogs_column("speedobdkmh"),
 			):
 				if not speed_col:
+					if self.args.debug:
+						logger.warning(f"No valid speed metric column found for map item with fileid={item.get('fileid', 'unknown')}, cannot extract speed values for coloring")
 					continue
 				raw_vals = metrics_payload.get(speed_col)
 				if isinstance(raw_vals, list) and raw_vals:
