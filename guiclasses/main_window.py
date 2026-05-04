@@ -1006,7 +1006,11 @@ class MainWindow(QMainWindow):
 	def _set_table_model(self, df: pd.DataFrame):
 		self.df_trips = df
 		display_columns = ["fileid", "trip_distance", "tripdate", "time"]
-		sort_overrides = {'trip_distance': 'trip_distance_sort'} if 'trip_distance_sort' in self.df_trips.columns else None
+		sort_overrides: dict[str, str] = {}
+		if 'trip_distance_sort' in self.df_trips.columns:
+			sort_overrides['trip_distance'] = 'trip_distance_sort'
+		if 'time_raw' in self.df_trips.columns:
+			sort_overrides['time'] = 'time_raw'
 		self.table_model = PandasModel(self.df_trips, display_columns=display_columns, sort_overrides=sort_overrides)
 		self.table.setModel(self.table_model)
 		font = self.table.font()
@@ -2117,15 +2121,9 @@ class MainWindow(QMainWindow):
 			layer.add_to(m)
 		if self.args.debug:
 			if render_phase == "preview":
-				logger.debug(
-					f"Preview map update: loaded={len(trip_data_list)}/{len(fileids)} trips, "
-					f"bounds={bounds}, speed_data_ready={has_speed_data}"
-				)
+				logger.debug(f"Preview map update: loaded={len(trip_data_list)}/{len(fileids)} trips,  bounds={bounds}, speed_data_ready={has_speed_data}")
 			else:
-				logger.debug(
-					f"Final map render: trips={len(trip_data_list)}, bounds={bounds}, "
-					f"speed_data_ready={has_speed_data}"
-				)
+				logger.debug(f"Final map render: trips={len(trip_data_list)}, bounds={bounds}, speed_data_ready={has_speed_data}")
 		return m, bounds
 
 	def _plot_for_rows(self, rows):
