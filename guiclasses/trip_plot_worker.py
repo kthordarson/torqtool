@@ -26,6 +26,7 @@ class TripPlotWorker(QObject):
         time_col: str | None,
         sample_step: int = 1,
         target_points_per_trip: int = 12000,
+        metric_names: list[str] | None = None,
     ):
         super().__init__()
         self.db_url = db_url
@@ -37,6 +38,12 @@ class TripPlotWorker(QObject):
         self.time_col = time_col
         self.sample_step = max(1, int(sample_step))
         self.target_points_per_trip = max(1000, int(target_points_per_trip))
+        self.metric_names = [str(metric_name)]
+        if metric_names:
+            for name in metric_names:
+                metric_str = str(name)
+                if metric_str and metric_str not in self.metric_names:
+                    self.metric_names.append(metric_str)
 
     def _adaptive_sample_step(self, row_count: int) -> int:
         step = max(1, int(self.sample_step))
@@ -128,6 +135,12 @@ class TripPlotWorker(QObject):
 
             # Phase 2: fetch metric/time data while lon/lat preview is already displayed.
             time_select = f', "{self.time_col}" AS metric_time' if self.time_col else ''
+            def _quoted(identifier: str) -> str:
+                return '"' + str(identifier).replace('"', '""') + '"'
+
+            metric_select_parts: list[str] = [f'{_quoted(metric)} AS "_m_{idx}"' for idx, metric in enumerate(self.metric_names)]
+            metric_select_sql = ", ".join(metric_select_parts)
+
             for current_index, fileid in enumerate(self.fileids, start=1):
                 thread = QThread.currentThread()
                 if thread is not None and thread.isInterruptionRequested():
@@ -154,14 +167,14 @@ class TripPlotWorker(QObject):
                 q = text(
                     f'''
                     WITH ordered AS (
-                        SELECT "{self.metric_name}" AS selectedmetric{time_select},
+                        SELECT {metric_select_sql}{time_select},
                             ROW_NUMBER() OVER (ORDER BY {order_expr}) AS rn
                         FROM torqlogs
                         WHERE fileid = :fileid
                             AND "{self.lon_col}" IS NOT NULL
                             AND "{self.lat_col}" IS NOT NULL
                     )
-                    SELECT selectedmetric{', metric_time' if self.time_col else ''}
+                    SELECT {", ".join([f'"_m_{idx}"' for idx in range(len(self.metric_names))])}{', metric_time' if self.time_col else ''}
                     FROM ordered
                     WHERE (:sample_step <= 1) OR ((rn - 1) % :sample_step = 0)
                     ORDER BY rn
@@ -173,7 +186,8 @@ class TripPlotWorker(QObject):
                     self.progress.emit(self.request_id, current_index, len(self.fileids))
                     continue
 
-                metric_series = pd.to_numeric(df["selectedmetric"], errors="coerce").fillna(0.0)
+                primary_col = "_m_0"
+                metric_series = pd.to_numeric(df[primary_col], errors="coerce").fillna(0.0)
                 if metric_series.empty:
                     self.progress.emit(self.request_id, current_index, len(self.fileids))
                     continue
@@ -188,12 +202,21 @@ class TripPlotWorker(QObject):
                 if self.time_col and "metric_time" in df.columns:
                     time_values = pd.to_datetime(df["metric_time"], errors="coerce").tolist()[:point_count]
 
+                metrics_payload: dict[str, list[float]] = {}
+                for metric_index, metric_name in enumerate(self.metric_names):
+                    col_name = f"_m_{metric_index}"
+                    if col_name not in df.columns:
+                        continue
+                    metric_values = pd.to_numeric(df[col_name], errors="coerce").fillna(0.0).to_numpy(dtype=float)
+                    metrics_payload[metric_name] = metric_values.tolist()[:point_count]
+
                 trip_payload = {
                     "fileid": int(fileid),
                     "lat": lat_list[:point_count],
                     "lon": lon_list[:point_count],
                     "speed": speed_vals.tolist()[:point_count],
                     "time": time_values,
+                    "metrics": metrics_payload,
                 }
                 trips.append(trip_payload)
                 all_metric_values.extend(trip_payload["speed"])

@@ -1,22 +1,31 @@
 #!/usr/bin/python3
 # Thin entrypoint — all classes live in guiclasses/
 import sys
+import argparse
 
 from loguru import logger
 
 
 def get_args(appname: str):
-	# Import parser helper lazily to keep process startup fast.
-	from utils import get_parser
-
-	parser = get_parser(appname)
+	parser = argparse.ArgumentParser(description=appname)
+	parser.add_argument("--dbhost", default="localhost", action="store")
+	parser.add_argument("--dbmode", default="sqlite", action="store", dest="dbmode")
+	parser.add_argument("--dbname", default="torq", action="store")
+	parser.add_argument("--dbpass", default="qrot", action="store")
+	parser.add_argument("--dbuser", default="torq", action="store")
+	parser.add_argument("--dbfile", default="torqdata.db", action="store")
+	parser.add_argument("-d", "--debug", default=False, action="store_true", dest="debug")
+	parser.add_argument('--main-window', help="start main window", action="store_true", dest='main_window', default=True)
+	parser.add_argument('--pos-manager', help="start position manager window", action="store_true", dest='pos_manager', default=False)
+	parser.add_argument('--start-end-window', help="start start/end grouped window", action="store_true", dest='start_end_window', default=False)
+	parser.add_argument('--tabbed-workspace', help="start tabbed workspace with main/positions/start-end", action="store_true", dest='tabbed_workspace', default=False)
 	return parser.parse_args()
 
 if __name__ == "__main__":
 	logger.debug("Entrypoint started")
 	from PySide6.QtWidgets import QApplication
 	from sqlalchemy import create_engine
-	from utils import database_init
+	from datamodels import database_init
 
 	args = get_args('guitest2')
 	# Set up SQLAlchemy session
@@ -57,8 +66,8 @@ if __name__ == "__main__":
 		window.showMaximized()
 		sys.exit(app.exec())
 	elif args.main_window:
-		from guiclasses import MainWindow
 		logger.debug("Starting main window")
+		from guiclasses import MainWindow
 		engine = create_engine(dburl)
 		database_init(engine)
 		app = QApplication(sys.argv)

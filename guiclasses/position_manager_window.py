@@ -45,6 +45,7 @@ class PositionManagerWindow(QMainWindow):
         self._pending_close = False
         self._pending_close_started_at: float | None = None
         self._active_threads: set[QThread] = set()
+        self._thread_registry: dict[int, dict[str, Any]] = {}
         self._restore_after_reload: dict[str, Any] | None = None
         self._min_count_filter = 0
         self._current_sort_column: int = -1
@@ -77,14 +78,9 @@ class PositionManagerWindow(QMainWindow):
         left_panel = QWidget()
         left_layout = QVBoxLayout(left_panel)
         left_layout.setContentsMargins(2, 2, 2, 2)
-        left_layout.setSpacing(2)
+        left_layout.setSpacing(0)
         self.map_canvas = FoliumMapView()
-        left_layout.addWidget(self.map_canvas)
-        map_controls_widget = QWidget()
-        map_controls_layout = QHBoxLayout(map_controls_widget)
-        map_controls_layout.setContentsMargins(1, 1, 1, 1)
-        map_controls_layout.setSpacing(4)
-        left_layout.addWidget(map_controls_widget)
+        left_layout.addWidget(self.map_canvas, stretch=1)
 
         table_panel = QWidget()
         table_panel_layout = QVBoxLayout(table_panel)
@@ -206,16 +202,15 @@ class PositionManagerWindow(QMainWindow):
         self.sort_similar_btn.setFixedHeight(24)
         self.reload_map_btn = QPushButton("Reload map")
         self.reload_map_btn.setFixedSize(88, 24)
-        map_controls_layout.addStretch()
-        map_controls_layout.addWidget(self.hide_labeled_chk)
-        map_controls_layout.addWidget(self.label_filter_chk)
-        map_controls_layout.addWidget(self.label_filter_edit)
-        map_controls_layout.addWidget(self.show_labeled_points_chk)
-        map_controls_layout.addWidget(self.toggle_labels_btn)
-        map_controls_layout.addWidget(self.zoom_in_btn)
-        map_controls_layout.addWidget(self.zoom_out_step_btn)
-        map_controls_layout.addWidget(self.zoom_out_btn)
-        map_controls_layout.addWidget(self.reload_map_btn)
+        map_btn_row = QHBoxLayout()
+        map_btn_row.setSpacing(4)
+        map_btn_row.addWidget(self.toggle_labels_btn)
+        map_btn_row.addWidget(self.zoom_in_btn)
+        map_btn_row.addWidget(self.zoom_out_step_btn)
+        map_btn_row.addWidget(self.zoom_out_btn)
+        map_btn_row.addWidget(self.reload_map_btn)
+        map_btn_row.addStretch()
+        editor_layout.addLayout(map_btn_row)
         button_row.addWidget(self.refresh_btn)
         button_row.addWidget(self.new_btn)
         button_row.addWidget(self.save_btn)
@@ -225,12 +220,21 @@ class PositionManagerWindow(QMainWindow):
         button_row.addStretch()
         editor_layout.addLayout(button_row)
 
+        filter_row = QHBoxLayout()
+        filter_row.setSpacing(6)
+        filter_row.addWidget(self.hide_labeled_chk)
+        filter_row.addWidget(self.show_labeled_points_chk)
+        filter_row.addWidget(self.label_filter_chk)
+        filter_row.addWidget(self.label_filter_edit)
+        filter_row.addStretch()
+        editor_layout.addLayout(filter_row)
+
         right_stack = QSplitter(Qt.Orientation.Vertical)
         right_stack.addWidget(left_panel)
         right_stack.addWidget(editor)
         right_stack.setCollapsible(0, False)
         right_stack.setCollapsible(1, False)
-        right_stack.setSizes([760, 230])
+        right_stack.setSizes([900, 230])
 
         h_splitter.addWidget(table_panel)
         h_splitter.addWidget(right_stack)
@@ -409,7 +413,20 @@ class PositionManagerWindow(QMainWindow):
         if not source_rows:
             return
         source_rows = list(dict.fromkeys(source_rows))
-        self._select_rows_by_indices(source_rows, select_table=True, zoom_to_points=(len(source_rows) == 1))
+        self._select_rows_by_indices(source_rows, select_table=True, zoom_to_points=False)
+        # Zoom map to fit all points in the selected group(s)
+        group_df = self.df_positions.loc[self.df_positions.index.isin(source_rows)]
+        lats = pd.to_numeric(group_df["latitude"], errors="coerce").dropna()
+        lons = pd.to_numeric(group_df["longitude"], errors="coerce").dropna()
+        if not lats.empty:
+            if len(lats) == 1:
+                self.map_canvas.set_view(float(lats.iloc[0]), float(lons.iloc[0]), 14)
+            else:
+                pad = 0.002
+                self.map_canvas.zoom_full(
+                    float(lats.min()) - pad, float(lons.min()) - pad,
+                    float(lats.max()) + pad, float(lons.max()) + pad,
+                )
 
     def _on_min_count_filter_changed(self, value: int):
         self._min_count_filter = int(value)
@@ -469,9 +486,17 @@ class PositionManagerWindow(QMainWindow):
         thread.finished.connect(thread.deleteLater)
         thread.finished.connect(self._on_load_thread_finished)
         thread.finished.connect(lambda t=thread: self._active_threads.discard(t))
+        thread.finished.connect(lambda t=thread: self._thread_registry.pop(id(t), None))
         self._load_thread = thread
         self._load_worker = worker
         self._active_threads.add(thread)
+        self._register_thread(
+            thread,
+            owner_name="PositionManagerWindow",
+            task_name="Positions load",
+            launched_by="load_positions",
+            worker=worker,
+        )
         if self.args.debug:
             logger.debug(f"Started position load worker thread {thread}. active threads: {len(self._active_threads)}")
         thread.start()
@@ -497,7 +522,11 @@ class PositionManagerWindow(QMainWindow):
         logger.debug(f"PositionManagerWindow requesting stop for thread '{name}'")
         thread.requestInterruption()
         thread.quit()
-        return False
+        if not thread.wait(3000):
+            logger.warning(f"PositionManagerWindow thread '{name}' did not stop in time; terminating")
+            thread.terminate()
+            return bool(thread.wait(1000))
+        return True
 
     def _detach_running_threads_for_close(self):
         threads: set[QThread] = set()
@@ -983,6 +1012,46 @@ class PositionManagerWindow(QMainWindow):
         except RuntimeError as e:
             logger.warning(f"RuntimeError calling thread.isRunning(): {e} ({type(e)})")
             return False
+
+    def _register_thread(
+        self,
+        thread: QThread,
+        owner_name: str,
+        task_name: str,
+        launched_by: str,
+        worker: object | None = None,
+    ) -> None:
+        launcher = str(launched_by)
+        if "." not in launcher:
+            launcher = f"{self.__class__.__module__}.{self.__class__.__name__}.{launcher}"
+        self._thread_registry[id(thread)] = {
+            "thread": thread,
+            "thread_id": id(thread),
+            "owner_name": str(owner_name),
+            "task_name": str(task_name),
+            "launched_by": launcher,
+            "worker_name": type(worker).__name__ if worker is not None else "",
+            "started_at": time.time(),
+        }
+
+    def get_running_tasks(self) -> list[dict[str, Any]]:
+        tasks: list[dict[str, Any]] = []
+        for meta in self._thread_registry.values():
+            thread = cast(QThread | None, meta.get("thread"))
+            if not self._thread_is_running(thread):
+                continue
+            entry = dict(meta)
+            entry["running"] = True
+            tasks.append(entry)
+        return sorted(tasks, key=lambda item: float(item.get("started_at", 0.0)))
+
+    def stop_tracked_task(self, thread_id: int) -> bool:
+        meta = self._thread_registry.get(int(thread_id))
+        if not meta:
+            return False
+        thread = cast(QThread | None, meta.get("thread"))
+        task_name = str(meta.get("task_name") or f"thread_{thread_id}")
+        return bool(self._shutdown_thread(thread, task_name))
 
     def closeEvent(self, event: QCloseEvent):
         if self._any_worker_running():

@@ -178,6 +178,8 @@ class MapImageCache(Base):
 	zoom: Mapped[int] = mapped_column(Integer, nullable=False)
 	colormap: Mapped[str] = mapped_column(Text, nullable=False)
 	image_png: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+	hit_count: Mapped[int] = mapped_column(Integer, default=0)
+	last_used: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 	created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 	updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
@@ -236,42 +238,44 @@ def database_init(engine):  # create tables
 	try:
 		Base.metadata.create_all(bind=engine)
 		with engine.begin() as conn:
-			# Keep legacy databases aligned: enforce stable identity by hash.
-			conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_torqfiles_csvhash ON torqfiles(csvhash)"))
-			# Ensure torqfiles is properly linked to start/end position tables when supported by backend.
-			try:
-				conn.execute(
-					text(
-						"""
-						DO $$
-						BEGIN
-							IF NOT EXISTS (
-								SELECT 1
-								FROM pg_constraint
-								WHERE conname = 'torqfiles_startid_fkey'
-							) THEN
-								ALTER TABLE torqfiles
-								ADD CONSTRAINT torqfiles_startid_fkey
-								FOREIGN KEY (startid) REFERENCES startpos(startid)
-								ON UPDATE CASCADE ON DELETE SET NULL;
-							END IF;
-							IF NOT EXISTS (
-								SELECT 1
-								FROM pg_constraint
-								WHERE conname = 'torqfiles_endid_fkey'
-							) THEN
-								ALTER TABLE torqfiles
-								ADD CONSTRAINT torqfiles_endid_fkey
-								FOREIGN KEY (endid) REFERENCES endpos(endid)
-								ON UPDATE CASCADE ON DELETE SET NULL;
-							END IF;
-						END $$;
-						"""
+			logger.debug(f"dbinit for: {conn.dialect.name} engine {engine}")
+			if conn.dialect.name != "sqlite":
+				# Keep legacy databases aligned: enforce stable identity by hash.
+				conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_torqfiles_csvhash ON torqfiles(csvhash)"))
+				# Ensure torqfiles is properly linked to start/end position tables when supported by backend.
+				try:
+					conn.execute(
+						text(
+							"""
+							DO $$
+							BEGIN
+								IF NOT EXISTS (
+									SELECT 1
+									FROM pg_constraint
+									WHERE conname = 'torqfiles_startid_fkey'
+								) THEN
+									ALTER TABLE torqfiles
+									ADD CONSTRAINT torqfiles_startid_fkey
+									FOREIGN KEY (startid) REFERENCES startpos(startid)
+									ON UPDATE CASCADE ON DELETE SET NULL;
+								END IF;
+								IF NOT EXISTS (
+									SELECT 1
+									FROM pg_constraint
+									WHERE conname = 'torqfiles_endid_fkey'
+								) THEN
+									ALTER TABLE torqfiles
+									ADD CONSTRAINT torqfiles_endid_fkey
+									FOREIGN KEY (endid) REFERENCES endpos(endid)
+									ON UPDATE CASCADE ON DELETE SET NULL;
+								END IF;
+							END $$;
+							"""
+						)
 					)
-				)
-			except Exception as e:
-				# SQLite and older DB variants may not support PL/pgSQL blocks.
-				logger.warning(f"Skipping optional torqfiles FK constraint migration: {e} ({type(e)})")
+				except Exception as e:
+					# SQLite and older DB variants may not support PL/pgSQL blocks.
+					logger.warning(f"Skipping optional torqfiles FK constraint migration: {e} ({type(e)})")
 
 			# Unified view for start/end position analytics and grouping in GUI tools.
 			conn.execute(text("DROP VIEW IF EXISTS trip_start_end_summary"))

@@ -375,6 +375,10 @@ def update_trip_and_file_for_fileid(conn, fileid):
 				trip_distance = float(sum(distances))
 			else:
 				trip_distance = 0.0
+	except TypeError as e:
+		logger.warning(f"Error calculating trip_distance for fileid {fileid}: {e} {type(e)}")
+		trip_distance = 0.0
+
 	except Exception as e:
 		logger.error(f"Error calculating trip_distance for fileid {fileid}: {e} {type(e)}")
 		trip_distance = 0.0
@@ -449,11 +453,16 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs') -> None:
 		return None, pd_columns
 
 	for file_idx, csvfile in enumerate(csv_files):
+		linecount = 0
 		try:
-			if csvfile.stat().st_size < MIN_FILESIZE:
-				with open(csvfile, 'rb') as f:
-					d = f.readlines()
-				linecount = len(d)
+			with open(csvfile, 'rb') as f:
+				d = f.readlines()
+			linecount = len(d)
+		except Exception as e:
+			logger.error(f"Error counting lines in {csvfile}: {e} {type(e)}")
+			continue
+		try:
+			if csvfile.stat().st_size < MIN_FILESIZE or linecount < args.min_row_count:
 				logger.warning(f"Skipping {csvfile} - file size too small {csvfile.stat().st_size} min {MIN_FILESIZE} lines {linecount}")
 				continue
 
@@ -467,8 +476,8 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs') -> None:
 				# logger.info(f"[{file_idx}/{len(csv_files)}] File {csvfile} already processed, skipping")
 				continue
 
-			# Read only the header row
-			df = pd.read_csv(csvfile, nrows=0)
+			# Read header row plus one data row (for trip_start date detection)
+			df = pd.read_csv(csvfile, nrows=1)
 
 			# Normalize columns using shared Torq header mapping.
 			original_columns = df.columns.to_list()
@@ -478,6 +487,37 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs') -> None:
 			if any(not col or col[0].isdigit() for col in normalized_columns):
 				logger.warning(f"Skipping {csvfile} - invalid column names")
 				continue
+
+			# Check if a file with the same trip_start date already exists in the DB.
+			# Primary: extract date from filename (trackLog-YYYY-Mon-DD_HH-MM-SS.csv).
+			# Fallback: parse date from first CSV data row.
+			trip_start_date = None
+			filename_match = re.match(r'trackLog-(\d{4}-[A-Za-z]{3}-\d{2})', csvfile.stem)
+			if filename_match:
+				try:
+					trip_start_date = datetime.strptime(filename_match.group(1), '%Y-%b-%d').date()
+				except ValueError:
+					trip_start_date = None
+			if trip_start_date is None and not df.empty:
+				norm_col_map = {_normalize_col_name(c): c for c in df.columns}
+				time_col_raw = norm_col_map.get('gpstime') or norm_col_map.get('devicetime')
+				if time_col_raw is not None:
+					first_val = df[time_col_raw].iloc[0]
+					trip_start_dt = convert_string_to_datetime(str(first_val)) if pd.notna(first_val) else None
+					if trip_start_dt is not None:
+						trip_start_date = trip_start_dt.date()
+			if trip_start_date is not None:
+				with session.get_bind().connect() as chk_conn:
+					if chk_conn.dialect.name == 'sqlite':
+						date_sql = text("SELECT fileid FROM torqfiles WHERE trip_start IS NOT NULL AND date(trip_start) = :ts_date")
+					else:
+						date_sql = text("SELECT fileid FROM torqfiles WHERE trip_start IS NOT NULL AND trip_start::date = :ts_date")
+					existing_trip = chk_conn.execute(date_sql, {"ts_date": str(trip_start_date)}).first()
+				if existing_trip:
+					skipped_count += 1
+					logger.warning(f"[{file_idx}/{len(csv_files)}] Skipping {csvfile} - trip_start date {trip_start_date} already in DB (fileid {existing_trip[0]})")
+					continue
+
 			all_columns.update(normalized_columns)
 			valid_files.append((csvfile, normalized_columns, csvhash))
 

@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QTableView,
     QAbstractItemView,
     QPushButton,
+    QLineEdit,
 )
 
 from .map_canvas import FoliumMapView
@@ -57,9 +58,16 @@ class StartEndWindow(QMainWindow):
         self.group_mode_combo.addItem("Start + End pair", "pair")
         self.group_mode_combo.addItem("Start position", "start")
         self.group_mode_combo.addItem("End position", "end")
+        self.group_mode_combo.addItem("Label (ignore IDs)", "label")
         self.group_mode_combo.setFixedWidth(170)
         self.group_mode_combo.currentIndexChanged.connect(self._on_group_mode_changed)
         top_row.addWidget(self.group_mode_combo)
+        self.group_filter_edit = QLineEdit()
+        self.group_filter_edit.setPlaceholderText("Filter group labels")
+        self.group_filter_edit.setClearButtonEnabled(True)
+        self.group_filter_edit.setFixedWidth(220)
+        self.group_filter_edit.textChanged.connect(self._on_group_filter_changed)
+        top_row.addWidget(self.group_filter_edit)
         self.plot_selected_btn = QPushButton("Plot selected")
         self.plot_selected_btn.setFixedHeight(24)
         self.plot_selected_btn.clicked.connect(self._plot_selected_groups)
@@ -76,6 +84,7 @@ class StartEndWindow(QMainWindow):
         self.groups_table.setSortingEnabled(True)
         self.groups_table.verticalHeader().setVisible(False)
         self.groups_table.setFont(QFont("Monospace", self._table_font_size))
+        self.groups_table.clicked.connect(self._on_group_row_clicked)
 
         left_panel = QWidget()
         self.left_panel = left_panel
@@ -116,36 +125,87 @@ class StartEndWindow(QMainWindow):
         self._table_font_size = max(6, min(14, int(value)))
         self.groups_table.setFont(QFont("Monospace", self._table_font_size))
 
-    def _plot_selected_groups(self):
-        if self.groups_table.selectionModel() is None or self._grouped_df.empty:
-            self._plot_for_fileids([])
+    def _cancel_parent_background_plot_load(self, reason: str) -> None:
+        parent = self.parent()
+        if parent is None:
             return
+        if hasattr(parent, "_invalidate_and_cancel_active_plot_load"):
+            try:
+                parent._invalidate_and_cancel_active_plot_load(reason)
+            except Exception as e:
+                logger.warning(f"Could not cancel parent background load: {e} ({type(e)})")
+
+    def _selected_group_fileids(self) -> list[int]:
         selection_model = self.groups_table.selectionModel()
+        model = self.groups_table.model()
+        if selection_model is None or model is None:
+            return []
+
         rows = selection_model.selectedRows()
         if not rows:
             rows = selection_model.selectedIndexes()
         if not rows and self.groups_table.currentIndex().isValid():
             rows = [self.groups_table.currentIndex()]
         if not rows:
-            self._plot_for_fileids([])
-            return
+            return []
+
         fileids: list[int] = []
         for row in rows:
-            group_index = self.groups_table.model().index(int(row.row()), 0)
-            group_name = str(self.groups_table.model().data(group_index, Qt.ItemDataRole.DisplayRole) or "")
+            group_index = model.index(int(row.row()), 0)
+            group_name = str(model.data(group_index, Qt.ItemDataRole.DisplayRole) or "")
             if not group_name:
                 continue
             fileids.extend(self._group_to_fileids.get(group_name, []))
+        return sorted(set(int(fid) for fid in fileids))
+
+    def _fileids_for_index(self, index) -> list[int]:
+        if index is None or not index.isValid():
+            return []
+        model = self.groups_table.model()
+        if model is None:
+            return []
+        group_index = model.index(int(index.row()), 0)
+        group_name = str(model.data(group_index, Qt.ItemDataRole.DisplayRole) or "")
+        if not group_name:
+            return []
+        return sorted(set(int(fid) for fid in self._group_to_fileids.get(group_name, [])))
+
+    def _preview_points_for_fileids(self, fileids: list[int]) -> None:
+        self._active_fileids = list(fileids)
+        self.ax_time.clear()
         if not fileids:
-            for row in rows:
-                view_idx = int(row.row())
-                if 0 <= view_idx < len(self._grouped_df.index):
-                    group_name = str(self._grouped_df.iloc[view_idx]["group"])
-                    fileids.extend(self._group_to_fileids.get(group_name, []))
-        selected_fileids = sorted(set(fileids))
-        if not selected_fileids:
-            self._plot_for_fileids([])
+            self.stats_label.setText("No group selected")
+            self.map_canvas.show_empty("Select one or more groups")
+            self.timeseries_canvas.draw_idle()
             return
+
+        df = self._detail_df[self._detail_df["fileid"].isin(fileids)].copy()
+        if df.empty:
+            self.map_canvas.show_empty("No data for selected group(s)")
+            self.timeseries_canvas.draw_idle()
+            return
+
+        m = self._build_start_end_map(df)
+        if m is not None:
+            self.map_canvas.display_map(m)
+        else:
+            self.map_canvas.show_empty("No start/end coordinates available")
+
+        distance_km = float(df["trip_distance_m"].fillna(0).sum()) / 1000.0
+        self.stats_label.setText(f"Trips: {len(fileids)} | Total distance: {distance_km:.2f} km")
+        self.timeseries_canvas.draw_idle()
+
+    def _plot_selected_groups(self):
+        if self.groups_table.selectionModel() is None or self._grouped_df.empty:
+            self._preview_points_for_fileids([])
+            return
+
+        selected_fileids = self._selected_group_fileids()
+        if not selected_fileids:
+            self._preview_points_for_fileids([])
+            return
+
+        self._cancel_parent_background_plot_load("Start/End selection changed")
 
         parent = self.parent()
         if parent is not None and hasattr(parent, "_select_trips_by_fileids"):
@@ -154,10 +214,13 @@ class StartEndWindow(QMainWindow):
                     parent._select_trips_by_fileids(
                         selected_fileids,
                         "No visible trips match the selected start/end groups.",
+                        force_async_plot=True,
                     )
                 )
                 if selected_ok:
-                    self.stats_label.setText(f"{len(selected_fileids)} trip(s) selected")
+                    self.stats_label.setText(
+                        f"Loading {len(selected_fileids)} trip(s) in background..."
+                    )
                     return
             except Exception as e:
                 logger.warning(f"Could not route Start/End selection to parent: {e} ({type(e)})")
@@ -228,6 +291,8 @@ class StartEndWindow(QMainWindow):
             return f"S{start_id} {row.get('start_label', '')}"
         if self._group_mode == "end":
             return f"E{end_id} {row.get('end_label', '')}"
+        if self._group_mode == "label":
+            return f"{row.get('start_label', '')} -> {row.get('end_label', '')}"
         return (
             f"S{start_id} {row.get('start_label', '')}"
             f" -> E{end_id} {row.get('end_label', '')}"
@@ -262,6 +327,11 @@ class StartEndWindow(QMainWindow):
             )
 
         grouped_df = pd.DataFrame(rows, columns=["group", "trips", "distance_km", "avg_time_min", "latest_trip"])
+        filter_text = self.group_filter_edit.text().strip().casefold() if hasattr(self, "group_filter_edit") else ""
+        if filter_text and not grouped_df.empty:
+            grouped_df = grouped_df[
+                grouped_df["group"].astype(str).str.casefold().str.contains(filter_text, na=False)
+            ].copy()
         if not grouped_df.empty:
             grouped_df.sort_values(by=["trips", "distance_km"], ascending=[False, False], inplace=True)
             grouped_df["latest_trip"] = pd.to_datetime(grouped_df["latest_trip"], errors="coerce").dt.strftime("%Y-%m-%d %H:%M")
@@ -274,25 +344,30 @@ class StartEndWindow(QMainWindow):
             self.groups_table.selectionModel().selectionChanged.connect(self._on_group_selection_changed)
 
     def _on_group_mode_changed(self, index: int):
+        self._cancel_parent_background_plot_load("Start/End grouping changed")
         self._group_mode = str(self.group_mode_combo.currentData() or "pair")
         self._refresh_group_table()
-        self._plot_for_fileids([])
+        self._preview_points_for_fileids([])
+
+    def _on_group_filter_changed(self, text: str) -> None:
+        self._cancel_parent_background_plot_load("Start/End group filter changed")
+        self._refresh_group_table()
+        self._preview_points_for_fileids([])
 
     def _on_group_selection_changed(self, selected, deselected):
         if self.groups_table.selectionModel() is None or self._grouped_df.empty:
             return
-        rows = self.groups_table.selectionModel().selectedRows()
-        if not rows:
-            self._plot_for_fileids([])
+        self._cancel_parent_background_plot_load("Start/End row click changed")
+        self._preview_points_for_fileids(self._selected_group_fileids())
+
+    def _on_group_row_clicked(self, index):
+        if self._grouped_df.empty:
             return
-        fileids: list[int] = []
-        for row in rows:
-            view_idx = int(row.row())
-            if view_idx < 0 or view_idx >= len(self._grouped_df.index):
-                continue
-            group_name = str(self._grouped_df.iloc[view_idx]["group"])
-            fileids.extend(self._group_to_fileids.get(group_name, []))
-        self._plot_for_fileids(sorted(set(fileids)))
+        self._cancel_parent_background_plot_load("Start/End row clicked")
+        fileids = self._selected_group_fileids()
+        if not fileids:
+            fileids = self._fileids_for_index(index)
+        self._preview_points_for_fileids(fileids)
 
     def _build_start_end_map(self, df: pd.DataFrame) -> folium.Map | None:
         start_df = df[df["latstart"].notna() & df["lonstart"].notna()]
