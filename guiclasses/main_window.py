@@ -1444,7 +1444,7 @@ class MainWindow(QMainWindow):
 	def refresh_plot(self):
 		rows = sorted(set(index.row() for index in self.table.selectionModel().selectedRows()))
 		if rows:
-			logger.debug(f"refresh_plot triggered with {len(rows)} selected row(s): {rows[:5]}{'...' if len(rows) > 5 else ''}")
+			logger.debug(f"refresh_plot triggered with {len(rows)} selected row(s): {rows[:5]}{'...' if len(rows) > 5 else ''} _force_next_plot_async: {self._force_next_plot_async}")
 			if self._force_next_plot_async or len(rows) > 1:
 				self._force_next_plot_async = False
 				self._start_async_plot_for_rows(rows)
