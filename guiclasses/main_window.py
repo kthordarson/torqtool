@@ -2384,6 +2384,7 @@ class MainWindow(QMainWindow):
 			return pd.DataFrame(columns=["metric", "min", "avg", "max"])
 
 		rows: list[dict[str, Any]] = []
+		seen_labels: dict[str, tuple[float, float, float]] = {}
 		grouped = group_metrics_by_category(list(all_metric_stats.keys()))
 		for _, cat_metrics in grouped.items():
 			for display_name, unit, original_metric in cat_metrics:
@@ -2391,12 +2392,23 @@ class MainWindow(QMainWindow):
 				if not stats:
 					continue
 				metric_label = f"{display_name} ({unit})" if unit else display_name
+				min_v = round(float(stats.get("min", 0.0)), 2)
+				avg_v = round(float(stats.get("avg", 0.0)), 2)
+				max_v = round(float(stats.get("max", 0.0)), 2)
+				stats_key = (min_v, avg_v, max_v)
+				# Alias metrics can map to the same underlying torqlogs column and category label.
+				# Skip exact duplicates to keep the table concise.
+				if metric_label in seen_labels:
+					if seen_labels[metric_label] == stats_key:
+						continue
+					metric_label = f"{metric_label} [{original_metric}]"
+				seen_labels[metric_label] = stats_key
 				rows.append(
 					{
 						"metric": metric_label,
-						"min": round(float(stats.get("min", 0.0)), 2),
-						"avg": round(float(stats.get("avg", 0.0)), 2),
-						"max": round(float(stats.get("max", 0.0)), 2),
+						"min": min_v,
+						"avg": avg_v,
+						"max": max_v,
 					}
 				)
 
@@ -2557,7 +2569,7 @@ class MainWindow(QMainWindow):
 	def _load_all_metric_stats(self, fileids: list[int]) -> dict[str, dict[str, float]]:
 		if not fileids:
 			return {}
-		metric_columns = self._get_metric_columns_with_valid_data()
+		metric_columns = self._get_metric_columns_with_valid_data(fileids)
 		if not metric_columns:
 			return {}
 
@@ -2565,9 +2577,13 @@ class MainWindow(QMainWindow):
 
 		agg_parts: list[str] = []
 		col_map: list[tuple[str, str]] = []
+		seen_actual_cols: set[str] = set()
 		for metric in metric_columns:
 			actual = self._resolve_actual_torqlogs_column(metric)
 			if actual and actual in numeric_cols:
+				if actual in seen_actual_cols:
+					continue
+				seen_actual_cols.add(actual)
 				agg_parts.append(
 					f'MIN(CAST("{actual}" AS FLOAT)) AS "_s_{metric}_min", '
 					f'AVG(CAST("{actual}" AS FLOAT)) AS "_s_{metric}_avg", '
