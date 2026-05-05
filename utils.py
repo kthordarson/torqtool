@@ -19,7 +19,7 @@ from sqlalchemy import inspect
 from sqlalchemy.exc import IntegrityError
 from psycopg2.errors import UniqueViolation
 from commonformats import fmt_20, fmt_24, fmt_26, fmt_28, fmt_30, fmt_34, fmt_36
-from datamodels import database_init, COLUMN_TYPES
+from datamodels import database_init, COLUMN_TYPES, TRIP_METRIC_COLUMNS
 from schemas import canonicalize_column_name, canonicalize_columns
 
 MIN_FILESIZE = 3000
@@ -307,11 +307,29 @@ def _extract_trip_start_from_dataframe(df: pd.DataFrame) -> datetime | None:
 
 	return min(parsed_datetimes)
 
+
+
+def _ensure_torqtrips_metric_columns(conn, metric_names: list[str]) -> None:
+	inspector = inspect(conn)
+	existing = {str(col["name"]).lower() for col in inspector.get_columns("torqtrips")}
+	if conn.dialect.name == "postgresql":
+		numeric_sql_type = "DOUBLE PRECISION"
+	else:
+		numeric_sql_type = "REAL"
+
+	for metric in metric_names:
+		for suffix in ("min", "max", "avg", "stdev"):
+			col_name = f"{metric}_{suffix}"
+			if col_name.lower() in existing:
+				continue
+			conn.execute(text(f'ALTER TABLE torqtrips ADD COLUMN "{col_name}" {numeric_sql_type}'))
+			existing.add(col_name.lower())
+
 def update_trip_and_file_for_fileid(conn, fileid):
 	"""
 	Update TorqFile and Torqtrips for a single fileid after inserting its data.
 	"""
-	resolved = _resolve_torqlogs_columns(conn, ['gpstime', 'latitude', 'longitude'])
+	resolved = _resolve_torqlogs_columns(conn, ['gpstime', 'latitude', 'longitude', *TRIP_METRIC_COLUMNS])
 	time_col = resolved.get('gpstime')
 	lat_col = resolved.get('latitude')
 	lon_col = resolved.get('longitude')
@@ -319,7 +337,21 @@ def update_trip_and_file_for_fileid(conn, fileid):
 		logger.error(f'Missing required torqlogs columns for fileid {fileid}: {resolved}')
 		return
 
+	resolved_metric_pairs = [(metric, resolved[metric]) for metric in TRIP_METRIC_COLUMNS if metric in resolved]
+	_ensure_torqtrips_metric_columns(conn, [metric for metric, _ in resolved_metric_pairs])
+
 	# Aggregate trip info for this fileid
+	metric_select_parts: list[str] = []
+	for idx, (_, actual_col) in enumerate(resolved_metric_pairs):
+		metric_select_parts.extend([
+			f'MIN("{actual_col}") AS "m_{idx}_min"',
+			f'MAX("{actual_col}") AS "m_{idx}_max"',
+			f'AVG("{actual_col}") AS "m_{idx}_avg"',
+			f'COUNT("{actual_col}") AS "m_{idx}_count"',
+			f'AVG("{actual_col}" * "{actual_col}") AS "m_{idx}_avg_sq"',
+		])
+	metric_sql = (",\n\t\t" + ",\n\t\t".join(metric_select_parts)) if metric_select_parts else ""
+
 	sql = f"""
 	SELECT
 		fileid,
@@ -330,6 +362,7 @@ def update_trip_and_file_for_fileid(conn, fileid):
 		MAX("{lat_col}") AS endlat,
 		MAX("{lon_col}") AS endlon,
 		COUNT(*) AS row_count
+		{metric_sql}
 	FROM torqlogs
 	WHERE fileid = :fileid
 	GROUP BY fileid
@@ -345,6 +378,23 @@ def update_trip_and_file_for_fileid(conn, fileid):
 	endlat = row["endlat"]
 	endlon = row["endlon"]
 	row_count = row["row_count"]
+
+	metric_values: dict[str, float | None] = {}
+	for idx, (metric_name, _) in enumerate(resolved_metric_pairs):
+		min_val = row.get(f"m_{idx}_min")
+		max_val = row.get(f"m_{idx}_max")
+		avg_val = row.get(f"m_{idx}_avg")
+		count_val = int(row.get(f"m_{idx}_count") or 0)
+		avg_sq_val = row.get(f"m_{idx}_avg_sq")
+
+		metric_values[f"{metric_name}_min"] = float(min_val) if min_val is not None else None
+		metric_values[f"{metric_name}_max"] = float(max_val) if max_val is not None else None
+		metric_values[f"{metric_name}_avg"] = float(avg_val) if avg_val is not None else None
+		if count_val > 1 and avg_val is not None and avg_sq_val is not None:
+			variance = max(0.0, float(avg_sq_val) - (float(avg_val) ** 2))
+			metric_values[f"{metric_name}_stdev"] = variance ** 0.5
+		else:
+			metric_values[f"{metric_name}_stdev"] = None
 
 	# Calculate trip duration
 	trip_duration = None
@@ -423,7 +473,7 @@ def update_trip_and_file_for_fileid(conn, fileid):
 		logger.error(f"Error calculating trip_distance for fileid {fileid}: {e} {type(e)}")
 		trip_distance = 0.0
 
-	# Insert or update Torqtrips
+	# Insert if missing, then update all calculated fields.
 	conn.execute(text("""
 		INSERT INTO torqtrips (fileid, tripdate, time, trip_distance)
 		SELECT :fileid, :trip_start, :trip_duration, :trip_distance
@@ -434,6 +484,25 @@ def update_trip_and_file_for_fileid(conn, fileid):
 		"trip_duration": trip_duration,
 		"trip_distance": trip_distance
 	})
+
+	set_parts = [
+		"tripdate = :trip_start",
+		"time = :trip_duration",
+		"trip_distance = :trip_distance",
+	]
+	for key in metric_values:
+		set_parts.append(f'"{key}" = :{key}')
+	update_sql = text(
+		"UPDATE torqtrips SET " + ", ".join(set_parts) + " WHERE fileid = :fileid"
+	)
+	update_params = {
+		"fileid": fileid,
+		"trip_start": trip_start,
+		"trip_duration": trip_duration,
+		"trip_distance": trip_distance,
+		**metric_values,
+	}
+	conn.execute(update_sql, update_params)
 
 	# Update TorqFile
 	conn.execute(text("""

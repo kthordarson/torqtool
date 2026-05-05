@@ -9,7 +9,7 @@ import sys
 from sqlalchemy import (text, inspect)
 from utils import get_parser, get_engine_session, convert_string_to_datetime, haversine
 from schemas import dataschema  # schema_datatypes,
-from datamodels import TorqFile, Startpos, Endpos
+from datamodels import TorqFile, Startpos, Endpos, TRIP_METRIC_COLUMNS
 from numbers import Real
 
 
@@ -670,6 +670,140 @@ GROUP BY fileid;
 	logger.info(f"collect_db_startends completed for {processed} files")
 	return 0
 
+def collect_db_torqtrips(args):
+	# populate torqtrips table with one row per trip, using start/end info from torqfiles and torqlogs
+	session = get_engine_session(args)
+	def _ensure_torqtrips_metric_columns(metric_names: list[str]) -> None:
+		inspector = inspect(session.get_bind())
+		existing = {str(col["name"]).lower() for col in inspector.get_columns("torqtrips")}
+		numeric_sql_type = "DOUBLE PRECISION" if args.dbmode in ("psql", "postgres", "postgresql") else "REAL"
+		for metric in metric_names:
+			for suffix in ("min", "max", "avg", "stdev"):
+				col_name = f"{metric}_{suffix}"
+				if col_name.lower() in existing:
+					continue
+				session.execute(text(f'ALTER TABLE torqtrips ADD COLUMN "{col_name}" {numeric_sql_type}'))
+				existing.add(col_name.lower())
+
+	resolved = _resolve_schema_columns(session, ['gpstime', *TRIP_METRIC_COLUMNS])
+	time_col = resolved.get('gpstime')
+	if not time_col:
+		logger.error("Missing required gpstime column for torqtrips aggregation")
+		return -1
+
+	resolved_metric_pairs = [(metric, resolved[metric]) for metric in TRIP_METRIC_COLUMNS if metric in resolved]
+	if not resolved_metric_pairs:
+		logger.warning("No requested torqtrips metric columns found in torqlogs; updating base trip fields only")
+	_ensure_torqtrips_metric_columns([metric for metric, _ in resolved_metric_pairs])
+
+	q_fileids = "SELECT fileid FROM torqfiles"
+	if args.db_limit:
+		q_fileids += f" LIMIT {int(args.db_limit)}"
+	fileid_rows = session.execute(text(q_fileids)).all()
+	fileids = [int(row[0]) for row in fileid_rows if row and row[0] is not None]
+	if not fileids:
+		logger.info("No torqfiles found for torqtrips aggregation")
+		return 0
+
+	batch_size = 300 if args.dbmode == "sqlite" else 1000
+	inserted_rows = 0
+
+	for batch_start in range(0, len(fileids), batch_size):
+		batch = fileids[batch_start:batch_start + batch_size]
+		placeholders = ", ".join(f":fid{i}" for i in range(len(batch)))
+		params = {f"fid{i}": int(fid) for i, fid in enumerate(batch)}
+
+		# Remove prior rows for this batch so recalculation does not create duplicates.
+		session.execute(text(f"DELETE FROM torqtrips WHERE fileid IN ({placeholders})"), params)
+
+		metric_select_parts: list[str] = []
+		for idx, (_, actual_col) in enumerate(resolved_metric_pairs):
+			metric_select_parts.extend([
+				f'MIN(tl."{actual_col}") AS "m_{idx}_min"',
+				f'MAX(tl."{actual_col}") AS "m_{idx}_max"',
+				f'AVG(tl."{actual_col}") AS "m_{idx}_avg"',
+				f'COUNT(tl."{actual_col}") AS "m_{idx}_count"',
+				f'AVG(tl."{actual_col}" * tl."{actual_col}") AS "m_{idx}_avg_sq"',
+			])
+		metric_sql = (",\n\t\t" + ",\n\t\t".join(metric_select_parts)) if metric_select_parts else ""
+
+		agg_sql = text(
+			f"""
+			SELECT
+				tl.fileid AS fileid,
+				MIN(tl."{time_col}") AS tripdate,
+				MAX(tl."{time_col}") AS trip_end,
+				MAX(tf.trip_distance) AS trip_distance
+				{metric_sql}
+			FROM torqlogs tl
+			LEFT JOIN torqfiles tf ON tf.fileid = tl.fileid
+			WHERE tl.fileid IN ({placeholders})
+			GROUP BY tl.fileid
+			"""
+		)
+		rows = session.execute(agg_sql, params).mappings().all()
+		if not rows:
+			continue
+
+		records: list[dict[str, object]] = []
+		for row in rows:
+			trip_start = row.get("tripdate")
+			trip_end = row.get("trip_end")
+			trip_duration = None
+			if trip_start and trip_end:
+				try:
+					trip_start_dt = convert_string_to_datetime(str(trip_start))
+					trip_end_dt = convert_string_to_datetime(str(trip_end))
+					if trip_start_dt and trip_end_dt:
+						trip_duration = float((trip_end_dt - trip_start_dt).total_seconds())
+				except Exception as e:
+					logger.warning(f"Could not compute trip duration for fileid {row.get('fileid')}: {e} ({type(e)})")
+
+			rec: dict[str, object] = {
+				"fileid": int(row.get("fileid") or 0),
+				"tripdate": trip_start,
+				"time": trip_duration,
+				"trip_distance": row.get("trip_distance"),
+			}
+
+			for idx, (metric_name, _) in enumerate(resolved_metric_pairs):
+				min_val = row.get(f"m_{idx}_min")
+				max_val = row.get(f"m_{idx}_max")
+				avg_val = row.get(f"m_{idx}_avg")
+				count_val = int(row.get(f"m_{idx}_count") or 0)
+				avg_sq_val = row.get(f"m_{idx}_avg_sq")
+
+				rec[f"{metric_name}_min"] = float(min_val) if min_val is not None else None
+				rec[f"{metric_name}_max"] = float(max_val) if max_val is not None else None
+				rec[f"{metric_name}_avg"] = float(avg_val) if avg_val is not None else None
+				if count_val > 1 and avg_val is not None and avg_sq_val is not None:
+					variance = max(0.0, float(avg_sq_val) - (float(avg_val) ** 2))
+					rec[f"{metric_name}_stdev"] = variance ** 0.5
+				else:
+					rec[f"{metric_name}_stdev"] = None
+
+			records.append(rec)
+
+		if records:
+			pd.DataFrame(records).to_sql(
+				name='torqtrips',
+				con=session.get_bind(),
+				if_exists='append',
+				index=False,
+				method='multi',
+				chunksize=args.sqlchunksize,
+			)
+			inserted_rows += len(records)
+
+		session.commit()
+		logger.info(
+			f"torqtrips batch {batch_start // batch_size + 1}: "
+			f"{min(batch_start + len(batch), len(fileids))}/{len(fileids)} fileids"
+		)
+
+	logger.info(f"collect_db_torqtrips completed, wrote {inserted_rows} rows")
+	return inserted_rows
+
 def main(args):
 	session = get_engine_session(args)
 	if args.dbmode == "sqlite":
@@ -679,6 +813,9 @@ def main(args):
 		session.execute(text("pragma mmap_size = 30000000000;"))
 	if args.db_filestats:
 		return collect_db_filestats(args)
+	if args.db_torqtrips:
+		logger.info("starting torqtrips")
+		return collect_db_torqtrips(args)
 	elif args.db_columnstats:
 		return collect_db_columnstats(args)
 	elif args.db_startpos:
@@ -699,11 +836,14 @@ def main(args):
 		logger.debug("all stats dbcolumstats done")
 		dbfilestats = collect_db_filestats(args)
 		logger.debug("all stats dbfilestats done")
+		dbtorqtrips = collect_db_torqtrips(args)
+		logger.debug("all stats dbtorqtrips done")
 		return {
 			"dbspeed": dbspeed,
 			"dbstartends": dbstartends,
 			"dbcolumstats": dbcolumstats,
 			"dbfilestats": dbfilestats,
+			"dbtorqtrips": dbtorqtrips,
 		}
 	else:
 		logger.warning("missing args")
@@ -746,6 +886,12 @@ if __name__ == "__main__":
 		help="db_filestats",
 		action="store_true",
 		dest="db_filestats",
+	)
+	parser.add_argument("--db_torqtrips",
+		default=False,
+		help="db_torqtrips",
+		action="store_true",
+		dest="db_torqtrips",
 	)
 	parser.add_argument("--db_allstats",
 		default=False,

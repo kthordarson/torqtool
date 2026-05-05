@@ -8,6 +8,42 @@ from sqlalchemy import Column, DateTime, Float, ForeignKey, Integer, Text, text,
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
+TRIP_METRIC_COLUMNS = [
+	"horizontaldilutionofprecision",
+	"accelerationsensortotalg",
+	"accelerationsensorxaxisg",
+	"accelerationsensoryaxisg",
+	"accelerationsensorzaxisg",
+	"androiddevicebatterylevel",
+	"averagetripspeedwhilststoppedormovingkmh",
+	"coingkmaveragegkm",
+	"distancetoemptyestimatedkm",
+	"engineload",
+	"enginerpmrpm",
+	"fuelcosttripcost",
+	"fuelflowratehourlhr",
+	"fuelflowrateminuteccmin",
+	"fuelusedtripl",
+	"gpsaltitudem",
+	"gpsvsobdspeeddifferencekmh",
+	"kilometersperlitreinstantkpl",
+	"kilometersperlitrelongtermaveragekpl",
+	"litresper100kilometerlongtermaveragel100km",
+	"massairflowrategs",
+	"milespergalloninstantmpg",
+	"milespergallonlongtermaveragempg",
+	"tripaveragekplkpl",
+	"tripaveragelitres100kml100km",
+	"tripaveragempgmpg",
+	"tripdistancekm",
+	"tripdistancestoredinvehicleprofilekm",
+	"triptimesincejourneystarts",
+	"triptimewhilstmovings",
+	"triptimewhilststationarys",
+	"voltageobdadapterv",
+	"volumetricefficiencycalculated",
+]
+
 COLUMN_TYPES = {
 		'GPS_Time': String,
 		'Device_Time': String,
@@ -199,21 +235,8 @@ class Torqtrips(Base):
 	time = Column('time', Integer)
 	triptime = Column('triptime', Integer)
 
-	def __init__(self, fileid=0, csvfile=None, csvhash=None, distance=None, fuelcost=None, fuelused=None, distancewhilstconnectedtoobd=None, tripdate=None, profile=None, triptime=None):
+	def __init__(self, fileid):
 		self.fileid = fileid
-		self.csvfile = csvfile
-		self.csvhash = csvhash
-		self.distance = distance
-		self.trip_distance = distance
-		self.fuelcost = fuelcost
-		self.fuelused = fuelused
-		self.distancewhilstconnectedtoobd = distancewhilstconnectedtoobd
-		self.tripdate = tripdate
-		self.profile = profile
-		self.time = triptime
-		self.triptime = triptime
-	# def __repr__(self):
-	# 	return f'<Torqtrips id:{self.id} file:{self.fileid} {self.csvfile}>'
 
 class Torqlogs(Base):
 	__tablename__ = 'torqlogs'

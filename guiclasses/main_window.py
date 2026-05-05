@@ -1413,7 +1413,7 @@ class MainWindow(QMainWindow):
 			with self.engine.connect() as conn:
 				rows = conn.execute(query, params).mappings().all()
 		except Exception as e:
-			logger.error(f"Failed to query torqtrips by labels: {e} ({type(e)})")
+			logger.error(f"Failed to query torqfiles by labels: {e} ({type(e)})")
 			QMessageBox.warning(self, "Query failed", f"Could not select trips by labels:\n{e}")
 			return
 
