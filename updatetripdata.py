@@ -724,12 +724,15 @@ def collect_db_torqtrips(args):
 
 			metric_select_parts: list[str] = []
 			for idx, (_, actual_col) in enumerate(resolved_metric_pairs):
+				# Filter out float32 sentinel/overflow values (e.g. 3.4028235e+38 = FLT_MAX)
+				# by NULLing any value whose absolute magnitude exceeds 1e30.
+				valid = f'CASE WHEN ABS(tl."{actual_col}") < 1e30 THEN tl."{actual_col}" ELSE NULL END'
 				metric_select_parts.extend([
-					f'MIN(tl."{actual_col}") AS "m_{idx}_min"',
-					f'MAX(tl."{actual_col}") AS "m_{idx}_max"',
-					f'AVG(tl."{actual_col}") AS "m_{idx}_avg"',
-					f'COUNT(tl."{actual_col}") AS "m_{idx}_count"',
-					f'AVG(tl."{actual_col}" * tl."{actual_col}") AS "m_{idx}_avg_sq"',
+					f'MIN({valid}) AS "m_{idx}_min"',
+					f'MAX({valid}) AS "m_{idx}_max"',
+					f'AVG({valid}) AS "m_{idx}_avg"',
+					f'COUNT({valid}) AS "m_{idx}_count"',
+					f'AVG(CASE WHEN ABS(tl."{actual_col}") < 1e30 THEN tl."{actual_col}" * tl."{actual_col}" ELSE NULL END) AS "m_{idx}_avg_sq"',
 				])
 			metric_sql = (",\n\t\t" + ",\n\t\t".join(metric_select_parts)) if metric_select_parts else ""
 			logger.debug(f'Constructed metric SQL for torqtrips {len(metric_sql)}')
