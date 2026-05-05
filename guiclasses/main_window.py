@@ -324,12 +324,16 @@ class MainWindow(QMainWindow):
 		self.select_trips_by_labels_btn = QPushButton("Select trips by labels")
 		self.select_trips_by_labels_btn.setFixedHeight(24)
 		self.select_trips_by_labels_btn.clicked.connect(self._select_torqtrips_for_selected_labels)
+		self.plot_selected_btn = QPushButton("Plot selected")
+		self.plot_selected_btn.setFixedHeight(24)
+		self.plot_selected_btn.clicked.connect(self._trigger_label_groups_trip_plot)
 		self.cancel_plot_load_btn = QPushButton("Cancel load")
 		self.cancel_plot_load_btn.setEnabled(False)
 		self.cancel_plot_load_btn.setFixedHeight(24)
 		self.cancel_plot_load_btn.clicked.connect(self._cancel_async_plot_load)
 		label_toolbar_layout.addWidget(self.label_group_mode_combo)
 		label_toolbar_layout.addWidget(self.select_trips_by_labels_btn)
+		label_toolbar_layout.addWidget(self.plot_selected_btn)
 		label_toolbar_layout.addWidget(self.cancel_plot_load_btn)
 		label_toolbar_layout.addStretch()
 		label_toolbar.setMaximumHeight(30)
@@ -1281,8 +1285,6 @@ class MainWindow(QMainWindow):
 		labels = self._get_selected_label_groups()
 		if labels:
 			self._plot_label_groups_on_map(labels)
-			if self._get_selected_metrics():
-				self._trigger_label_groups_trip_plot()
 
 	def _trigger_label_groups_trip_plot(self) -> None:
 		"""Silently select and async-plot trips for the currently selected label groups."""

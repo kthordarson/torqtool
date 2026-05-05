@@ -57,6 +57,7 @@ class PositionManagerWindow(QMainWindow):
         self._hide_labeled_active: bool = False
         self._visible_on_map_filter_active: bool = False
         self._visible_map_bounds: tuple[float, float, float, float] | None = None
+        self._show_selected_only_on_map: bool = False
         self._updating_selection: bool = False
         self._pending_pick_call: tuple[list[int], bool] | None = None
         self._group_mode: str = "label"
@@ -203,6 +204,10 @@ class PositionManagerWindow(QMainWindow):
         self.zoom_out_btn = QPushButton("Full")
         for btn in (self.zoom_in_btn, self.zoom_out_step_btn, self.zoom_out_btn):
             btn.setFixedSize(64, 24)
+        self.selected_only_map_btn = QPushButton("Map: selected only")
+        self.selected_only_map_btn.setCheckable(True)
+        self.selected_only_map_btn.setChecked(False)
+        self.selected_only_map_btn.setFixedHeight(24)
         self.sort_similar_btn = QPushButton("Sort by similar lat/lon")
         self.sort_similar_btn.setFixedHeight(24)
         self.reload_map_btn = QPushButton("Reload map")
@@ -210,6 +215,7 @@ class PositionManagerWindow(QMainWindow):
         map_btn_row = QHBoxLayout()
         map_btn_row.setSpacing(4)
         map_btn_row.addWidget(self.toggle_labels_btn)
+        map_btn_row.addWidget(self.selected_only_map_btn)
         map_btn_row.addWidget(self.zoom_in_btn)
         map_btn_row.addWidget(self.zoom_out_step_btn)
         map_btn_row.addWidget(self.zoom_out_btn)
@@ -266,6 +272,7 @@ class PositionManagerWindow(QMainWindow):
         self.zoom_out_step_btn.clicked.connect(self._zoom_out)
         self.zoom_out_btn.clicked.connect(self._zoom_full)
         self.toggle_labels_btn.toggled.connect(self._on_toggle_labels)
+        self.selected_only_map_btn.toggled.connect(self._on_toggle_selected_only_map)
         self.sort_similar_btn.clicked.connect(self._sort_table_by_similar_latlon)
         self.reload_map_btn.clicked.connect(self._force_reload_basemap)
         self.positions_table.horizontalHeader().sortIndicatorChanged.connect(self._on_sort_indicator_changed)
@@ -541,6 +548,8 @@ class PositionManagerWindow(QMainWindow):
         self._selected_row_index = None
         self._selected_row_indices = []
         self._clear_selection_markers()
+        if self._show_selected_only_on_map:
+            self._plot_positions(preserve_view=True)
         if self.positions_table.selectionModel() is not None:
             self._updating_selection = True
             try:
@@ -709,9 +718,17 @@ class PositionManagerWindow(QMainWindow):
             return
 
         plot_df = self.df_positions
+        if self._show_selected_only_on_map:
+            if self._selected_row_indices:
+                plot_df = plot_df.loc[plot_df.index.isin(self._selected_row_indices)]
+            else:
+                plot_df = plot_df.iloc[0:0]
         if plot_df.empty:
             self._full_bounds_latlon = None
-            self.map_canvas.show_empty("No points for current filter")
+            if self._show_selected_only_on_map:
+                self.map_canvas.show_empty("No selected points")
+            else:
+                self.map_canvas.show_empty("No points for current filter")
             if self.args.debug:
                 logger.warning("Plotting positions: no points to plot after filtering")
             return
@@ -878,6 +895,12 @@ class PositionManagerWindow(QMainWindow):
         self.toggle_labels_btn.setText("Labels on" if checked else "Labels off")
         self._plot_positions(preserve_view=True)
 
+    def _on_toggle_selected_only_map(self, checked: bool) -> None:
+        self._show_selected_only_on_map = bool(checked)
+        self._plot_positions(preserve_view=True)
+        if self._selected_row_indices:
+            self._draw_selection_markers(self._selected_row_indices)
+
     def _sort_table_by_similar_latlon(self):
         if self._table_model is None:
             return
@@ -920,6 +943,9 @@ class PositionManagerWindow(QMainWindow):
         clean_rows = list(dict.fromkeys(clean_rows))
         self._selected_row_indices = clean_rows
         self._selected_row_index = clean_rows[0]
+
+        if self._show_selected_only_on_map:
+            self._plot_positions(preserve_view=True)
 
         if select_table and self.positions_table.selectionModel() is not None and self._table_model is not None:
             selection_model = self.positions_table.selectionModel()
