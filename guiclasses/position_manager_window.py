@@ -95,6 +95,12 @@ class PositionManagerWindow(QMainWindow):
         self.positions_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.positions_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.positions_table.setFont(QFont("Monospace", self._table_font_size))
+        self.positions_table.setStyleSheet(
+            "QTableView::item:selected {"
+            "  background-color: #c6f6c6;"
+            "  color: #1f1f1f;"
+            "}"
+        )
 
         grouped_tab = QWidget()
         grouped_layout = QVBoxLayout(grouped_tab)
@@ -116,6 +122,12 @@ class PositionManagerWindow(QMainWindow):
         self.grouped_positions_table.setSortingEnabled(True)
         self.grouped_positions_table.verticalHeader().setVisible(False)
         self.grouped_positions_table.setFont(QFont("Monospace", self._table_font_size))
+        self.grouped_positions_table.setStyleSheet(
+            "QTableView::item:selected {"
+            "  background-color: #c6f6c6;"
+            "  color: #1f1f1f;"
+            "}"
+        )
         grouped_layout.addWidget(grouped_toolbar)
         grouped_layout.addWidget(self.grouped_positions_table)
 
@@ -761,12 +773,24 @@ class PositionManagerWindow(QMainWindow):
         m.fit_bounds([[lat_min - pad_lat, lon_min - pad_lon], [lat_max + pad_lat, lon_max + pad_lon]])
 
         # Build GeoJSON features
+        selected_row_set = set(int(v) for v in self._selected_row_indices)
         features = []
         for idx, row in plot_df.iterrows():
             pos_type = str(row["pos_type"])
             pos_id = int(row["pos_id"])
             lat = float(row["latitude"])
             lon = float(row["longitude"])
+            selected_label = False
+            if isinstance(idx, int):
+                selected_label = idx in selected_row_set
+            elif isinstance(idx, str):
+                idx_stripped = idx.strip()
+                if idx_stripped.startswith("-"):
+                    idx_digits = idx_stripped[1:]
+                else:
+                    idx_digits = idx_stripped
+                if idx_digits.isdigit():
+                    selected_label = int(idx_stripped) in selected_row_set
             count = max(1, int(row.get("count", 1)))
             label_raw = row.get("label", None)
             label_txt = "" if pd.isna(label_raw) else str(label_raw).strip()
@@ -788,17 +812,19 @@ class PositionManagerWindow(QMainWindow):
                     "tt": tooltip_str,
                     "always_label": bool(self._show_point_labels),
                     "missing_label": bool(missing_label),
+                    "selected_label": bool(selected_label),
                 },
             })
 
         on_each_feature = JsCode(
             "function(feature, layer) {"
             "  var p = feature.properties;"
+            "  var cls = p.selected_label ? 'selected-label-tip' : (p.missing_label ? 'missing-label-tip' : '');"
             "  layer.bindTooltip(String(p.tt), {"
             "    permanent: !!p.always_label,"
             "    sticky: !p.always_label,"
             "    direction: 'top',"
-            "    className: p.missing_label ? 'missing-label-tip' : '',"
+            "    className: cls,"
             "    opacity: 0.92"
             "  });"
             "  layer.on('click', function(e) {"
@@ -830,6 +856,12 @@ class PositionManagerWindow(QMainWindow):
             ".missing-label-tip {"
             "  background: #ffe770 !important;"
             "  border: 1px solid #c1a400 !important;"
+            "  color: #1f1f1f !important;"
+            "  font-weight: 600;"
+            "}"
+            ".selected-label-tip {"
+            "  background: #c6f6c6 !important;"
+            "  border: 1px solid #5aa45a !important;"
             "  color: #1f1f1f !important;"
             "  font-weight: 600;"
             "}"

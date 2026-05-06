@@ -424,6 +424,10 @@ class MainWindow(QMainWindow):
 		self.left_tabs.addTab(self._positions_tab_container, "Positions")
 		self.left_tabs.addTab(label_tab, "Label groups")
 
+		from .trip_stats_window import TripStatsWindow
+		self._trip_stats_window = TripStatsWindow(args, engine, self)
+		self.left_tabs.addTab(self._trip_stats_window, "Trip Stats")
+
 		self.left_tabs.currentChanged.connect(self._on_left_tab_changed)
 
 		splitter.addWidget(self.left_tabs)
@@ -1467,14 +1471,19 @@ class MainWindow(QMainWindow):
 		return True
 
 	def _on_left_tab_changed(self, index: int):
+		full_width_tabs = {2, 4}  # Positions, Trip Stats
 		if hasattr(self, "right_panel") and self.right_panel is not None:
-			self.right_panel.setVisible(index != 2)
+			self.right_panel.setVisible(index not in full_width_tabs)
 		if hasattr(self, "main_splitter") and self.main_splitter is not None:
 			sizes = self.main_splitter.sizes()
 			if len(sizes) >= 2:
 				total = max(1, sizes[0] + sizes[1])
-				if index == 0:
+				if index in full_width_tabs:
+					self.main_splitter.setSizes([total, 0])
+				elif index == 0:
 					self.main_splitter.setSizes([320, max(900, total - 320)])
+				else:
+					self.main_splitter.setSizes([320, max(1, total - 320)])
 		if index == 0:
 			rows = sorted(set(idx.row() for idx in self.table.selectionModel().selectedRows())) if self.table.selectionModel() is not None else []
 			self._populate_metric_columns(self._get_selected_fileids(rows) if rows else None)
