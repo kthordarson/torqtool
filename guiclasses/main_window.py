@@ -1531,6 +1531,45 @@ class MainWindow(QMainWindow):
 	def _resolve_actual_torqlogs_column(self, requested_column: str) -> str | None:
 		return self._torqlogs_norm_to_actual.get(_normalize_col_name(requested_column))
 
+	def _get_filestats_allowed_columns(self, fileids: list[int] | None = None, threshold: float = 0.9) -> set[str]:
+		"""Return filestats-backed column names whose mean nullratio is below threshold."""
+		if threshold <= 0:
+			return set()
+
+		params: dict[str, Any] = {"threshold": float(threshold)}
+		where_clause = ""
+		if fileids:
+			placeholder_parts = []
+			for idx, fid in enumerate(sorted(set(int(fid) for fid in fileids))):
+				key = f"fid{idx}"
+				params[key] = fid
+				placeholder_parts.append(f":{key}")
+			if placeholder_parts:
+				where_clause = f"WHERE fileid IN ({', '.join(placeholder_parts)})"
+
+		query = text(
+			f"""
+			SELECT column_name
+			FROM filestats
+			{where_clause}
+			GROUP BY column_name
+			HAVING AVG(COALESCE(nullratio, 1.0)) < :threshold
+			"""
+		)
+
+		try:
+			with self.engine.connect() as conn:
+				rows = conn.execute(query, params).all()
+		except Exception as e:
+			logger.warning(f"Could not read filestats eligible columns: {e} ({type(e)})")
+			return set()
+
+		return {
+			str(row[0])
+			for row in rows
+			if row and row[0] is not None and '$' not in str(row[0])
+		}
+
 	def _get_metric_summary_for_selection(self, fileids: list[int] | None = None) -> pd.DataFrame:
 		empty_df = pd.DataFrame(columns=["name", "min", "max", "avg"])
 		cache_key = tuple(sorted(int(fid) for fid in fileids)) if fileids else tuple()
@@ -1550,17 +1589,21 @@ class MainWindow(QMainWindow):
 			self._metric_summary_cache[cache_key] = empty_df
 			return empty_df.copy()
 
-		select_parts: list[str] = []
-		col_names = []
-		with self.engine.connect() as conn:
-			col_names = conn.execute(text('select distinct column_name from filestats where nullratio=0')).all()
+		allowed_cols = self._get_filestats_allowed_columns(fileids=fileids, threshold=0.9)
+		if allowed_cols:
+			column_pairs = [(requested_col, actual_col) for requested_col, actual_col in column_pairs if actual_col in allowed_cols]
 			if self.args.debug:
-				logger.debug(f"Columns with nullratio=0 in filestats: {len(col_names)} column_pairs: {len(column_pairs)}")
-		for idx, actual_col_temp in enumerate(col_names):
-			actual_col = actual_col_temp[0]
-			if '$' in actual_col:
-				logger.warning(f'invalid data detected: {idx} {actual_col} col_names: {col_names}')
-				return empty_df.copy()
+				logger.debug(
+					f"filestats metric filter (<0.9 nullratio) retained {len(column_pairs)} columns "
+					f"for {len(fileids) if fileids else 'all'} trips"
+				)
+
+		if not column_pairs:
+			self._metric_summary_cache[cache_key] = empty_df
+			return empty_df.copy()
+
+		select_parts: list[str] = []
+		for idx, (_, actual_col) in enumerate(column_pairs):
 			select_parts.append(
 				f'SUM(CASE WHEN "{actual_col}" IS NOT NULL AND CAST("{actual_col}" AS FLOAT) <> 0 THEN 1 ELSE 0 END) AS "_c_{idx}"'
 			)
@@ -1589,9 +1632,7 @@ class MainWindow(QMainWindow):
 		try:
 			if not df.empty:
 				row = df.iloc[0]
-				# for idx, (requested_col, _) in enumerate(column_pairs):
-				for idx, actual_col_temp in enumerate(col_names):
-					requested_col = actual_col_temp[0]
+				for idx, (requested_col, _) in enumerate(column_pairs):
 					count_val = row.get(f"_c_{idx}")
 					if count_val is None or pd.isna(count_val) or int(count_val) <= 0:
 						continue
