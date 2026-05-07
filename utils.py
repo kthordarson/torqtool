@@ -19,8 +19,9 @@ from sqlalchemy import inspect
 from sqlalchemy.exc import IntegrityError
 from psycopg2.errors import UniqueViolation
 from commonformats import fmt_20, fmt_24, fmt_26, fmt_28, fmt_30, fmt_34, fmt_36
-from datamodels import database_init, COLUMN_TYPES, TRIP_METRIC_COLUMNS
+from datamodels import database_init, COLUMN_TYPES
 from schemas import canonicalize_column_name, canonicalize_columns
+from schemas import TRIP_METRIC_COLUMNS
 
 MIN_FILESIZE = 3000
 

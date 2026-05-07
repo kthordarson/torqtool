@@ -151,7 +151,7 @@ def _build_speed_engine_figure(df: pd.DataFrame) -> matplotlib.figure.Figure:
     fig, axes = _make_figure(2, 2)
 
     dated = df.copy()
-    dated["tripdate"] = pd.to_datetime(dated.get("tripdate"), errors="coerce")
+    dated["tripdate"] = pd.to_datetime(dated.get("tripdate"), errors="coerce")  # type: ignore
     dated = dated.dropna(subset=["tripdate"]).sort_values("tripdate")
 
     def _scatter(ax: Any, col: str, label: str, color: str) -> None:
@@ -188,7 +188,7 @@ def _build_fuel_figure(df: pd.DataFrame) -> matplotlib.figure.Figure:
     fig, axes = _make_figure(2, 2)
 
     dated = df.copy()
-    dated["tripdate"] = pd.to_datetime(dated.get("tripdate"), errors="coerce")
+    dated["tripdate"] = pd.to_datetime(dated.get("tripdate"), errors="coerce")  # type: ignore
     dated = dated.dropna(subset=["tripdate"]).sort_values("tripdate")
 
     def _scatter(ax: Any, col: str, label: str, color: str) -> None:
@@ -274,9 +274,9 @@ def _build_map(df: pd.DataFrame) -> folium.Map:
 
     # Heatmap of trip start positions
     heat_data = [
-        [float(r.startlat), float(r.startlon)]
+        [float(r.startlat), float(r.startlon)]  # type: ignore
         for r in starts.itertuples()
-        if -90 <= float(r.startlat) <= 90 and -180 <= float(r.startlon) <= 180
+        if -90 <= float(r.startlat) <= 90 and -180 <= float(r.startlon) <= 180  # type: ignore
     ]
     if heat_data:
         HeatMap(heat_data, radius=12, blur=18, min_opacity=0.3).add_to(fmap)
@@ -287,7 +287,7 @@ def _build_map(df: pd.DataFrame) -> folium.Map:
         vmax = float(dist_vals.quantile(0.95)) or 1.0
         colormap = matplotlib.colormaps.get_cmap("RdYlGn")
         for row in df.dropna(subset=["startlat", "startlon"]).itertuples():
-            lat, lon = float(row.startlat), float(row.startlon)
+            lat, lon = float(row.startlat), float(row.startlon)  # type: ignore
             if not (-90 <= lat <= 90 and -180 <= lon <= 180):
                 continue
             dist = float(getattr(row, "trip_distance", 0) or 0)
