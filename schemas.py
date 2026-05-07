@@ -84,7 +84,7 @@ dataschema = {'gpstime': pl.String,
 'o2sensor1widerangevoltagev': pl.Float64
 }
 
-ncc = {
+column_mapping = {
     "0-100kph Time(s)": "kphTime0-100",
     "0-100mph Time(s)": "mphTime0-100",
     "0-200kph Time(s)": "kphTime0-200",
@@ -300,12 +300,12 @@ def _fallback_column_name(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", key)
 
 
-_NCC_LOOKUP = { _normalize_lookup_key(k): v for k, v in ncc.items() }
+COLUMN_MAP = { _normalize_lookup_key(k): v for k, v in column_mapping.items() }
 
 
 def canonicalize_column_name(column_name: str) -> str:
     lookup = _normalize_lookup_key(column_name)
-    mapped = _NCC_LOOKUP.get(lookup)
+    mapped = COLUMN_MAP.get(lookup)
     if mapped:
         return mapped
     return _fallback_column_name(lookup)
