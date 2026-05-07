@@ -256,7 +256,7 @@ async def process_single_file(csvfilename, args):
 async def cli_main(args):
 	if args.dbinfo:
 		tables = ['columnstats', 'filestats', 'speeds', 'torqfiles', 'torqtrips', 'endpos', 'startpos', 'mapimagecache', 'torqlogs']
-		print(f'checking {len(tables)}')
+		print(f'checking {len(tables)} tables in {args.dbmode}')
 		logcount = 0
 		try:
 			session = get_engine_session(args)  # , session
@@ -264,7 +264,7 @@ async def cli_main(args):
 				for t in tables:
 					try:
 						count = conn.execute(text(f"select count(*) from {t}")).one()[0]
-						logger.info(f'{t}: {count}')
+						print(f'{t}: {count}')
 					except Exception as e:
 						logger.error(f'Error counting {t}: {type(e)} {e}')
 				# logcount = conn.execute(text("select count(*) from torqlogs")).all()
