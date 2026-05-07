@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QFont, QAction, QCloseEvent
 from PySide6.QtCore import Qt, QTimer, QThread, QItemSelectionModel
 from PySide6.QtWidgets import QHeaderView
-
+from psycopg2.errors import InvalidTextRepresentation
 from schemas import dataschema
 from metric_analysis import categorize_metric, get_analysis_suggestion, group_metrics_by_category
 from .map_canvas import FoliumMapView
@@ -1553,6 +1553,8 @@ class MainWindow(QMainWindow):
 		select_parts: list[str] = []
 		with self.engine.connect() as conn:
 			col_names = conn.execute(text('select distinct column_name from filestats where nullratio=0')).all()
+			if self.args.debug:
+				logger.debug(f"Columns with nullratio=0 in filestats: {len(col_names)} column_pairs: {len(column_pairs)}")
 		for idx, actual_col_temp in enumerate(col_names):
 			actual_col = actual_col_temp[0]
 			select_parts.append(
@@ -1596,8 +1598,10 @@ class MainWindow(QMainWindow):
 						"max": float(max_val),
 						"avg": float(avg_val),
 					})
-		except Exception as e:
+		except InvalidTextRepresentation as e:
 			logger.warning(f"Failed to evaluate metric summary for selection: {e} ({type(e)})")
+		except Exception as e:
+			logger.error(f"Failed to evaluate metric summary for selection: {e} ({type(e)})")
 
 		summary_df = pd.DataFrame(rows, columns=["name", "min", "max", "avg"])
 		if not summary_df.empty:
