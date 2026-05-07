@@ -1,4 +1,4 @@
-"""Trip Statistics tab – aggregated analysis of torqtrips data."""
+"""Trip Statistics tab aggregated analysis of torqtrips data."""
 from __future__ import annotations
 
 import io
@@ -78,6 +78,7 @@ class _TripStatsLoader(QObject):
                 )
             finally:
                 session.close()
+            logger.debug(f"Loaded {len(df)} trips with {df.shape[1]} columns for TripStatsWindow")
             self.finished.emit(df)
         except Exception as exc:
             logger.error(f"TripStatsLoader error: {exc} ({type(exc)})")
