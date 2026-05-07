@@ -50,7 +50,7 @@ class PositionManagerWindow(QMainWindow):
         self._restore_after_reload: dict[str, Any] | None = None
         self._min_count_filter = 0
         self._current_sort_column: int = -1
-        self._current_sort_order: Qt.SortOrder = Qt.SortOrder.AscendingOrder
+        self._current_sort_order: Qt.SortOrder = Qt.SortOrder.DescendingOrder
         self._applying_sort: bool = False
         self._label_filter_active: bool = False
         self._label_filter_text: str = ""
