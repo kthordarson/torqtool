@@ -1532,6 +1532,7 @@ class MainWindow(QMainWindow):
 		return self._torqlogs_norm_to_actual.get(_normalize_col_name(requested_column))
 
 	def _get_metric_summary_for_selection(self, fileids: list[int] | None = None) -> pd.DataFrame:
+		empty_df = pd.DataFrame(columns=["name", "min", "max", "avg"])
 		cache_key = tuple(sorted(int(fid) for fid in fileids)) if fileids else tuple()
 		cached = self._metric_summary_cache.get(cache_key)
 		if cached is not None:
@@ -1545,18 +1546,21 @@ class MainWindow(QMainWindow):
 			if actual and actual in numeric_cols:
 				column_pairs.append((req, actual))
 
-		if not column_pairs:
-			empty_df = pd.DataFrame(columns=["name", "min", "max", "avg"])
+		if not column_pairs:			
 			self._metric_summary_cache[cache_key] = empty_df
 			return empty_df.copy()
 
 		select_parts: list[str] = []
+		col_names = []
 		with self.engine.connect() as conn:
 			col_names = conn.execute(text('select distinct column_name from filestats where nullratio=0')).all()
 			if self.args.debug:
 				logger.debug(f"Columns with nullratio=0 in filestats: {len(col_names)} column_pairs: {len(column_pairs)}")
 		for idx, actual_col_temp in enumerate(col_names):
 			actual_col = actual_col_temp[0]
+			if '$' in actual_col:
+				logger.warning(f'invalid data detected: {idx} {actual_col} col_names: {col_names}')
+				return empty_df.copy()
 			select_parts.append(
 				f'SUM(CASE WHEN "{actual_col}" IS NOT NULL AND CAST("{actual_col}" AS FLOAT) <> 0 THEN 1 ELSE 0 END) AS "_c_{idx}"'
 			)
@@ -1579,9 +1583,15 @@ class MainWindow(QMainWindow):
 		rows: list[dict[str, float | str]] = []
 		try:
 			df = pd.read_sql(query, self.engine)
+		except Exception as e:
+			logger.error(f"Failed to evaluate metric summary for selection: {e} ({type(e)})")
+			df = pd.DataFrame()  # empty df to trigger fallback
+		try:
 			if not df.empty:
 				row = df.iloc[0]
-				for idx, (requested_col, _) in enumerate(column_pairs):
+				# for idx, (requested_col, _) in enumerate(column_pairs):
+				for idx, actual_col_temp in enumerate(col_names):
+					requested_col = actual_col_temp[0]
 					count_val = row.get(f"_c_{idx}")
 					if count_val is None or pd.isna(count_val) or int(count_val) <= 0:
 						continue

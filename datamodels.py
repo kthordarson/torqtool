@@ -355,6 +355,42 @@ def database_init(engine):  # create tables
 					LEFT JOIN endpos ep ON ep.endid = tf.endid
 					LEFT JOIN torqtrips tt ON tt.fileid = tf.fileid
 					"""))
+
+            # Structural indexes not covered by the per-metric partial indexes.
+            # torqlogs(fileid): plain index for all general WHERE fileid = / IN queries.
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_torqlogs_fileid ON torqlogs (fileid)"
+            ))
+            # torqfiles FK lookup columns used in JOINs to startpos/endpos.
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_torqfiles_startid ON torqfiles (startid)"
+            ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_torqfiles_endid ON torqfiles (endid)"
+            ))
+            # torqtrips(fileid): used in the trip_start_end_summary view JOIN.
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_torqtrips_fileid ON torqtrips (fileid)"
+            ))
+            # filestats(fileid): FK column for per-file stat lookups.
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_filestats_fileid ON filestats (fileid)"
+            ))
+            # startpos/endpos spatial range queries (map bounds BETWEEN filtering).
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_startpos_latlon ON startpos (latstart, lonstart)"
+            ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_endpos_latlon ON endpos (latend, lonend)"
+            ))
+            # startpos/endpos label columns for label-group trip selection queries.
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_startpos_label ON startpos (label)"
+            ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_endpos_label ON endpos (label)"
+            ))
+            logger.debug("Structural indexes ensured")
     except (OperationalError, AssertionError) as e:
         logger.error(f"[dbinit] {type(e)} {e}")
         sys.exit(-1)
