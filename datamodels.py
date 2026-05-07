@@ -168,7 +168,7 @@ class Filestats(Base):
     __tablename__ = "filestats"
     index: Mapped[int] = mapped_column(primary_key=True)
     fileid: Mapped[int] = mapped_column(ForeignKey("torqfiles.fileid"))
-    column = Column("column", Text)
+    column_name = Column("column_name", Text)
     nulls = Column("nulls", Integer, default=0, unique=False)
     nullratio = Column("nullratio", Float, default=0, unique=False)
 

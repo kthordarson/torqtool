@@ -131,7 +131,7 @@ class StartEndWindow(QMainWindow):
             return
         if hasattr(parent, "_invalidate_and_cancel_active_plot_load"):
             try:
-                parent._invalidate_and_cancel_active_plot_load(reason)
+                parent._invalidate_and_cancel_active_plot_load(reason)  # type: ignore
             except Exception as e:
                 logger.warning(f"Could not cancel parent background load: {e} ({type(e)})")
 
@@ -211,7 +211,7 @@ class StartEndWindow(QMainWindow):
         if parent is not None and hasattr(parent, "_select_trips_by_fileids"):
             try:
                 selected_ok = bool(
-                    parent._select_trips_by_fileids(
+                    parent._select_trips_by_fileids(  # type: ignore
                         selected_fileids,
                         "No visible trips match the selected start/end groups.",
                         force_async_plot=True,
@@ -227,7 +227,7 @@ class StartEndWindow(QMainWindow):
 
         if parent is not None and hasattr(parent, "_plot_for_start_end_fileids"):
             try:
-                parent._plot_for_start_end_fileids(selected_fileids)
+                parent._plot_for_start_end_fileids(selected_fileids)  # type: ignore
                 self.stats_label.setText(f"{len(selected_fileids)} trip(s) plotted")
                 return
             except Exception as e:
@@ -268,9 +268,9 @@ class StartEndWindow(QMainWindow):
         df["end_label"] = df.get("end_label", pd.Series(dtype=str)).fillna("").astype(str).str.strip()
         df.loc[df["start_label"] == "", "start_label"] = "(no start label)"
         df.loc[df["end_label"] == "", "end_label"] = "(no end label)"
-        df["tripdate"] = pd.to_datetime(df.get("tripdate"), errors="coerce")
-        df["trip_distance_m"] = pd.to_numeric(df.get("trip_distance_m"), errors="coerce")
-        df["trip_time_s"] = pd.to_numeric(df.get("trip_time_s"), errors="coerce")
+        df["tripdate"] = pd.to_datetime(df.get("tripdate"), errors="coerce")  # type: ignore
+        df["trip_distance_m"] = pd.to_numeric(df.get("trip_distance_m"), errors="coerce")  # type: ignore
+        df["trip_time_s"] = pd.to_numeric(df.get("trip_time_s"), errors="coerce")  # type: ignore
         self._detail_df = df
         self._refresh_group_table()
 

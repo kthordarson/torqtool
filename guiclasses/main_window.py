@@ -786,8 +786,8 @@ class MainWindow(QMainWindow):
 			try:
 				cq = text(
 					"""
-					SELECT COUNT(*)
-					FROM torqlogs
+					SELECT sent_rows
+					FROM torqfiles
 					WHERE fileid = :fileid
 					"""
 				)
@@ -796,7 +796,7 @@ class MainWindow(QMainWindow):
 				if value is not None:
 					count = max(0, int(value))
 			except Exception as e:
-				logger.warning(f"Could not count torqlogs rows for fileid={fileid}: {e} ({type(e)})")
+				logger.warning(f"Could not count torqfiles sent_rows for fileid={fileid}: {e} ({type(e)})")
 				count = 0
 		self._trip_row_count_cache[int(fileid)] = int(count)
 		return int(count)
@@ -1551,7 +1551,10 @@ class MainWindow(QMainWindow):
 			return empty_df.copy()
 
 		select_parts: list[str] = []
-		for idx, (_, actual_col) in enumerate(column_pairs):
+		with self.engine.connect() as conn:
+			col_names = conn.execute(text('select distinct column_name from filestats where nullratio=0')).all()
+		for idx, actual_col_temp in enumerate(col_names):
+			actual_col = actual_col_temp[0]
 			select_parts.append(
 				f'SUM(CASE WHEN "{actual_col}" IS NOT NULL AND CAST("{actual_col}" AS FLOAT) <> 0 THEN 1 ELSE 0 END) AS "_c_{idx}"'
 			)

@@ -820,9 +820,25 @@ def collect_db_torqtrips(args):
 	logger.info(f"collect_db_torqtrips completed, wrote {inserted_rows} rows")
 	return inserted_rows
 
-def main(args):
+def update_indexes(args):
 	session = get_engine_session(args)
+	for column in dataschema:
+		if column in ['gpstime', 'devicetime']:
+			continue
+		index_name = f"idx_torqlogs_{column}_fileid_notnulls"
+		try:
+			session.execute(text(f'CREATE INDEX IF NOT EXISTS "{index_name}" ON torqlogs ("fileid") WHERE {column} IS NOT NULL;'))
+			# session.execute(text(f'CREATE INDEX CONCURRENTLY IF NOT EXISTS "{index_name}" ON torqlogs ("{column}") WHERE {column} IS NOT NULL;'))
+			logger.info(f"Ensured index on torqlogs.{column} for non-null fileid")
+			session.commit()
+		except Exception as e:
+			logger.error(f"Failed to create index {index_name}: {e} ({type(e)})")
+			session.rollback()
+
+def main(args):
+	
 	if args.dbmode == "sqlite":
+		session = get_engine_session(args)
 		session.execute(text("PRAGMA journal_mode=WAL;"))
 		session.execute(text("pragma synchronous = normal;"))
 		session.execute(text("pragma temp_store = memory;"))

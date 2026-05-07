@@ -88,9 +88,6 @@ METRIC_CATEGORIES = {
 	"gravityyg": (MetricCategory.ACCELERATION, "Gravity Y", "g"),
 	"gravityzg": (MetricCategory.ACCELERATION, "Gravity Z", "g"),
 	"gcalibrated": (MetricCategory.ACCELERATION, "G-Force (Calibrated)", "g"),
-	"gx": (MetricCategory.ACCELERATION, "Gx", "g"),
-	"gy": (MetricCategory.ACCELERATION, "Gy", "g"),
-	"gz": (MetricCategory.ACCELERATION, "Gz", "g"),
 
 	# Temperature metrics
 	"enginecoolanttemperaturef": (MetricCategory.TEMPERATURE, "Coolant Temp", "°F"),
