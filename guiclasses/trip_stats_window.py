@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from typing import Any
+import re
 
 import folium
 from folium.plugins import HeatMap
@@ -32,6 +33,7 @@ from PySide6.QtWidgets import (
 
 from .map_canvas import FoliumMapView
 from .pandas_model import PandasModel
+from metric_analysis import categorize_metric
 
 # ── sentinel threshold (float32 max ≈ 3.4e38) ────────────────────────────────
 _SENTINEL_THRESHOLD = 1e30
@@ -42,10 +44,14 @@ def _clean(series: pd.Series) -> pd.Series:
     return series.where(series.abs() < _SENTINEL_THRESHOLD)
 
 
+def _normalize_metric_name(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9]+", "", str(value)).lower()
+
+
 # ── background data loader ────────────────────────────────────────────────────
 
 class _TripStatsLoader(QObject):
-    finished: Signal = Signal(pd.DataFrame)
+    finished: Signal = Signal(object, object)
     error: Signal = Signal(str)
 
     def __init__(self, engine: Any) -> None:
@@ -74,10 +80,20 @@ class _TripStatsLoader(QObject):
                     """,
                     con=conn,
                 )
+                quality_raw = pd.read_sql(
+                    """
+                    SELECT fs.fileid, fs.column_name, fs.nullratio
+                    FROM filestats fs
+                    INNER JOIN (
+                        SELECT DISTINCT fileid FROM torqtrips
+                    ) tt ON tt.fileid = fs.fileid
+                    """,
+                    con=conn,
+                )
             finally:
                 session.close()
             logger.debug(f"Loaded {len(df)} trips with {df.shape[1]} columns for TripStatsWindow")
-            self.finished.emit(df)
+            self.finished.emit(df, quality_raw)
         except Exception as exc:
             logger.error(f"TripStatsLoader error: {exc} ({type(exc)})")
             self.error.emit(str(exc))
@@ -307,6 +323,50 @@ def _build_map(df: pd.DataFrame) -> folium.Map:
     return fmap
 
 
+def _build_metric_explorer_figure(df: pd.DataFrame, metric_name: str) -> matplotlib.figure.Figure:
+    fig, axes = _make_figure(2, 1)
+    ax_ts = axes[0][0]
+    ax_hist = axes[1][0]
+
+    if not metric_name:
+        ax_ts.set_title("Select a metric")
+        return fig
+
+    category, display_name, unit = categorize_metric(metric_name)
+    unit_txt = f" ({unit})" if unit else ""
+
+    value_col = f"{metric_name}_avg"
+    if value_col not in df.columns:
+        ax_ts.set_title(f"{display_name}{unit_txt} - avg column not available")
+        return fig
+
+    dated = df.copy()
+    dated["tripdate"] = pd.to_datetime(dated.get("tripdate"), errors="coerce")  # type: ignore
+    dated = dated.dropna(subset=["tripdate"]).sort_values("tripdate")
+    if dated.empty:
+        ax_ts.set_title("No dated trips")
+        return fig
+
+    values = _clean(pd.to_numeric(dated[value_col], errors="coerce")).dropna()
+    if values.empty:
+        ax_ts.set_title(f"{display_name}{unit_txt} - no usable values")
+        return fig
+
+    x = dated.loc[values.index, "tripdate"]
+    ax_ts.plot(x, values, color="#2d6a4f", linewidth=1.2, alpha=0.9)
+    ax_ts.scatter(x, values, color="#40916c", s=12, alpha=0.6, linewidths=0)
+    ax_ts.set_title(f"{display_name}{unit_txt} over time [{category.value}]")
+    ax_ts.grid(linestyle="--", alpha=0.3)
+    _ax_date_fmt(ax_ts, pd.DataFrame({"tripdate": x}))
+
+    ax_hist.hist(values, bins=30, color="#4C72B0", alpha=0.75, edgecolor="white", linewidth=0.4)
+    ax_hist.set_title(f"{display_name}{unit_txt} distribution")
+    ax_hist.set_ylabel("Trips")
+    ax_hist.grid(axis="y", linestyle="--", alpha=0.3)
+
+    return fig
+
+
 # ── main window class ─────────────────────────────────────────────────────────
 
 class TripStatsWindow(QMainWindow):
@@ -318,6 +378,9 @@ class TripStatsWindow(QMainWindow):
         self.resize(1400, 860)
 
         self._df: pd.DataFrame = pd.DataFrame()
+        self._quality_raw_df: pd.DataFrame = pd.DataFrame()
+        self._quality_df: pd.DataFrame = pd.DataFrame()
+        self._metric_bases: list[str] = []
         self._loader_thread: QThread | None = None
         self._loader_worker: _TripStatsLoader | None = None
 
@@ -406,6 +469,50 @@ class TripStatsWindow(QMainWindow):
         self._fuel_canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.chart_tabs.addTab(self._fuel_canvas, "Fuel & Temp")
 
+        # Data quality tab
+        quality_tab = QWidget()
+        quality_layout = QVBoxLayout(quality_tab)
+        quality_layout.setContentsMargins(4, 4, 4, 4)
+        quality_layout.setSpacing(4)
+        self.quality_summary_label = QLabel("Metric quality pending")
+        self.quality_summary_label.setWordWrap(True)
+        quality_layout.addWidget(self.quality_summary_label)
+        self.quality_table = QTableView()
+        self.quality_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.quality_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.quality_table.setSortingEnabled(True)
+        self.quality_table.verticalHeader().setVisible(False)
+        self.quality_table.setFont(QFont("Monospace", 7))
+        quality_layout.addWidget(self.quality_table)
+        self.chart_tabs.addTab(quality_tab, "Data Quality")
+
+        # Metric explorer tab
+        explorer_tab = QWidget()
+        explorer_layout = QVBoxLayout(explorer_tab)
+        explorer_layout.setContentsMargins(4, 4, 4, 4)
+        explorer_layout.setSpacing(4)
+        explorer_toolbar = QWidget()
+        explorer_tb_layout = QHBoxLayout(explorer_toolbar)
+        explorer_tb_layout.setContentsMargins(0, 0, 0, 0)
+        explorer_tb_layout.addWidget(QLabel("Category:"))
+        self.metric_category_combo = QComboBox()
+        self.metric_category_combo.addItem("All", "all")
+        self.metric_category_combo.currentIndexChanged.connect(self._on_metric_category_changed)
+        explorer_tb_layout.addWidget(self.metric_category_combo)
+        explorer_tb_layout.addWidget(QLabel("Metric:"))
+        self.metric_combo = QComboBox()
+        self.metric_combo.currentIndexChanged.connect(self._on_metric_changed)
+        explorer_tb_layout.addWidget(self.metric_combo)
+        explorer_tb_layout.addStretch()
+        self.metric_quality_label = QLabel("Quality: -")
+        explorer_tb_layout.addWidget(self.metric_quality_label)
+        explorer_layout.addWidget(explorer_toolbar)
+        self._metric_fig, _ = _make_figure(2, 1)
+        self._metric_canvas = FigureCanvas(self._metric_fig)
+        self._metric_canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        explorer_layout.addWidget(self._metric_canvas)
+        self.chart_tabs.addTab(explorer_tab, "Metric Explorer")
+
         # Map tab
         self._stats_map_canvas = FoliumMapView()
         self.chart_tabs.addTab(self._stats_map_canvas, "Map")
@@ -461,14 +568,57 @@ class TripStatsWindow(QMainWindow):
         self._loader_thread = None
         self._loader_worker = None
 
-    def _on_data_loaded(self, df: pd.DataFrame) -> None:
+    def _on_data_loaded(self, df: pd.DataFrame, quality_raw: pd.DataFrame) -> None:
         self._df = df
+        self._quality_raw_df = quality_raw
         self.refresh_btn.setEnabled(True)
         self._refresh_all()
 
     def _on_group_changed(self, _: str) -> None:
         if not self._df.empty:
             self._refresh_timeline()
+
+    def _on_metric_category_changed(self, _: int) -> None:
+        self._refresh_metric_options()
+        self._refresh_metric_explorer()
+
+    def _on_metric_changed(self, _: int) -> None:
+        self._refresh_metric_explorer()
+
+    @staticmethod
+    def _discover_metric_bases(df: pd.DataFrame) -> list[str]:
+        suffixes = {"min", "max", "avg", "stdev"}
+        bases: set[str] = set()
+        for col in df.columns:
+            parts = str(col).rsplit("_", 1)
+            if len(parts) != 2:
+                continue
+            base, suffix = parts
+            if suffix in suffixes and base:
+                bases.add(base)
+        return sorted(bases)
+
+    @staticmethod
+    def _build_quality_summary(quality_raw: pd.DataFrame, metric_bases: list[str]) -> pd.DataFrame:
+        if quality_raw.empty or not metric_bases:
+            return pd.DataFrame(columns=["metric", "files", "mean_nullratio", "availability_pct", "usable"])
+
+        dfq = quality_raw.copy()
+        dfq["metric"] = dfq["column_name"].astype(str).map(_normalize_metric_name)
+        metric_set = {_normalize_metric_name(m) for m in metric_bases}
+        dfq = dfq[dfq["metric"].isin(metric_set)]
+        if dfq.empty:
+            return pd.DataFrame(columns=["metric", "files", "mean_nullratio", "availability_pct", "usable"])
+
+        grouped = (
+            dfq.groupby("metric", as_index=False)
+            .agg(files=("fileid", "nunique"), mean_nullratio=("nullratio", "mean"), median_nullratio=("nullratio", "median"))
+        )
+        grouped["availability_pct"] = (1.0 - grouped["mean_nullratio"]).clip(lower=0.0, upper=1.0) * 100.0
+        grouped["usable"] = grouped["mean_nullratio"] < 0.9
+        grouped.sort_values(by=["usable", "availability_pct", "metric"], ascending=[False, False, True], inplace=True)
+        grouped.reset_index(drop=True, inplace=True)
+        return grouped
 
     # ── rendering ─────────────────────────────────────────────────────────────
 
@@ -478,6 +628,11 @@ class TripStatsWindow(QMainWindow):
             self.status_label.setText("No data.")
             return
 
+        self._metric_bases = self._discover_metric_bases(df)
+        self._quality_df = self._build_quality_summary(self._quality_raw_df, self._metric_bases)
+        self._refresh_metric_categories()
+        self._refresh_metric_options()
+
         self._refresh_summary(df)
         self._refresh_table(df)
         self._refresh_timeline()
@@ -485,8 +640,83 @@ class TripStatsWindow(QMainWindow):
         self._refresh_speed(df)
         self._refresh_fuel(df)
         self._refresh_map(df)
+        self._refresh_quality_tab()
+        self._refresh_metric_explorer()
 
         self.status_label.setText(f"{len(df)} trips loaded.")
+
+    def _refresh_metric_categories(self) -> None:
+        current = str(self.metric_category_combo.currentData() or "all")
+        self.metric_category_combo.blockSignals(True)
+        self.metric_category_combo.clear()
+        self.metric_category_combo.addItem("All", "all")
+        categories = sorted({categorize_metric(m)[0].value for m in self._metric_bases})
+        for cat_name in categories:
+            self.metric_category_combo.addItem(cat_name, cat_name)
+        idx = self.metric_category_combo.findData(current)
+        self.metric_category_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self.metric_category_combo.blockSignals(False)
+
+    def _refresh_metric_options(self) -> None:
+        selected_category = str(self.metric_category_combo.currentData() or "all")
+        current_metric = str(self.metric_combo.currentData() or "")
+
+        candidates = self._metric_bases
+        if selected_category != "all":
+            candidates = [m for m in candidates if categorize_metric(m)[0].value == selected_category]
+
+        self.metric_combo.blockSignals(True)
+        self.metric_combo.clear()
+        for metric in candidates:
+            _, display_name, unit = categorize_metric(metric)
+            suffix = f" ({unit})" if unit else ""
+            self.metric_combo.addItem(f"{display_name}{suffix}  [{metric}]", metric)
+        idx = self.metric_combo.findData(current_metric)
+        self.metric_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self.metric_combo.blockSignals(False)
+
+    def _refresh_quality_tab(self) -> None:
+        if self._quality_df.empty:
+            self.quality_summary_label.setText("No filestats quality data available for discovered metrics.")
+            self.quality_table.setModel(PandasModel(pd.DataFrame(columns=["metric", "files", "mean_nullratio", "availability_pct", "usable"])))
+            return
+
+        display = self._quality_df.copy()
+        display["mean_nullratio"] = display["mean_nullratio"].round(3)
+        display["median_nullratio"] = display["median_nullratio"].round(3)
+        display["availability_pct"] = display["availability_pct"].round(1)
+        model = PandasModel(display)
+        self.quality_table.setModel(model)
+        self.quality_table.resizeColumnsToContents()
+
+        usable_count = int(display["usable"].sum())
+        total_count = len(display)
+        self.quality_summary_label.setText(
+            f"Metrics with quality data: {total_count}. Usable (<0.9 nullratio): {usable_count}."
+        )
+
+    def _refresh_metric_explorer(self) -> None:
+        metric_name = str(self.metric_combo.currentData() or "")
+        if not metric_name:
+            self.metric_quality_label.setText("Quality: no metric selected")
+            fig, axes = _make_figure(2, 1)
+            axes[0][0].set_title("No metric available")
+            self._replace_figure(self._metric_canvas, fig)
+            self._metric_fig = fig
+            return
+
+        quality_row = self._quality_df[self._quality_df["metric"] == _normalize_metric_name(metric_name)]
+        if not quality_row.empty:
+            q = quality_row.iloc[0]
+            self.metric_quality_label.setText(
+                f"Quality: nullratio={float(q['mean_nullratio']):.3f}, availability={float(q['availability_pct']):.1f}%, usable={bool(q['usable'])}"
+            )
+        else:
+            self.metric_quality_label.setText("Quality: no filestats row")
+
+        fig = _build_metric_explorer_figure(self._df, metric_name)
+        self._replace_figure(self._metric_canvas, fig)
+        self._metric_fig = fig
 
     def _refresh_summary(self, df: pd.DataFrame) -> None:
         total = len(df)
@@ -552,18 +782,40 @@ class TripStatsWindow(QMainWindow):
         self._replace_figure(self._timeline_canvas, new_fig)
         self._timeline_fig = new_fig
 
+    def _quality_badge_for_metric(self, metric_base: str) -> str:
+        metric_norm = _normalize_metric_name(metric_base)
+        row = self._quality_df[self._quality_df["metric"] == metric_norm]
+        if row.empty:
+            return f"{metric_base}:N/A"
+        q = row.iloc[0]
+        availability = float(q["availability_pct"])
+        usable = bool(q["usable"])
+        status = "OK" if usable else "LOW"
+        return f"{metric_base}:{status} {availability:.1f}%"
+
+    def _apply_quality_caption(self, fig: matplotlib.figure.Figure, metric_bases: list[str]) -> None:
+        if not metric_bases:
+            return
+        badges = [self._quality_badge_for_metric(m) for m in metric_bases]
+        caption = "Quality " + " | ".join(badges)
+        fig.suptitle(caption, fontsize=9)
+        fig.subplots_adjust(top=0.9)
+
     def _refresh_dist(self, df: pd.DataFrame) -> None:
         new_fig = _build_distance_figure(df)
+        self._apply_quality_caption(new_fig, ["tripdistancekm", "triptimesincejourneystarts"])
         self._replace_figure(self._dist_canvas, new_fig)
         self._dist_fig = new_fig
 
     def _refresh_speed(self, df: pd.DataFrame) -> None:
         new_fig = _build_speed_engine_figure(df)
+        self._apply_quality_caption(new_fig, ["speedobdkmh", "enginerpmrpm", "engineload"])
         self._replace_figure(self._speed_canvas, new_fig)
         self._speed_fig = new_fig
 
     def _refresh_fuel(self, df: pd.DataFrame) -> None:
         new_fig = _build_fuel_figure(df)
+        self._apply_quality_caption(new_fig, ["tripaveragekplkpl", "fuelusedtripl", "enginecoolanttemperaturec", "ambientairtempc"])
         self._replace_figure(self._fuel_canvas, new_fig)
         self._fuel_fig = new_fig
 
