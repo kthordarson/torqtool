@@ -58,6 +58,7 @@ class MainWindow(QMainWindow):
 		self._mw_current_fileids: list[int] = []
 		self._mw_last_metric: str = 'speedobdkmh'
 		self._metric_summary_cache: dict[tuple[int, ...], pd.DataFrame] = {}
+		self._last_metric_filter_info: dict[str, int] = {"candidates": 0, "eligible": 0}
 		self._metric_source_df = pd.DataFrame(columns=["name", "min", "max", "avg"])
 		self._label_groups_df = pd.DataFrame(columns=["label", "start_points", "end_points", "total_points", "total_count"])
 		self._start_end_points_df = pd.DataFrame(columns=["pos_type", "pos_id", "lat", "lon", "count", "label_group"])
@@ -213,6 +214,9 @@ class MainWindow(QMainWindow):
 		self.metric_filter_edit.setFixedWidth(220)
 		self.metric_filter_edit.textChanged.connect(self._on_metric_filter_changed)
 		metric_filter_layout.addWidget(self.metric_filter_edit)
+		self.metric_filter_status = QLabel("filestats<0.9: 0/0")
+		self.metric_filter_status.setToolTip("Eligible metrics / candidate metrics from dataschema")
+		metric_filter_layout.addWidget(self.metric_filter_status)
 		metric_filter_layout.addStretch()
 		self.metric_table = QTableView()
 		self.metric_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -1068,6 +1072,15 @@ class MainWindow(QMainWindow):
 		selection_model = self.metric_table.selectionModel()
 		if selection_model is not None:
 			selection_model.selectionChanged.connect(lambda *_: self.on_metric_selection_changed())
+		self._update_metric_filter_status()
+
+	def _update_metric_filter_status(self) -> None:
+		if not hasattr(self, "metric_filter_status"):
+			return
+		candidates = int(self._last_metric_filter_info.get("candidates", 0) or 0)
+		eligible = int(self._last_metric_filter_info.get("eligible", 0) or 0)
+		shown = len(self._metric_df.index) if hasattr(self, "_metric_df") else 0
+		self.metric_filter_status.setText(f"filestats<0.9: {eligible}/{candidates} (shown {shown})")
 
 	def _on_metric_filter_changed(self, text: str) -> None:
 		prev_selected = set(self._get_selected_metrics())
@@ -1575,6 +1588,7 @@ class MainWindow(QMainWindow):
 		cache_key = tuple(sorted(int(fid) for fid in fileids)) if fileids else tuple()
 		cached = self._metric_summary_cache.get(cache_key)
 		if cached is not None:
+			self._update_metric_filter_status()
 			return cached.copy()
 
 		requested = sorted(dataschema.keys())
@@ -1586,20 +1600,24 @@ class MainWindow(QMainWindow):
 				column_pairs.append((req, actual))
 
 		if not column_pairs:			
+			self._last_metric_filter_info = {"candidates": 0, "eligible": 0}
 			self._metric_summary_cache[cache_key] = empty_df
+			self._update_metric_filter_status()
 			return empty_df.copy()
 
+		candidate_count = len(column_pairs)
 		allowed_cols = self._get_filestats_allowed_columns(fileids=fileids, threshold=0.9)
-		if allowed_cols:
-			column_pairs = [(requested_col, actual_col) for requested_col, actual_col in column_pairs if actual_col in allowed_cols]
-			if self.args.debug:
-				logger.debug(
-					f"filestats metric filter (<0.9 nullratio) retained {len(column_pairs)} columns "
-					f"for {len(fileids) if fileids else 'all'} trips"
-				)
+		column_pairs = [(requested_col, actual_col) for requested_col, actual_col in column_pairs if actual_col in allowed_cols]
+		self._last_metric_filter_info = {"candidates": candidate_count, "eligible": len(column_pairs)}
+		if self.args.debug:
+			logger.debug(
+				f"filestats metric filter (<0.9 nullratio) retained {len(column_pairs)} of {candidate_count} columns "
+				f"for {len(fileids) if fileids else 'all'} trips"
+			)
 
 		if not column_pairs:
 			self._metric_summary_cache[cache_key] = empty_df
+			self._update_metric_filter_status()
 			return empty_df.copy()
 
 		select_parts: list[str] = []
@@ -1661,6 +1679,7 @@ class MainWindow(QMainWindow):
 			summary_df[["min", "max", "avg"]] = summary_df[["min", "max", "avg"]].round(3)
 
 		self._metric_summary_cache[cache_key] = summary_df
+		self._update_metric_filter_status()
 		return summary_df.copy()
 
 	def _get_metric_columns_with_valid_data(self, fileids: list[int] | None = None) -> list[str]:
