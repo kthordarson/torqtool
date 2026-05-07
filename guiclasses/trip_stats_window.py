@@ -1,7 +1,6 @@
 """Trip Statistics tab aggregated analysis of torqtrips data."""
 from __future__ import annotations
 
-import io
 from typing import Any
 
 import folium
@@ -9,7 +8,6 @@ from folium.plugins import HeatMap
 import matplotlib
 import matplotlib.dates as mdates
 import matplotlib.figure
-import numpy as np
 import pandas as pd
 from loguru import logger
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
