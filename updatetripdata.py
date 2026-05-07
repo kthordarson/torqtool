@@ -8,7 +8,7 @@ from loguru import logger
 import sys
 from sqlalchemy import (text, inspect)
 from utils import get_parser, get_engine_session, convert_string_to_datetime, haversine
-from schemas import dataschema  # schema_datatypes,
+from schemas import dataschema
 from datamodels import TorqFile, Startpos, Endpos, TRIP_METRIC_COLUMNS
 from numbers import Real
 
