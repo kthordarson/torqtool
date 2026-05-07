@@ -158,6 +158,29 @@ class StartEndWindow(QMainWindow):
             fileids.extend(self._group_to_fileids.get(group_name, []))
         return sorted(set(int(fid) for fid in fileids))
 
+    def _route_fileids_to_parent(self, fileids: list[int], force_async_plot: bool = True) -> bool:
+        if not fileids:
+            return False
+        parent = self.parent()
+        if parent is None or not hasattr(parent, "_select_trips_by_fileids"):
+            return False
+        try:
+            selected_ok = bool(
+                parent._select_trips_by_fileids(  # type: ignore
+                    fileids,
+                    "No visible trips match the selected start/end groups.",
+                    force_async_plot=force_async_plot,
+                )
+            )
+            if selected_ok:
+                self.stats_label.setText(
+                    f"Loading {len(fileids)} trip(s) in background..."
+                )
+            return selected_ok
+        except Exception as e:
+            logger.warning(f"Could not route Start/End selection to parent: {e} ({type(e)})")
+            return False
+
     def _fileids_for_index(self, index) -> list[int]:
         if index is None or not index.isValid():
             return []
@@ -207,23 +230,10 @@ class StartEndWindow(QMainWindow):
 
         self._cancel_parent_background_plot_load("Start/End selection changed")
 
+        if self._route_fileids_to_parent(selected_fileids, force_async_plot=True):
+            return
+
         parent = self.parent()
-        if parent is not None and hasattr(parent, "_select_trips_by_fileids"):
-            try:
-                selected_ok = bool(
-                    parent._select_trips_by_fileids(  # type: ignore
-                        selected_fileids,
-                        "No visible trips match the selected start/end groups.",
-                        force_async_plot=True,
-                    )
-                )
-                if selected_ok:
-                    self.stats_label.setText(
-                        f"Loading {len(selected_fileids)} trip(s) in background..."
-                    )
-                    return
-            except Exception as e:
-                logger.warning(f"Could not route Start/End selection to parent: {e} ({type(e)})")
 
         if parent is not None and hasattr(parent, "_plot_for_start_end_fileids"):
             try:
@@ -358,7 +368,10 @@ class StartEndWindow(QMainWindow):
         if self.groups_table.selectionModel() is None or self._grouped_df.empty:
             return
         self._cancel_parent_background_plot_load("Start/End row click changed")
-        self._preview_points_for_fileids(self._selected_group_fileids())
+        fileids = self._selected_group_fileids()
+        if self._route_fileids_to_parent(fileids, force_async_plot=True):
+            return
+        self._preview_points_for_fileids(fileids)
 
     def _on_group_row_clicked(self, index):
         if self._grouped_df.empty:
