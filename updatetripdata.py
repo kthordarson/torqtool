@@ -243,7 +243,7 @@ def collect_db_filestats(args, todatabase=True, droptable=False):
 				results.append(
 					{
 						"fileid": fileid,
-						"column": actual_col,
+						"column_name": actual_col,
 						"nulls": nulls,
 						"nullratio": nulls / total_rows,
 					}
