@@ -1,4 +1,4 @@
-import socket
+# import socket
 from typing import Any, cast
 
 import contextily as ctx
@@ -37,20 +37,20 @@ class BasemapWorker(QObject):
 			}
 			if source is not None:
 				kwargs["source"] = source
-			old_socket_timeout = socket.getdefaulttimeout()
-			socket.setdefaulttimeout(5.0)
+			# old_socket_timeout = socket.getdefaulttimeout()
+			# socket.setdefaulttimeout(5.0)
+#			try:
 			try:
-				try:
-					img, ext = ctx.bounds2img(west, south, east, north, **kwargs)
-				except TypeError as e:
-					# Older contextily versions may not accept all timeout/retry kwargs.
-					logger.warning(f"Basemap fetch failed with TypeError: {e} ({type(e)})")
-					fallback_kwargs: dict[str, Any] = {"zoom": cast(Any, self.zoom)}
-					if source is not None:
-						fallback_kwargs["source"] = source
-					img, ext = ctx.bounds2img(west, south, east, north, **fallback_kwargs)
-			finally:
-				socket.setdefaulttimeout(old_socket_timeout)
+				img, ext = ctx.bounds2img(west, south, east, north, **kwargs)
+			except TypeError as e:
+				# Older contextily versions may not accept all timeout/retry kwargs.
+				logger.warning(f"Basemap fetch failed with TypeError: {e} ({type(e)})")
+				fallback_kwargs: dict[str, Any] = {"zoom": cast(Any, self.zoom)}
+				if source is not None:
+					fallback_kwargs["source"] = source
+				img, ext = ctx.bounds2img(west, south, east, north, **fallback_kwargs)
+			#finally:
+			#	socket.setdefaulttimeout(old_socket_timeout)
 			self.finished.emit(img, ext, self.request_id)
 			logger.debug(f"BasemapWorker finished fetching basemap for request_id={self.request_id}")
 		except Exception as e:
