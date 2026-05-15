@@ -2026,23 +2026,25 @@ class MainWindow(QMainWindow):
 		lon_col = self._resolved_torqlogs_columns.get('longitude')
 		time_col = (self._resolve_actual_torqlogs_column('gpstime')
 					or self._resolve_actual_torqlogs_column('devicetime'))
+		bearing_col = self._resolve_actual_torqlogs_column('gpsbearing')
 		if not (lat_col and lon_col):
 			return None
 
 		time_select = f', "{time_col}" AS metric_time' if time_col else ''
+		bearing_select = f', "{bearing_col}" AS gpsbearing' if bearing_col else ''
 		order_expr = f'"{time_col}", id' if time_col else 'id'
 		sample_step = self._sample_step_for_fileid(fileid)
 		q = text(
 			f'''
 			WITH ordered AS (
-				SELECT "{lon_col}" AS longitude, "{lat_col}" AS latitude{time_select},
+				SELECT "{lon_col}" AS longitude, "{lat_col}" AS latitude{time_select}{bearing_select},
 					ROW_NUMBER() OVER (ORDER BY {order_expr}) AS rn
 				FROM torqlogs
 				WHERE fileid = :fileid
 					AND "{lon_col}" IS NOT NULL
 					AND "{lat_col}" IS NOT NULL
 			)
-			SELECT longitude, latitude{', metric_time' if time_col else ''}
+			SELECT longitude, latitude{', metric_time' if time_col else ''}{', gpsbearing' if bearing_col else ''}
 			FROM ordered
 			WHERE (:sample_step <= 1) OR ((rn - 1) % :sample_step = 0)
 			ORDER BY rn
@@ -2055,7 +2057,7 @@ class MainWindow(QMainWindow):
 			logger.error(f"Failed to load geo data for trip fileid={fileid}: {e} ({type(e)})")
 			df_geo = pd.DataFrame()
 		if df_geo.empty:
-			payload = {"lat": [], "lon": [], "time": []}
+			payload = {"lat": [], "lon": [], "time": [], "gpsbearing": []}
 			self._trip_geo_cache[fileid] = payload
 			return payload
 
@@ -2064,8 +2066,11 @@ class MainWindow(QMainWindow):
 		time_values: list = []
 		if 'metric_time' in df_geo.columns:
 			time_values = pd.to_datetime(df_geo['metric_time'], errors='coerce').tolist()
+		bearing_values: list = []
+		if 'gpsbearing' in df_geo.columns:
+			bearing_values = pd.to_numeric(df_geo['gpsbearing'], errors='coerce').tolist()
 
-		payload = {"lat": lat_vals, "lon": lon_vals, "time": time_values}
+		payload = {"lat": lat_vals, "lon": lon_vals, "time": time_values, "gpsbearing": bearing_values}
 		self._trip_geo_cache[fileid] = payload
 		return payload
 
@@ -2119,15 +2124,19 @@ class MainWindow(QMainWindow):
 		lat_vals = geo_payload["lat"]
 		lon_vals = geo_payload["lon"]
 		time_values = geo_payload["time"]
+		bearing_values = geo_payload.get("gpsbearing", [])
 		points = min(len(lat_vals), len(lon_vals), len(speed_series))
 		if time_values:
 			points = min(points, len(time_values))
+		if bearing_values:
+			points = min(points, len(bearing_values))
 
 		payload: dict[str, list] = {
 			"lat": lat_vals[:points],
 			"lon": lon_vals[:points],
 			"speed": speed_series.tolist()[:points],
 			"time": time_values[:points] if time_values else [],
+			"gpsbearing": bearing_values[:points] if bearing_values else [],
 		}
 		self._trip_plot_cache[cache_key] = payload
 		logger.debug(f"Loaded trip plot data for fileid={fileid}, metric_name={metric_name}, points={len(payload['lat'])}")
@@ -2309,6 +2318,7 @@ class MainWindow(QMainWindow):
 			lat_vals = item.get("lat", [])
 			lon_vals = item.get("lon", [])
 			speed_vals = self._speed_values_for_map_item(item)
+			bearing_vals = item.get("gpsbearing", [])
 			fileid = int(item.get("fileid", -1))
 			if not lat_vals:
 				continue
@@ -2337,6 +2347,30 @@ class MainWindow(QMainWindow):
 				name=f"Trip {fileid}",
 			)
 			layer.add_to(m)
+
+			# Add arrows for direction using gpsbearing
+			if bearing_vals and len(bearing_vals) == len(lat_vals):
+				for i in range(0, len(lat_vals), max(1, len(lat_vals)//30)):
+					lat = lat_vals[i]
+					lon = lon_vals[i]
+					bearing = bearing_vals[i]
+					# Arrow length in degrees (very small, for visual effect)
+					arrow_length = 0.0005
+					import math
+					# Convert bearing to radians
+					theta = math.radians(bearing)
+					# Calculate end point
+					dlat = arrow_length * math.cos(theta)
+					dlon = arrow_length * math.sin(theta) / max(1e-6, math.cos(math.radians(lat)))
+					lat2 = lat + dlat
+					lon2 = lon + dlon
+					folium.PolyLine(
+						locations=[(lat, lon), (lat2, lon2)],
+						color=base_hex,
+						weight=2,
+						opacity=0.9,
+						tooltip=f"Bearing: {bearing:.1f}°",
+					).add_to(m)
 		if self.args.debug:
 			if render_phase == "preview":
 				logger.debug(f"Preview map update: loaded={len(trip_data_list)}/{len(fileids)} trips,  bounds={bounds}, speed_data_ready={has_speed_data}")
@@ -2382,6 +2416,7 @@ class MainWindow(QMainWindow):
 				"lon": plot_data["lon"],
 				"speed": plot_data["speed"],
 				"time": plot_data.get("time", []),
+				"gpsbearing": plot_data.get("gpsbearing", []),
 			})
 			all_metric_values.extend(plot_data["speed"])
 
