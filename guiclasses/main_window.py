@@ -1,4 +1,5 @@
 import io
+import math
 import json
 import time
 from typing import Any, cast
@@ -2356,7 +2357,6 @@ class MainWindow(QMainWindow):
 					bearing = bearing_vals[i]
 					# Arrow length in degrees (very small, for visual effect)
 					arrow_length = 0.0005
-					import math
 					# Convert bearing to radians
 					theta = math.radians(bearing)
 					# Calculate end point
@@ -2364,13 +2364,11 @@ class MainWindow(QMainWindow):
 					dlon = arrow_length * math.sin(theta) / max(1e-6, math.cos(math.radians(lat)))
 					lat2 = lat + dlat
 					lon2 = lon + dlon
-					folium.PolyLine(
-						locations=[(lat, lon), (lat2, lon2)],
-						color=base_hex,
-						weight=2,
-						opacity=0.9,
-						tooltip=f"Bearing: {bearing:.1f}°",
-					).add_to(m)
+					try:
+						folium.PolyLine(locations=[(lat, lon), (lat2, lon2)], color=base_hex, weight=2, opacity=0.9, tooltip=f"Bearing: {bearing:.1f}°",).add_to(m)
+					except ValueError as e:
+						if self.args.debug:
+							logger.warning(f"Failed to add bearing arrow for fileid={fileid} at index {i} with lat={lat}, lon={lon}, bearing={bearing}: {e}")
 		if self.args.debug:
 			if render_phase == "preview":
 				logger.debug(f"Preview map update: loaded={len(trip_data_list)}/{len(fileids)} trips,  bounds={bounds}, speed_data_ready={has_speed_data}")
