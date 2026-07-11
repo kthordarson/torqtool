@@ -181,13 +181,6 @@ async def calculate_hash(path):
 		lambda: md5(open(path, "rb").read()).hexdigest()
 	)
 
-
-async def process_batch(batch_files, args):
-	tasks = []
-	for csvfilename in batch_files:
-		tasks.append(process_single_file(csvfilename, args))
-	return await asyncio.gather(*tasks, return_exceptions=True)
-
 async def process_single_file(csvfilename, args):
 	try:
 		read_started = time.perf_counter()
