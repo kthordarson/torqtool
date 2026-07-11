@@ -954,10 +954,6 @@ class PositionManagerWindow(QMainWindow):
         if pairs:
             self.map_canvas.add_selection_markers(pairs)
 
-    def _draw_selection_marker(self, x: float, y: float) -> None:
-        # Backward compat wrapper
-        self._draw_selection_markers(self._selected_row_indices or ([self._selected_row_index] if self._selected_row_index is not None else []))
-
     def _select_rows_by_indices(self, row_indices: list[int], select_table: bool, zoom_to_points: bool):
         clean_rows = [int(i) for i in row_indices if i in self.df_positions.index]
         if not clean_rows:
