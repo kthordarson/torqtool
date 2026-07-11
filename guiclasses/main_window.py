@@ -2136,12 +2136,6 @@ class MainWindow(QMainWindow):
 		logger.debug(f"Loaded trip plot data for fileid={fileid}, metric_name={metric_name}, points={len(payload['lat'])}")
 		return payload
 
-	def _selection_key(self, fileids: list[int], metric_name: str) -> str:
-		return (
-			f"{self._map_cache_version}|metric={metric_name}|sample={self._sampling_cache_token(fileids)}|"
-			+ ",".join(str(fid) for fid in sorted(fileids))
-		)
-
 	def _timeseries_selection_key(self, fileids: list[int], metric_names: list[str]) -> str:
 		metrics_part = ",".join(metric_names)
 		files_part = ",".join(str(fid) for fid in sorted(fileids))
