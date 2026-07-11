@@ -988,7 +988,6 @@ def collect_db_torqtrips(args):
     logger.info(f"collect_db_torqtrips completed, wrote {inserted_rows} rows")
     return inserted_rows
 
-
 def update_indexes(args):
     session = get_engine_session(args)
     for column in dataschema:
@@ -1007,7 +1006,6 @@ def update_indexes(args):
         except Exception as e:
             logger.error(f"Failed to create index {index_name}: {e} ({type(e)})")
             session.rollback()
-
 
 def get_args():
     parser = get_parser("dataupdate")

@@ -55,15 +55,6 @@ def get_parser(appname):
 class TimeZoneAwareConstructorWarning:
 	pass
 
-def normalize_column_name(col):
-	"""
-	Normalize column names by stripping spaces, replacing multiple spaces, and removing problematic characters.
-	"""
-	col = str(col).strip()  # Convert to string and remove leading/trailing spaces
-	col = re.sub(r'\s+', ' ', col)  # Replace multiple spaces with single space
-	col = re.sub(r'[^\w\s]', '', col)  # Remove special characters (keep alphanumeric and spaces)
-	return col.replace(' ', '_')
-
 def get_table_columns(session, table_name):
 	"""
 	Get the current columns of a table in a database-agnostic way.
