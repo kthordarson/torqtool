@@ -14,7 +14,10 @@ class PandasModel(QAbstractTableModel):
 		self._data = data
 		self._display_columns = list(display_columns) if display_columns else list(self._data.columns)
 		self._sort_overrides = dict(sort_overrides) if sort_overrides else {}
-		logger.debug(f"PandasModel initialized {self._data.shape[1]} columns. data: {self._data.size}")
+		if self._data.size > 0:
+			logger.debug(f"PandasModel initialized {self._data.shape[1]} columns. data: {self._data.size}")
+		if self._data.size == 0 and display_columns:
+			logger.warning(f"PandasModel initialized with empty data. data: {self._data.size}. display_columns: {len(display_columns)} sort_overrides: {sort_overrides}")
 
 	def sort(self, column: int, order: Qt.SortOrder = Qt.SortOrder.AscendingOrder) -> None:
 		if column < 0 or column >= len(self._display_columns):

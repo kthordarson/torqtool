@@ -20,14 +20,14 @@ from numbers import Real
 # x = latitude y = longitude !
 
 def _to_float(value: object) -> float | None:
-    if isinstance(value, Real) and not isinstance(value, bool):
-        return float(value)
-    if isinstance(value, (str, bytes, bytearray, memoryview)):
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return None
-    return None
+	if isinstance(value, Real) and not isinstance(value, bool):
+		return float(value)
+	if isinstance(value, (str, bytes, bytearray, memoryview)):
+		try:
+			return float(value)
+		except (TypeError, ValueError):
+			return None
+	return None
 class KeyPressFilter(QObject):
 	def event_filter(self, widget, event):
 		if event.type() == QEvent.Type.KeyPress:

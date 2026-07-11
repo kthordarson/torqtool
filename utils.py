@@ -308,8 +308,6 @@ def _extract_trip_start_from_dataframe(df: pd.DataFrame) -> datetime | None:
 
 	return min(parsed_datetimes)
 
-
-
 def _ensure_torqtrips_metric_columns(conn, metric_names: list[str]) -> None:
 	inspector = inspect(conn)
 	existing = {str(col["name"]).lower() for col in inspector.get_columns("torqtrips")}

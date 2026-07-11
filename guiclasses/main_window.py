@@ -1077,6 +1077,7 @@ class MainWindow(QMainWindow):
 
 	def _update_metric_filter_status(self) -> None:
 		if not hasattr(self, "metric_filter_status"):
+			logger.warning(f'{self} missing metric_filter_status label; cannot update filter status')
 			return
 		candidates = int(self._last_metric_filter_info.get("candidates", 0) or 0)
 		eligible = int(self._last_metric_filter_info.get("eligible", 0) or 0)
@@ -1515,7 +1516,7 @@ class MainWindow(QMainWindow):
 		self._set_metric_table_model(summary_df)
 
 		if self._metric_df.empty:
-			logger.warning("No metrics with valid non-zero data were found for current selection")
+			logger.warning(f"No metrics with valid non-zero data were found for current selection. Selected fileids: {fileids[:10]} prev_selected: {len(prev_selected)} summary_df: {len(summary_df)}")
 			return
 
 		selection_model = self.metric_table.selectionModel()
@@ -1577,18 +1578,20 @@ class MainWindow(QMainWindow):
 		except Exception as e:
 			logger.warning(f"Could not read filestats eligible columns: {e} ({type(e)})")
 			return set()
-
-		return {
-			str(row[0])
-			for row in rows
-			if row and row[0] is not None and '$' not in str(row[0])
-		}
+		result = {str(row[0]) for row in rows if row and row[0] is not None and '$' not in str(row[0])}
+		if len(result) == 0:
+			logger.warning(f"No eligible filestats columns found for threshold {threshold} and fileids {fileids}")
+		return result
 
 	def _get_metric_summary_for_selection(self, fileids: list[int] | None = None) -> pd.DataFrame:
 		empty_df = pd.DataFrame(columns=["name", "min", "max", "avg"])
 		cache_key = tuple(sorted(int(fid) for fid in fileids)) if fileids else tuple()
 		cached = self._metric_summary_cache.get(cache_key)
 		if cached is not None:
+			if self.args.debug and len(cached) > 0:
+				logger.debug(f"Using cached metric summary for {len(fileids) if fileids else 'all'} trips ({len(cached)} metrics)")
+			elif self.args.debug and len(cached) == 0:
+				logger.warning(f"Using cached metric summary for {len(fileids) if fileids else 'all'} trips (no metrics) cache_key: {cache_key}")
 			self._update_metric_filter_status()
 			return cached.copy()
 
@@ -1600,25 +1603,24 @@ class MainWindow(QMainWindow):
 			if actual and actual in numeric_cols:
 				column_pairs.append((req, actual))
 
-		if not column_pairs:			
+		if not column_pairs:
 			self._last_metric_filter_info = {"candidates": 0, "eligible": 0}
 			self._metric_summary_cache[cache_key] = empty_df
 			self._update_metric_filter_status()
+			if self.args.debug:
+				logger.warning(f"No numeric columns found for requested metrics ({len(requested)} total) for {len(fileids) if fileids else 'all'} trips. cache_key: {cache_key}")
 			return empty_df.copy()
 
 		candidate_count = len(column_pairs)
 		allowed_cols = self._get_filestats_allowed_columns(fileids=fileids, threshold=0.9)
 		column_pairs = [(requested_col, actual_col) for requested_col, actual_col in column_pairs if actual_col in allowed_cols]
 		self._last_metric_filter_info = {"candidates": candidate_count, "eligible": len(column_pairs)}
-		if self.args.debug:
-			logger.debug(
-				f"filestats metric filter (<0.9 nullratio) retained {len(column_pairs)} of {candidate_count} columns "
-				f"for {len(fileids) if fileids else 'all'} trips"
-			)
 
 		if not column_pairs:
 			self._metric_summary_cache[cache_key] = empty_df
 			self._update_metric_filter_status()
+			if self.args.debug:
+				logger.warning(f"No columns with filestats nullratio < 0.9 found for requested metrics ({len(requested)} total) for {len(fileids) if fileids else 'all'} trips. cache_key: {cache_key}")
 			return empty_df.copy()
 
 		select_parts: list[str] = []
@@ -1681,6 +1683,8 @@ class MainWindow(QMainWindow):
 
 		self._metric_summary_cache[cache_key] = summary_df
 		self._update_metric_filter_status()
+		if self.args.debug:
+			logger.debug(f"filestats metric filter (<0.9 nullratio) retained {len(column_pairs)} of {candidate_count} columns  for {len(fileids) if fileids else 'all'} trips")
 		return summary_df.copy()
 
 	def _get_metric_columns_with_valid_data(self, fileids: list[int] | None = None) -> list[str]:
@@ -1692,7 +1696,8 @@ class MainWindow(QMainWindow):
 	def refresh_plot(self):
 		rows = sorted(set(index.row() for index in self.table.selectionModel().selectedRows()))
 		if rows:
-			logger.debug(f"refresh_plot triggered with {len(rows)} selected row(s): {rows[:5]}{'...' if len(rows) > 5 else ''} _force_next_plot_async: {self._force_next_plot_async}")
+			if self.args.debug:
+				logger.debug(f"refresh_plot triggered with {len(rows)} selected row(s): {rows[:5]}{'...' if len(rows) > 5 else ''} _force_next_plot_async: {self._force_next_plot_async}")
 			if self._force_next_plot_async or len(rows) > 1:
 				self._force_next_plot_async = False
 				self._start_async_plot_for_rows(rows)
@@ -2322,6 +2327,8 @@ class MainWindow(QMainWindow):
 			bearing_vals = item.get("gpsbearing", [])
 			fileid = int(item.get("fileid", -1))
 			if not lat_vals:
+				if self.args.debug:
+					logger.warning(f"No latitude data for trip fileid={fileid}, skipping map layer")
 				continue
 			base_rgba = fileid_color_map.get(fileid, cmap(idx % self._colormap_cycle_length(colormap_name)))
 			base_hex = mcolors.to_hex(base_rgba)
@@ -2355,6 +2362,10 @@ class MainWindow(QMainWindow):
 					lat = lat_vals[i]
 					lon = lon_vals[i]
 					bearing = bearing_vals[i]
+					if not bearing:
+						if self.args.debug:
+							logger.warning(f"No bearing data for fileid={fileid} at index {i}, skipping arrow")
+						bearing = 0.0
 					# Arrow length in degrees (very small, for visual effect)
 					arrow_length = 0.0005
 					# Convert bearing to radians
@@ -2368,7 +2379,7 @@ class MainWindow(QMainWindow):
 						folium.PolyLine(locations=[(lat, lon), (lat2, lon2)], color=base_hex, weight=2, opacity=0.9, tooltip=f"Bearing: {bearing:.1f}°",).add_to(m)
 					except ValueError as e:
 						if self.args.debug:
-							logger.warning(f"Failed to add bearing arrow for fileid={fileid} at index {i} with lat={lat}, lon={lon}, bearing={bearing}: {e}")
+							logger.warning(f"Failed to add bearing arrow for fileid={fileid} at index {i} with lat={lat}, lon={lon}, bearing={bearing}: {e} i: {i}")
 		if self.args.debug:
 			if render_phase == "preview":
 				logger.debug(f"Preview map update: loaded={len(trip_data_list)}/{len(fileids)} trips,  bounds={bounds}, speed_data_ready={has_speed_data}")
@@ -2477,7 +2488,7 @@ class MainWindow(QMainWindow):
 			total_distance = sum(row.get('trip_distance', 0) or 0 for row in trip_info.values())
 			total_duration = sum(row.get('trip_duration', 0) or 0 for row in trip_info.values())
 			start_dates = [str(row.get('trip_start', '')) for row in trip_info.values() if row.get('trip_start')]
-			end_dates   = [str(row.get('trip_end',   '')) for row in trip_info.values() if row.get('trip_end')]
+			end_dates = [str(row.get('trip_end', '')) for row in trip_info.values() if row.get('trip_end')]
 			if start_dates:
 				lines.append(f"Date:     {start_dates[0]}")
 			if end_dates and end_dates != start_dates:
@@ -2608,8 +2619,7 @@ class MainWindow(QMainWindow):
 				use_time = bool(time_vals) and any(t is not None and not pd.isna(t) for t in time_vals[:10])
 				if use_progress_axis:
 					if use_time:
-						pairs = [(t, v) for t, v in zip(time_vals, metric_vals)
-								 if t is not None and not pd.isna(t)]
+						pairs = [(t, v) for t, v in zip(time_vals, metric_vals) if t is not None and not pd.isna(t)]
 						metric_clean = [v for _, v in pairs]
 					else:
 						metric_clean = metric_vals
@@ -2621,8 +2631,7 @@ class MainWindow(QMainWindow):
 					metric_vals = metric_clean
 				else:
 					if use_time:
-						pairs = [(t, v) for t, v in zip(time_vals, metric_vals)
-								 if t is not None and not pd.isna(t)]
+						pairs = [(t, v) for t, v in zip(time_vals, metric_vals) if t is not None and not pd.isna(t)]
 						if pairs:
 							x_vals, metric_vals = zip(*pairs)
 							has_datetime_x = True
