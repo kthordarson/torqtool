@@ -62,7 +62,7 @@ async def read_csv_file(logfile:str, args:argparse.Namespace):
 	"""
 	Optimized version that combines filtering operations and reduces conversions
 	"""
-	nullvals = ['-','∞','340282346638528860000000000000000000000']
+	nullvals = ['-','∞','340282346638528860000000000000000000000','-3402823618710077500000000000000000000']
 	try:
 		# Use lazy evaluation to improve performance
 		data = pl.scan_csv(logfile, ignore_errors=True, try_parse_dates=True, truncate_ragged_lines=True, null_values=nullvals)
@@ -88,12 +88,12 @@ async def read_csv_file(logfile:str, args:argparse.Namespace):
 		first_time = convert_string_to_datetime(data[time_col][0])
 		last_time = convert_string_to_datetime(data[time_col][-1])
 		if first_time and last_time:
-			tripdur = (last_time - first_time).total_seconds()
+			trip_duration = (last_time - first_time).total_seconds()
 		else:
-			tripdur = 0
+			trip_duration = 0
 
-		if tripdur > 86400:
-			logger.warning(f'Not Skipping {logfile} - trip duration too long: {tripdur}s')
+		if trip_duration > 86400//2:
+			logger.warning(f'{logfile} - trip duration too long: {trip_duration}')
 			# return pd.DataFrame()
 
 		# Check for duplicate trips in one database call
@@ -129,14 +129,6 @@ async def send_data_to_db(args: argparse.Namespace, data: pd.DataFrame, csvfilen
 	session = get_engine_session(args)
 	csvhash = md5(open(csvfilename, "rb").read()).hexdigest()
 	stable_fileid = stable_fileid_from_csvhash(csvhash)
-	# fileinfo = {
-	# 	'dtripstart': data['gpstime'][0],
-	# 	'dtripend': data['gpstime'][len(data)-1],
-	# 	'dlatstart': float(data['latitude'][0]),
-	# 	'dlonstart': float(data['longitude'][0]),
-	# 	'dlatend': float(data['latitude'][len(data)-1]),
-	# 	'dlonend': float(data['longitude'][len(data)-1]),}
-	# user only stem part of filename in db
 	try:
 		t = session.query(TorqFile).filter(TorqFile.csvhash == csvhash).first()
 		if t is None:

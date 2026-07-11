@@ -294,7 +294,6 @@ def _extract_trip_start_from_dataframe(df: pd.DataFrame) -> datetime | None:
 			dt = value
 		else:
 			dt = convert_string_to_datetime(str(value))
-
 		if dt is None:
 			continue
 		if dt.tzinfo is None:
@@ -409,6 +408,8 @@ def update_trip_and_file_for_fileid(conn, fileid):
 		except Exception as e:
 			logger.error(f'{e} {type(e)} {trip_start=} {trip_end=}')
 			trip_duration = None
+		if trip_duration > 86400//2:
+			logger.warning(f'fileid: {fileid} - trip duration too long: {trip_duration}')
 	# Calculate trip distance (sum of point-to-point GPS distances for this fileid)
 	trip_distance = 0.0
 	try:
@@ -529,6 +530,7 @@ def update_trip_and_file_for_fileid(conn, fileid):
 		"trip_distance": trip_distance
 	})
 	logger.debug(f'Updated fileid {fileid}: trip_start={trip_start}, trip_end={trip_end}, duration={trip_duration}, distance={trip_distance}, rows={row_count}')
+
 def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs') -> None:
 	"""
 	Read all CSV files into a DataFrame, normalize column names, and insert into SQLite table.
@@ -678,153 +680,127 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs') -> None:
 			_normalize_col_name(col_name): col_name for col_name in actual_table_columns
 		}
 		fileid = None
-		try:
-			for csv_idx, (csvfile, normalized_columns, csvhash) in enumerate(valid_files):
-				# SQLAlchemy 2.x may start a transaction implicitly (autobegin).
-				# Ensure each file starts with a clean transaction boundary.
-				if conn.in_transaction():
-					conn.rollback()
-				try:
-					read_started = time.perf_counter()
+		for csv_idx, (csvfile, normalized_columns, csvhash) in enumerate(valid_files):
+			# SQLAlchemy 2.x may start a transaction implicitly (autobegin).
+			# Ensure each file starts with a clean transaction boundary.
+			if conn.in_transaction():
+				conn.rollback()
+			read_started = time.perf_counter()
+			# Read CSV file
+			df = pd.read_csv(csvfile, low_memory=False, on_bad_lines='skip', encoding='utf-8', encoding_errors='replace')
 
-					# Read CSV file
-					df = pd.read_csv(csvfile, low_memory=False, on_bad_lines='skip', encoding='utf-8', encoding_errors='replace')
+			for col in df.columns:
+				if _is_datetime_column_name(col):
+					try:
+						df[col] = df[col].apply(lambda x: convert_string_to_datetime(x) if isinstance(x, str) and pd.notnull(x) else pd.NaT)  # type: ignore
+					except Exception as e:
+						logger.warning(f"Could not convert column {col} to datetime: {e} {type(e)} in {csvfile}")
+			try:
+				# check first and last timestamps
+				duration_check = (df.iloc[-1]['GPS Time'] - df.iloc[-2]['GPS Time']).total_seconds()
+				if duration_check > 86400//2:
+					logger.warning(f'{csv_idx} {csvfile} - trip duration too long: {duration_check}')
+					df = df.iloc[:-1]  # drop last row if trip duration is too long
+			except Exception as e:
+				logger.warning(f"Could not check trip duration for {csvfile}: {e} {type(e)} GPS Time: {df.iloc[-1]['GPS Time']}")
 
-					for col in df.columns:
-						if _is_datetime_column_name(col):
-							try:
-								# df[col] = pd.to_datetime(df[col], errors='coerce')
-								# df[col] = df[col].apply(lambda x: convert_string_to_datetime(x) if pd.notnull(x) else pd.NaT)
-								df[col] = df[col].apply(lambda x: convert_string_to_datetime(x) if isinstance(x, str) and pd.notnull(x) else pd.NaT)  # type: ignore
-							except Exception as e:
-								logger.warning(f"Could not convert column {col} to datetime: {e} {type(e)} in {csvfile}")
+			trip_start_candidate = _extract_trip_start_from_dataframe(df)
+			if trip_start_candidate is not None:
+				if conn.dialect.name == 'sqlite':
+					date_sql = text("SELECT fileid FROM torqfiles WHERE trip_start IS NOT NULL AND datetime(trip_start) = datetime(:ts_dt)")
+				else:
+					date_sql = text("SELECT fileid FROM torqfiles WHERE trip_start IS NOT NULL AND trip_start = CAST(:ts_dt AS timestamp)")
+				existing_trip = conn.execute(date_sql, {"ts_dt": trip_start_candidate.strftime('%Y-%m-%d %H:%M:%S')}).first()
+				if existing_trip:
+					skipped_count += 1
+					logger.warning(f"[{csv_idx}/{len(valid_files)}] Skipping {csvfile} - duplicate trip_start  {trip_start_candidate} already exists (fileid {existing_trip[0]})")
+					continue
+				# Pre-send duplicate check from full file content (uses minimum trip timestamp).
+				# Create TorqFile entry only after duplicate check passes.
+				result = conn.execute(text("INSERT INTO torqfiles (csvfile, csvhash, import_date) VALUES (:csvfile, :csvhash, :import_date) RETURNING fileid"), {"csvfile": str(csvfile), "csvhash": csvhash, "import_date": datetime.now()})
+				fileid = result.scalar()
 
-					# Pre-send duplicate check from full file content (uses minimum trip timestamp).
-					trip_start_candidate = _extract_trip_start_from_dataframe(df)
-					if trip_start_candidate is not None:
-						if conn.dialect.name == 'sqlite':
-							date_sql = text("SELECT fileid FROM torqfiles WHERE trip_start IS NOT NULL AND datetime(trip_start) = datetime(:ts_dt)")
-						else:
-							date_sql = text("SELECT fileid FROM torqfiles WHERE trip_start IS NOT NULL AND trip_start = CAST(:ts_dt AS timestamp)")
-						existing_trip = conn.execute(date_sql, {"ts_dt": trip_start_candidate.strftime('%Y-%m-%d %H:%M:%S')}).first()
-						if existing_trip:
-							skipped_count += 1
-							logger.warning(
-								f"[{csv_idx}/{len(valid_files)}] Skipping {csvfile} - duplicate trip_start "
-								f"{trip_start_candidate} already exists (fileid {existing_trip[0]})"
-							)
-							continue
+				# Add fileid column first
+				df.insert(0, 'fileid', fileid)
 
-					# Create TorqFile entry only after duplicate check passes.
-					result = conn.execute(
-						text("INSERT INTO torqfiles (csvfile, csvhash, import_date) VALUES (:csvfile, :csvhash, :import_date) RETURNING fileid"),
-						{"csvfile": str(csvfile), "csvhash": csvhash, "import_date": datetime.now()}
-					)
-					fileid = result.scalar()
+				# Process columns and data
+				df = df.rename(columns=canonicalize_columns(list(df.columns)))
+				# Align canonicalized DataFrame columns with actual DB column names (case-sensitive in PostgreSQL).
+				db_col_rename_map = {}
+				for c in df.columns:
+					actual_col = normalized_actual_columns.get(_normalize_col_name(c))
+					if actual_col and actual_col != c:
+						db_col_rename_map[c] = actual_col
+				if db_col_rename_map:
+					df = df.rename(columns=db_col_rename_map)
+				df = _collapse_duplicate_dataframe_columns(df, csvfile)
+				df = df.replace(['-', '∞', 'inf', '-inf'], pd.NA)
 
-					# Add fileid column first
-					df.insert(0, 'fileid', fileid)
+				# Convert numeric columns
+				for col in df.columns:
+					if col in COLUMN_TYPES and COLUMN_TYPES[col] in [Float, Integer]:
+						df[col] = pd.to_numeric(df[col], errors='coerce')
 
-					# Process columns and data
-					df = df.rename(columns=canonicalize_columns(list(df.columns)))
-					# Align canonicalized DataFrame columns with actual DB column names (case-sensitive in PostgreSQL).
-					db_col_rename_map = {}
-					for c in df.columns:
-						actual_col = normalized_actual_columns.get(_normalize_col_name(c))
-						if actual_col and actual_col != c:
-							db_col_rename_map[c] = actual_col
-					if db_col_rename_map:
-						df = df.rename(columns=db_col_rename_map)
-					df = _collapse_duplicate_dataframe_columns(df, csvfile)
-					df = df.replace(['-', '∞', 'inf', '-inf'], pd.NA)
+				# Remove rows that are identical to the header (possible repeated headers)
+				header_row = list(df.columns)
+				df = df[~df.apply(lambda row: list(row) == header_row, axis=1)]
+				df = df[~df.apply(lambda row: row.astype(str).str.contains(' Device Time').any(), axis=1)]
+				read_elapsed = float(time.perf_counter() - read_started)
 
-					# Convert numeric columns
-					for col in df.columns:
-						if col in COLUMN_TYPES and COLUMN_TYPES[col] in [Float, Integer]:
-							df[col] = pd.to_numeric(df[col], errors='coerce')
+				pre_filter_columns = list(df.columns)
+				allowed_cols = set(actual_table_columns)
+				ordered_cols = [col for col in ['fileid'] if col in df.columns and col in allowed_cols]
+				ordered_cols.extend(sorted([col for col in df.columns if col != 'fileid' and col in allowed_cols]))
+				df = df[ordered_cols]
+				if len(df.columns) == 0:
+					raise ValueError(f"No matching columns remain after filtering for table {table_name}.  Input columns sample: {pre_filter_columns[:10]}")
 
-					# Remove rows that are identical to the header (possible repeated headers)
-					header_row = list(df.columns)
-					df = df[~df.apply(lambda row: list(row) == header_row, axis=1)]
-					df = df[~df.apply(lambda row: row.astype(str).str.contains(' Device Time').any(), axis=1)]
-					read_elapsed = float(time.perf_counter() - read_started)
+				# Insert data
+				# SQLite limits bind variables to 999 (or 32766 on newer builds).
+				# Use the conservative limit so chunksize * num_columns stays within it.
+				SQLITE_MAX_VARS = 999
+				safe_chunksize = max(1, SQLITE_MAX_VARS // len(df.columns))
+				requested_chunksize = max(1, int(args.sqlchunksize))
+				effective_chunksize = min(requested_chunksize, safe_chunksize)
+				if len(df) >= args.min_row_count:
+					send_started = time.perf_counter()
+					df.to_sql(table_name, conn, if_exists='append', index=False, method='multi', chunksize=effective_chunksize,)
 
-					pre_filter_columns = list(df.columns)
-					allowed_cols = set(actual_table_columns)
-					ordered_cols = [col for col in ['fileid'] if col in df.columns and col in allowed_cols]
-					ordered_cols.extend(sorted([col for col in df.columns if col != 'fileid' and col in allowed_cols]))
-					df = df[ordered_cols]
-					if len(df.columns) == 0:
-						raise ValueError(
-							f"No matching columns remain after filtering for table {table_name}. "
-							f"Input columns sample: {pre_filter_columns[:10]}"
-						)
-
-					# Insert data
-					# SQLite limits bind variables to 999 (or 32766 on newer builds).
-					# Use the conservative limit so chunksize * num_columns stays within it.
-					SQLITE_MAX_VARS = 999
-					safe_chunksize = max(1, SQLITE_MAX_VARS // len(df.columns))
-					requested_chunksize = max(1, int(args.sqlchunksize))
-					effective_chunksize = min(requested_chunksize, safe_chunksize)
-					if len(df) >= args.min_row_count:
-						# logger.info(f"[{csv_idx}/{len(valid_files)}] Sending {len(df)} rows from {csvfile} with fileid {fileid}")
-						send_started = time.perf_counter()
-						df.to_sql(table_name, conn, if_exists='append', index=False, method='multi', chunksize=effective_chunksize,)
-
-						# Update trip and file info for this fileid
-						update_trip_and_file_for_fileid(conn, fileid)
-
-						send_elapsed = float(time.perf_counter() - send_started)
-
+					# Update trip and file info for this fileid
+					update_trip_and_file_for_fileid(conn, fileid)
+					send_elapsed = float(time.perf_counter() - send_started)
+					try:
 						# Update TorqFile import timings and row count
-						conn.execute(
-							text(
-								"""
-								UPDATE torqfiles
-								SET sent_rows = :rows,
-									readtime = :readtime,
-									sendtime = :sendtime
-								WHERE fileid = :fileid
-								"""
-							),
-							{"rows": len(df), "readtime": read_elapsed, "sendtime": send_elapsed, "fileid": fileid}
-						)
+						conn.execute(text(""" UPDATE torqfiles SET sent_rows = :rows, readtime = :readtime, sendtime = :sendtime WHERE fileid = :fileid """),{"rows": len(df), "readtime": read_elapsed, "sendtime": send_elapsed, "fileid": fileid})
 						logger.info(f"[{csv_idx}/{len(valid_files)}] Sent {len(df)} rows from {csvfile} fileid {fileid}")
 						if conn.in_transaction():
 							conn.commit()
-					else:
-						logger.warning(f"[{csv_idx}/{len(valid_files)}] Skipping {csvfile} with fileid {fileid} - row count {len(df)} below minimum threshold")
-						conn.execute(text("DELETE FROM torqfiles WHERE fileid = :fileid"), {"fileid": fileid})
+						else:
+							logger.warning(f"[{csv_idx}/{len(valid_files)}] Skipping {csvfile} with fileid {fileid} - row count {len(df)} below minimum threshold")
+							conn.execute(text("DELETE FROM torqfiles WHERE fileid = :fileid"), {"fileid": fileid})
+							if conn.in_transaction():
+								conn.commit()
+					except UniqueViolation as e:
+						logger.warning(f"Duplicate entry for {csvfile} with fileid {fileid}, skipping: {e}")
 						if conn.in_transaction():
-							conn.commit()
-				except UniqueViolation as e:
-					logger.warning(f"Duplicate entry for {csvfile} with fileid {fileid}, skipping: {e}")
-					if conn.in_transaction():
-						conn.rollback()
-					continue
-				except IntegrityError as e:
-					if conn.in_transaction():
-						conn.rollback()
-					err = str(getattr(e, "orig", e)).lower()
-					if "uq_torqfiles_trip_start" in err or "trip_start" in err and "duplicate" in err:
-						logger.warning(f"Skipping {csvfile} with fileid {fileid} due to duplicate trip_start: {e}")
+							conn.rollback()
 						continue
-					logger.error(f"Integrity error for {csvfile} with fileid {fileid}: {e}")
-					continue
-				except Exception as e:
-					if conn.in_transaction():
-						conn.rollback()
-					logger.error(f"Error processing {csvfile}: {e} {type(e)}")
-					if args.debug:
-						logger.error(f"DataFrame columns: {df.columns.tolist()}")
-					continue
-
-		except Exception as e:
-			errmsg = f"Transaction failed: {e} {type(e)}"
-			logger.error(errmsg)
-			raise Exception(errmsg)
-	# engine.dispose()
+					except IntegrityError as e:
+						if conn.in_transaction():
+							conn.rollback()
+						err = str(getattr(e, "orig", e)).lower()
+						if "uq_torqfiles_trip_start" in err or "trip_start" in err and "duplicate" in err:
+							logger.warning(f"Skipping {csvfile} with fileid {fileid} due to duplicate trip_start: {e}")
+							continue
+						logger.error(f"Integrity error for {csvfile} with fileid {fileid}: {e}")
+						continue
+					except Exception as e:
+						if conn.in_transaction():
+							conn.rollback()
+						logger.error(f"Error processing {csvfile}: {e} {type(e)}")
+						if args.debug:
+							logger.error(f"DataFrame columns: {df.columns.tolist()}")
+						continue
 	return None
 
 def get_csv_files(searchpath: Path, args):

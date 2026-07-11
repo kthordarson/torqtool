@@ -139,11 +139,11 @@ def _restore_labels_from_coords(
 ) -> int:
     updated = 0
     select_stmt = text(f"""
-		SELECT {id_column} AS row_id, {lat_column} AS lat, {lon_column} AS lon, label
-		FROM {table_name}
-		WHERE {lat_column} BETWEEN :lat_min AND :lat_max
-		  AND {lon_column} BETWEEN :lon_min AND :lon_max
-		""")
+        SELECT {id_column} AS row_id, {lat_column} AS lat, {lon_column} AS lon, label
+        FROM {table_name}
+        WHERE {lat_column} BETWEEN :lat_min AND :lat_max
+            AND {lon_column} BETWEEN :lon_min AND :lon_max
+        """)
     update_stmt = text(
         f"UPDATE {table_name} SET label = :label WHERE {id_column} = :row_id"
     )
@@ -266,7 +266,7 @@ def collect_db_filestats(args, todatabase=True, droptable=False):
 
     total_processed = 0
     for batch_start in range(0, len(pending_fileids), batch_size):
-        batch = pending_fileids[batch_start : batch_start + batch_size]
+        batch = pending_fileids[batch_start:batch_start + batch_size]
         placeholders = ", ".join(f":fid{i}" for i in range(len(batch)))
         params = {f"fid{i}": int(fid) for i, fid in enumerate(batch)}
         agg_sql = text(
@@ -640,29 +640,29 @@ def collect_db_startends(args, update_start=True, update_end=True, force_refresh
     logger.info(f"Processing start/end info for {len(pending_fileids)} pending files")
 
     getstartendquery_template = f"""
-SELECT fileid,
-	MAX(CASE WHEN rn_asc = 1 THEN "{lat_col}" END) AS latstart,
-	MAX(CASE WHEN rn_asc = 1 THEN "{lon_col}" END) AS lonstart,
-	MAX(CASE WHEN rn_desc = 1 THEN "{lat_col}" END) AS latend,
-	MAX(CASE WHEN rn_desc = 1 THEN "{lon_col}" END) AS lonend
-FROM (
-	SELECT fileid, "{lat_col}", "{lon_col}",
-		ROW_NUMBER() OVER (PARTITION BY fileid ORDER BY "{time_col}" ASC) AS rn_asc,
-		ROW_NUMBER() OVER (PARTITION BY fileid ORDER BY "{time_col}" DESC) AS rn_desc
-	FROM torqlogs
-	WHERE "{lat_col}" IS NOT NULL AND "{lon_col}" IS NOT NULL
-	  AND fileid IN ({{placeholders}})
-) sub
-WHERE rn_asc = 1 OR rn_desc = 1
-GROUP BY fileid;
-"""
+    SELECT fileid,
+        MAX(CASE WHEN rn_asc = 1 THEN "{lat_col}" END) AS latstart,
+        MAX(CASE WHEN rn_asc = 1 THEN "{lon_col}" END) AS lonstart,
+        MAX(CASE WHEN rn_desc = 1 THEN "{lat_col}" END) AS latend,
+        MAX(CASE WHEN rn_desc = 1 THEN "{lon_col}" END) AS lonend
+    FROM (
+        SELECT fileid, "{lat_col}", "{lon_col}",
+            ROW_NUMBER() OVER (PARTITION BY fileid ORDER BY "{time_col}" ASC) AS rn_asc,
+            ROW_NUMBER() OVER (PARTITION BY fileid ORDER BY "{time_col}" DESC) AS rn_desc
+        FROM torqlogs
+        WHERE "{lat_col}" IS NOT NULL AND "{lon_col}" IS NOT NULL
+        AND fileid IN ({{placeholders}})
+    ) sub
+    WHERE rn_asc = 1 OR rn_desc = 1
+    GROUP BY fileid;
+    """
     gpsoffset = 0.001  # ~111 m clustering radius
 
     # Query start/end points in batches so we only process pending files.
     batch_size = 300 if args.dbmode == "sqlite" else 1000
     processed = 0
     for batch_start in range(0, len(pending_fileids), batch_size):
-        batch = pending_fileids[batch_start : batch_start + batch_size]
+        batch = pending_fileids[batch_start:batch_start + batch_size]
         placeholders = ", ".join(f":fid{i}" for i in range(len(batch)))
         params = {f"fid{i}": int(fid) for i, fid in enumerate(batch)}
         getstartendquery = getstartendquery_template.format(placeholders=placeholders)
@@ -854,7 +854,7 @@ def collect_db_torqtrips(args):
         f"candidate fileids for torqtrips={len(fileids)}, processing in batches of {batch_size}"
     )
     for batch_start in range(0, len(fileids), batch_size):
-        batch = fileids[batch_start : batch_start + batch_size]
+        batch = fileids[batch_start:batch_start + batch_size]
         placeholders = ", ".join(f":fid{i}" for i in range(len(batch)))
         params = {f"fid{i}": int(fid) for i, fid in enumerate(batch)}
 
@@ -891,17 +891,17 @@ def collect_db_torqtrips(args):
             )
             logger.debug(f"Constructed metric SQL for torqtrips {len(metric_sql)}")
             agg_sql = text(f"""
-				SELECT
-					tl.fileid AS fileid,
-					MIN(tl."{time_col}") AS tripdate,
-					MAX(tl."{time_col}") AS trip_end,
-					MAX(tf.trip_distance) AS trip_distance
-					{metric_sql}
-				FROM torqlogs tl
-				LEFT JOIN torqfiles tf ON tf.fileid = tl.fileid
-				WHERE tl.fileid IN ({placeholders})
-				GROUP BY tl.fileid
-				""")
+                SELECT
+                    tl.fileid AS fileid,
+                    MIN(tl."{time_col}") AS tripdate,
+                    MAX(tl."{time_col}") AS trip_end,
+                    MAX(tf.trip_distance) AS trip_distance
+                    {metric_sql}
+                FROM torqlogs tl
+                LEFT JOIN torqfiles tf ON tf.fileid = tl.fileid
+                WHERE tl.fileid IN ({placeholders})
+                GROUP BY tl.fileid
+                """)
             rows = session.execute(agg_sql, params).mappings().all()
             if not rows:
                 session.commit()
