@@ -181,31 +181,6 @@ async def calculate_hash(path):
 		lambda: md5(open(path, "rb").read()).hexdigest()
 	)
 
-async def get_files_to_send(session: Session, args):
-	"""More efficient file processing that caches hashes using async"""
-	# Get all hashes from database in one query
-	alldbfiles = session.query(TorqFile).all()
-	hashlist = set([k.csvhash for k in alldbfiles])  # Use set for O(1) lookups
-
-	# Get all CSV files first
-	csv_paths = list(Path(args.logpath).glob("**/trackLog*.csv"))
-	logger.info(f"Found {len(csv_paths)} CSV files to process")
-
-	# Filter by size first to avoid unnecessary hash calculations
-	csv_paths = [p for p in csv_paths if p.stat().st_size > MIN_FILESIZE]
-	logger.info(f"{len(csv_paths)} files exceed minimum size")
-
-	# Calculate hashes concurrently
-	tasks = [calculate_hash(path) for path in csv_paths]
-	file_hashes = await asyncio.gather(*tasks)
-
-	# Filter files that aren't in database
-	result = []
-	for path, file_hash in zip(csv_paths, file_hashes):
-		if file_hash not in hashlist:
-			result.append(str(path))
-
-	return result
 
 async def process_batch(batch_files, args):
 	tasks = []
