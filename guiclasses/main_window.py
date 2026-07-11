@@ -1202,13 +1202,7 @@ class MainWindow(QMainWindow):
 		self._initial_trips_worker = worker
 		self._initial_trips_thread = thread
 		self._active_threads.add(thread)
-		self._register_thread(
-			thread,
-			owner_name="MainWindow",
-			task_name="Initial trips load",
-			launched_by="_start_async_initial_trips_load",
-			worker=worker,
-		)
+		self._register_thread(thread, owner_name="MainWindow", task_name="Initial trips load", launched_by="_start_async_initial_trips_load", worker=worker,)
 		if self.args.debug:
 			logger.debug(f'Starting initial trips load in thread {thread} active threads: {len(self._active_threads)})')
 		thread.start()
@@ -1793,13 +1787,7 @@ class MainWindow(QMainWindow):
 		self._plot_data_worker = worker
 		self._plot_data_thread = thread
 		self._active_threads.add(thread)
-		self._register_thread(
-			thread,
-			owner_name="MainWindow",
-			task_name="Trip plot background load",
-			launched_by="_load_plot_data_async",
-			worker=worker,
-		)
+		self._register_thread(thread, owner_name="MainWindow", task_name="Trip plot background load", launched_by="_load_plot_data_async", worker=worker,)
 		thread.start()
 
 	def _on_async_plot_preview(self, request_id: int, payload: object) -> None:

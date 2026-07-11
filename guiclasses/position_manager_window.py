@@ -297,6 +297,9 @@ class PositionManagerWindow(QMainWindow):
 
         self.load_positions()
 
+    def __repr__(self):
+        return f"<PositionManagerWindow active_threads: {len(self._active_threads)}>"
+
     def set_table_font_size(self, value: int):
         self._table_font_size = max(6, min(14, int(value)))
         font = QFont("Monospace", self._table_font_size)
@@ -362,10 +365,7 @@ class PositionManagerWindow(QMainWindow):
             south, west, north, east = self._visible_map_bounds
             lat = pd.to_numeric(filtered_df["latitude"], errors="coerce")
             lon = pd.to_numeric(filtered_df["longitude"], errors="coerce")
-            filtered_df = filtered_df[
-                lat.between(south, north, inclusive="both") &
-                lon.between(west, east, inclusive="both")
-            ]
+            filtered_df = filtered_df[lat.between(south, north, inclusive="both") & lon.between(west, east, inclusive="both")]
         return filtered_df
 
     @staticmethod
@@ -599,13 +599,7 @@ class PositionManagerWindow(QMainWindow):
         self._load_thread = thread
         self._load_worker = worker
         self._active_threads.add(thread)
-        self._register_thread(
-            thread,
-            owner_name="PositionManagerWindow",
-            task_name="Positions load",
-            launched_by="load_positions",
-            worker=worker,
-        )
+        self._register_thread(thread, owner_name="PositionManagerWindow", task_name="Positions load", launched_by="load_positions", worker=worker,)
         if self.args.debug:
             logger.debug(f"Started position load worker thread {thread}. active threads: {len(self._active_threads)}")
         thread.start()
@@ -704,10 +698,7 @@ class PositionManagerWindow(QMainWindow):
                     k_id = int(key.get("pos_id", 0))
                     if not k_type or k_id <= 0:
                         continue
-                    matched = self.df_positions[
-                        (self.df_positions["pos_type"] == k_type) &
-                        (self.df_positions["pos_id"] == k_id)
-                    ]
+                    matched = self.df_positions[(self.df_positions["pos_type"] == k_type) & (self.df_positions["pos_id"] == k_id)]
                     if not matched.empty:
                         matched_indices.append(int(matched.index[0]))
                 if matched_indices:
@@ -751,7 +742,6 @@ class PositionManagerWindow(QMainWindow):
                 logger.warning(f"Plotting positions: show_labeled_points is {self._show_labeled_points}, filtered out labeled points, remaining count: {len(plot_df)}")
             if self.args.debug and len(plot_df) > 0:
                 logger.debug(f"Plotting positions: show_labeled_points is {self._show_labeled_points}, filtered out labeled points, remaining count: {len(plot_df)}")
-
 
         self._visible_row_indices = set(int(i) for i in plot_df.index.tolist())
 
