@@ -1013,9 +1013,6 @@ class PositionManagerWindow(QMainWindow):
 
         self._draw_selection_markers(clean_rows)
 
-    def _select_row_by_index(self, row_index: int, select_table: bool, zoom_to_point: bool):
-        self._select_rows_by_indices([row_index], select_table=select_table, zoom_to_points=zoom_to_point)
-
     def _zoom_to_point(self, lat: float, lon: float) -> None:
         self.map_canvas.set_view(lat, lon, 14)
 
