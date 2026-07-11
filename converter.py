@@ -233,18 +233,14 @@ async def cli_main(args):
 			sys.exit(-1)
 	elif args.scanpath:
 		logger.debug(f'using {args.dbmode} database at {args.dbfile}')
-		try:
-			session = get_engine_session(args)  # , session
-			database_init(session.get_bind())
-			sess = sessionmaker(bind=session.get_bind())
-			s = sess()
-			logcount = s.execute(text("select count(*) from torqlogs")).all()
-			logger.info(f'{logcount=}')
-			s.close()
-			read_csvs_to_dataframe_and_insert(args)
-		except Exception as e:
-			logger.error(f'error {type(e)} {e}')
-			sys.exit(-1)
+		session = get_engine_session(args)  # , session
+		database_init(session.get_bind())
+		sess = sessionmaker(bind=session.get_bind())
+		s = sess()
+		logcount = s.execute(text("select count(*) from torqlogs")).all()
+		logger.info(f'{logcount=}')
+		s.close()
+		read_csvs_to_dataframe_and_insert(args)
 
 def get_args(appname):
 	parser = get_parser(appname)
