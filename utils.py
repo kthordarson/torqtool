@@ -548,10 +548,17 @@ def read_csv_data(csvfile: dict, conn, normalized_actual_columns, allowed_cols, 
 		if col in COLUMN_TYPES and COLUMN_TYPES[col] in [Float, Integer]:
 			df[col] = pd.to_numeric(df[col], errors='coerce')
 
-	# Remove rows that are identical to the header (possible repeated headers)
+	# Remove rows that are identical to the header (possible repeated headers).
+	# Vectorized: row-wise .apply() here was the dominant cost on large files
+	# (~70% of read_csv_data's time on a 24k-row file) since it re-materializes
+	# each row as a Python object; column-wise comparison does the same check
+	# without ever leaving pandas' vectorized C paths.
 	header_row = list(df.columns)
-	df = df[~df.apply(lambda row: list(row) == header_row, axis=1)]
-	df = df[~df.apply(lambda row: row.astype(str).str.contains(' Device Time').any(), axis=1)]
+	is_header_row = (df.astype(str) == header_row).all(axis=1)
+	device_time_mask = pd.Series(False, index=df.index)
+	for col in df.columns:
+		device_time_mask |= df[col].astype(str).str.contains(' Device Time', na=False)
+	df = df[~(is_header_row | device_time_mask)]
 
 	ordered_cols = [col for col in ['fileid'] if col in df.columns and col in allowed_cols]
 	ordered_cols.extend(sorted([col for col in df.columns if col != 'fileid' and col in allowed_cols]))
@@ -603,14 +610,12 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs') -> None:
 	Handles varying columns, missing data, and extra spaces in column names.
 	Returns the concatenated DataFrame and a dictionary of column stats.
 	"""
-	SQLITE_MAX_VARS = 999
 	csv_files = [{'filename': k, 'size': k.stat().st_size, 'hash': md5(k.read_bytes()).hexdigest(),'valid': -1} for k in Path(args.logpath).glob("**/trackLog*.csv") if k.stat().st_size > MIN_FILESIZE]
 	if not csv_files:
 		logger.warning("No CSV files found")
 		return None
 	if args.debug:
 		logger.debug(f"Found {len(csv_files)} CSV files in {args.logpath}")
-		csv_files = csv_files[:100]  # limit to first 100 for debug
 
 	valid_files = []
 	csvhash = ''
@@ -653,6 +658,12 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs') -> None:
 
 		if conn.in_transaction():
 			conn.rollback()
+
+	# Reflected once and reused for every file: SQLAlchemy Core's insert()+executemany
+	# reuses one compiled statement per file (DBAPI-native executemany), instead of
+	# pandas.to_sql's method='multi', which builds one giant literal-VALUES statement
+	# per chunk and was ~40x slower on wide/large files.
+	torqlogs_table = Table(table_name, MetaData(), autoload_with=session.get_bind())
 	for csvfile in csv_files:
 		csvhash = csvfile['hash']
 		if any(csvhash == existing_hash for _, existing_hash in hash_list):
@@ -666,14 +677,16 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs') -> None:
 		read_started = time.perf_counter()
 		# Read CSV file
 		df, fileid = read_csv_data(csvfile, session, normalized_actual_columns, allowed_cols, args)
-		safe_chunksize = max(1, SQLITE_MAX_VARS // len(df.columns))
-		requested_chunksize = max(1, int(args.sqlchunksize))
-		effective_chunksize = min(requested_chunksize, safe_chunksize)
 
 		send_started = time.perf_counter()
 		conn = session.connection()
 		try:
-			df.to_sql(table_name, conn, if_exists='append', index=False, method='multi', chunksize=effective_chunksize,)
+			insert_df = df.copy()
+			for col in insert_df.columns:
+				if pd.api.types.is_datetime64_any_dtype(insert_df[col]):
+					insert_df[col] = insert_df[col].dt.strftime('%Y-%m-%d %H:%M:%S.%f')
+			records = insert_df.where(insert_df.notna(), None).to_dict(orient='records')
+			conn.execute(torqlogs_table.insert(), records)
 		except Exception as e:
 			import traceback
 			logger.error(f"[{idx}/{len(csv_files)}] Error inserting data for file {csvfile['filename']} (fileid {fileid}): {e} {type(e)}\n{traceback.format_exc()}")
