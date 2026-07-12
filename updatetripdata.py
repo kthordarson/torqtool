@@ -203,9 +203,7 @@ def collect_db_filestats(args, todatabase=True, droptable=False):
     resolved_columns = _resolve_schema_columns(session, requested_columns)
     missing_count = len(requested_columns) - len(resolved_columns)
     if missing_count:
-        logger.warning(
-            f"Skipping {missing_count} schema columns not present in torqlogs"
-        )
+        logger.warning(f"Skipping {missing_count} schema columns not present in torqlogs")
 
     # Keep order stable for predictable logging/results.
     column_pairs = [
