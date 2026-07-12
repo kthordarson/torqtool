@@ -442,6 +442,19 @@ class Endpos(Base):
     count: Mapped[int] = mapped_column(Integer, default=0)
     label: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+class Label(Base):
+    __tablename__ = "labels"
+    labelid: Mapped[int] = mapped_column(primary_key=True)
+    label: Mapped[str | None] = mapped_column(Text, nullable=True)
+    count: Mapped[int] = mapped_column(Integer, default=0)
+
+class Position(Base):
+    __tablename__ = "positions"
+    positionid: Mapped[int] = mapped_column(primary_key=True)
+    labelid: Mapped[int | None] = mapped_column(ForeignKey("labels.labelid"), nullable=True)
+    latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    count: Mapped[int] = mapped_column(Integer, default=0)
 
 class TorqFile(Base):
     __tablename__ = "torqfiles"
