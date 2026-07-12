@@ -498,12 +498,10 @@ class Torqtrips(Base):
     __tablename__ = "torqtrips"
     id: Mapped[int] = mapped_column(primary_key=True)
     fileid: Mapped[int] = mapped_column(ForeignKey("torqfiles.fileid"))
-    distance = Column("distance", Integer)
     trip_distance = Column("trip_distance", Integer)
     tripdate = Column("tripdate", DateTime)
     profile = Column("profile", Text)
     time = Column("time", Integer)
-    triptime = Column("triptime", Integer)
 
     def __init__(self, fileid):
         self.fileid = fileid
@@ -592,7 +590,7 @@ def database_init(engine):  # create tables
                         ep.label AS end_label,
                         tt.tripdate,
                         tt.time AS trip_time_s,
-                        COALESCE(tt.trip_distance, tt.distance) AS trip_distance_m
+                        tt.trip_distance AS trip_distance_m
                     FROM torqfiles tf
                     LEFT JOIN startpos sp ON sp.startid = tf.startid
                     LEFT JOIN endpos ep ON ep.endid = tf.endid

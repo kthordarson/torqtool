@@ -1,5 +1,6 @@
 # utils and db things here
 from math import radians, cos, sin, sqrt, atan2
+import numpy as np
 import random
 import os
 import re
@@ -23,7 +24,7 @@ from datamodels import database_init, COLUMN_TYPES
 from schemas import canonicalize_column_name, canonicalize_columns
 from schemas import TRIP_METRIC_COLUMNS, column_mapping
 
-MIN_FILESIZE = 1000000
+MIN_FILESIZE = 100000
 
 def get_parser(appname):
 	parser = argparse.ArgumentParser(description=appname)
@@ -302,6 +303,24 @@ def _ensure_torqtrips_metric_columns(conn, metric_names: list[str]) -> None:
 			conn.execute(text(f'ALTER TABLE torqtrips ADD COLUMN "{col_name}" {numeric_sql_type}'))
 			existing.add(col_name.lower())
 
+def _read_trip_profile(csvfile_path: str | None) -> str | None:
+	"""
+	Read the vehicle profile name from the trip folder's profile.properties file.
+	Torque writes one alongside each trackLog.csv (e.g. "profile=c4").
+	"""
+	if not csvfile_path:
+		return None
+	profile_path = Path(csvfile_path).parent / 'profile.properties'
+	try:
+		for line in profile_path.read_text().splitlines():
+			line = line.strip()
+			if line.startswith('profile='):
+				value = line.split('=', 1)[1].strip()
+				return value or None
+	except (OSError, UnicodeDecodeError) as e:
+		logger.debug(f"Could not read profile from {profile_path}: {e} {type(e)}")
+	return None
+
 def update_trip_and_file_for_fileid(conn, fileid):
 	"""
 	Update TorqFile and Torqtrips for a single fileid after inserting its data.
@@ -434,14 +453,18 @@ def update_trip_and_file_for_fileid(conn, fileid):
 				params={"fileid": fileid}
 			)
 			if len(df_gps) > 1:
-				distances = [
-					haversine(
-						df_gps.iloc[i-1]['latitude'], df_gps.iloc[i-1]['longitude'],
-						df_gps.iloc[i]['latitude'], df_gps.iloc[i]['longitude']
-					)
-					for i in range(1, len(df_gps))
-				]
-				trip_distance = float(sum(distances))
+				# Vectorized haversine over the whole trip at once (same formula/radius as
+				# haversine() above) - a Python per-row loop here was the dominant cost
+				# (~1.4s of ~1.5s) for large files.
+				lat = np.radians(df_gps['latitude'].to_numpy(dtype=float))
+				lon = np.radians(df_gps['longitude'].to_numpy(dtype=float))
+				dlat = lat[1:] - lat[:-1]
+				dlon = lon[1:] - lon[:-1]
+				a = np.sin(dlat / 2.0) ** 2 + np.cos(lat[:-1]) * np.cos(lat[1:]) * np.sin(dlon / 2.0) ** 2
+				c = 2.0 * np.arctan2(np.sqrt(a), np.sqrt(1.0 - a))
+				# A single missing/NaN GPS fix must not zero out the whole trip's distance
+				# via NaN propagation - skip only the bad step(s), keep the rest.
+				trip_distance = float(np.nansum(6371000.0 * c))
 			else:
 				trip_distance = 0.0
 	except TypeError as e:
@@ -452,22 +475,27 @@ def update_trip_and_file_for_fileid(conn, fileid):
 		logger.error(f"Error calculating trip_distance for fileid {fileid}: {e} {type(e)}")
 		trip_distance = 0.0
 
+	csvfile_path = conn.execute(text("SELECT csvfile FROM torqfiles WHERE fileid = :fileid"), {"fileid": fileid}).scalar()
+	profile = _read_trip_profile(csvfile_path)
+
 	# Insert if missing, then update all calculated fields.
 	conn.execute(text("""
-		INSERT INTO torqtrips (fileid, tripdate, time, trip_distance)
-		SELECT :fileid, :trip_start, :trip_duration, :trip_distance
+		INSERT INTO torqtrips (fileid, tripdate, time, trip_distance, profile)
+		SELECT :fileid, :trip_start, :trip_duration, :trip_distance, :profile
 		WHERE NOT EXISTS (SELECT 1 FROM torqtrips WHERE fileid = :fileid)
 	"""), {
 		"fileid": fileid,
 		"trip_start": trip_start,
 		"trip_duration": trip_duration,
-		"trip_distance": trip_distance
+		"trip_distance": trip_distance,
+		"profile": profile
 	})
 
 	set_parts = [
 		"tripdate = :trip_start",
 		"time = :trip_duration",
 		"trip_distance = :trip_distance",
+		"profile = :profile",
 	]
 	for key in metric_values:
 		set_parts.append(f'"{key}" = :{key}')
@@ -479,6 +507,7 @@ def update_trip_and_file_for_fileid(conn, fileid):
 		"trip_start": trip_start,
 		"trip_duration": trip_duration,
 		"trip_distance": trip_distance,
+		"profile": profile,
 		**metric_values,
 	}
 	conn.execute(update_sql, update_params)
@@ -695,7 +724,7 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs') -> None:
 		# Update trip and file info for this fileid
 		send_elapsed = float(time.perf_counter() - send_started)
 
-		# update_trip_and_file_for_fileid(conn, fileid)
+		update_trip_and_file_for_fileid(conn, fileid)
 		read_elapsed = float(time.perf_counter() - read_started)
 		# Update TorqFile import timings and row count
 		conn.execute(text(""" UPDATE torqfiles SET sent_rows = :rows, readtime = :readtime, sendtime = :sendtime WHERE fileid = :fileid """),{"rows": len(df), "readtime": read_elapsed, "sendtime": send_elapsed, "fileid": fileid})
