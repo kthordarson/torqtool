@@ -298,12 +298,13 @@ def _ensure_torqtrips_metric_columns(conn, metric_names: list[str]) -> None:
 			conn.execute(text(f'ALTER TABLE torqtrips ADD COLUMN "{col_name}" {numeric_sql_type}'))
 			existing.add(col_name.lower())
 
-def _read_trip_profile(csvfile_path: str | None) -> str | None:
+def _read_trip_profile(csvfile_path: str) -> str | None:
 	"""
 	Read the vehicle profile name from the trip folder's profile.properties file.
 	Torque writes one alongside each trackLog.csv (e.g. "profile=c4").
 	"""
 	if not csvfile_path:
+		logger.warning(f"Could not read profile from {csvfile_path}")
 		return None
 	profile_path = Path(csvfile_path).parent / 'profile.properties'
 	try:
@@ -311,12 +312,13 @@ def _read_trip_profile(csvfile_path: str | None) -> str | None:
 			line = line.strip()
 			if line.startswith('profile='):
 				value = line.split('=', 1)[1].strip()
-				return value or None
+				return value
 	except (OSError, UnicodeDecodeError) as e:
-		logger.debug(f"Could not read profile from {profile_path}: {e} {type(e)}")
+		logger.error(f"Could not read profile from {profile_path}: {e} {type(e)}")
+	logger.warning(f"Could not read profile from {profile_path}")
 	return None
 
-def update_trip_and_file_for_fileid(conn, fileid):
+def update_trip_and_file_for_fileid(conn, fileid, csvfile):
 	"""
 	Update TorqFile and Torqtrips for a single fileid after inserting its data.
 	"""
@@ -470,9 +472,14 @@ def update_trip_and_file_for_fileid(conn, fileid):
 		logger.error(f"Error calculating trip_distance for fileid {fileid}: {e} {type(e)}")
 		trip_distance = 0.0
 
-	csvfile_path = conn.execute(text("SELECT csvfile FROM torqfiles WHERE fileid = :fileid"), {"fileid": fileid}).scalar()
-	profile = _read_trip_profile(csvfile_path)
-
+	# csvfile_path = conn.execute(text("SELECT csvfile FROM torqfiles WHERE fileid = :fileid"), {"fileid": fileid}).scalar()
+	# csvfile_path = conn.execute(text("SELECT csvfile FROM torqfiles WHERE fileid = :fileid"), {"fileid": fileid}).scalar()
+	profile = _read_trip_profile(csvfile['filename'])
+	if not profile:
+		profile = "unknown"
+		logger.warning(f"Could not read profile for fileid {fileid} from {csvfile['filename']}, defaulting to unknown")
+	else:
+		logger.debug(f"Read profile for fileid {fileid} from {csvfile['filename']}: {profile}")
 	# Insert if missing, then update all calculated fields.
 	conn.execute(text("""
 		INSERT INTO torqtrips (fileid, tripdate, time, trip_distance, profile)
@@ -697,6 +704,9 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs') -> None:
 		valid_files.append((csvfile['filename'], [], csvhash))
 		csvfile['valid'] = 1
 	csv_files = [f for f in csv_files if f['valid'] == 1]
+	if args.debug:
+		csv_files = csv_files[:10]  # limit to first 10 for debug
+		logger.debug(f"Processing {len(csv_files)} valid CSV files")
 	for idx,csvfile in enumerate(csv_files):
 		read_started = time.perf_counter()
 		# Read CSV file
@@ -723,7 +733,7 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs') -> None:
 		# Update trip and file info for this fileid
 		send_elapsed = float(time.perf_counter() - send_started)
 
-		update_trip_and_file_for_fileid(conn, fileid)
+		update_trip_and_file_for_fileid(conn, fileid, csvfile)
 		read_elapsed = float(time.perf_counter() - read_started)
 		# Update TorqFile import timings and row count
 		conn.execute(text(""" UPDATE torqfiles SET sent_rows = :rows, readtime = :readtime, sendtime = :sendtime WHERE fileid = :fileid """),{"rows": len(df), "readtime": read_elapsed, "sendtime": send_elapsed, "fileid": fileid})

@@ -837,6 +837,15 @@ def collect_db_torqtrips(args):
         params = {f"fid{i}": int(fid) for i, fid in enumerate(batch)}
 
         try:
+            # Recalculation deletes and rebuilds each row, so preserve the existing
+            # profile (set separately by converter.py from the source CSV) across that cycle.
+            existing_profiles = {
+                int(row[0]): row[1]
+                for row in session.execute(
+                    text(f"SELECT fileid, profile FROM torqtrips WHERE fileid IN ({placeholders})"), params
+                ).all()
+            }
+
             # Remove prior rows for this batch so recalculation does not create duplicates.
             logger.debug(
                 f"Clearing existing torqtrips rows for batch {batch_start // batch_size + 1} placeholders: {len(placeholders)}, params: {len(params)}"
@@ -906,11 +915,13 @@ def collect_db_torqtrips(args):
                             f"Could not compute trip duration for fileid {row.get('fileid')}: {e} ({type(e)})"
                         )
 
+                rec_fileid = int(row.get("fileid") or 0)
                 rec: dict[str, object] = {
-                    "fileid": int(row.get("fileid") or 0),
+                    "fileid": rec_fileid,
                     "tripdate": trip_start,
                     "time": trip_duration,
                     "trip_distance": row.get("trip_distance"),
+                    "profile": existing_profiles.get(rec_fileid),
                 }
 
                 for idx, (metric_name, _) in enumerate(resolved_metric_pairs):
