@@ -23,7 +23,7 @@ from datamodels import database_init, COLUMN_TYPES
 from schemas import canonicalize_column_name, canonicalize_columns
 from schemas import TRIP_METRIC_COLUMNS, column_mapping
 
-MIN_FILESIZE = 3000000
+MIN_FILESIZE = 1000000
 
 def get_parser(appname):
 	parser = argparse.ArgumentParser(description=appname)
@@ -608,6 +608,9 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs') -> None:
 	if not csv_files:
 		logger.warning("No CSV files found")
 		return None
+	if args.debug:
+		logger.debug(f"Found {len(csv_files)} CSV files in {args.logpath}")
+		csv_files = csv_files[:10]  # limit to first 10 for debug
 
 	valid_files = []
 	csvhash = ''
@@ -689,6 +692,9 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs') -> None:
 def get_csv_files(searchpath: Path, args):
 	# scan searchpath for csv files
 	torqcsvfiles = [({"csvfile": k, "csvhash": md5(open(k, "rb").read()).hexdigest(), "size": os.stat(k).st_size, "dbmode": args.dbmode, }) for k in searchpath.glob("**/*.csv") if k.stat().st_size >= MIN_FILESIZE]  # and not os.path.exists(f'{k}.fixed.csv')]
+	if args.debug:
+		logger.debug(f"Found {len(torqcsvfiles)} CSV files in {searchpath}")
+		return torqcsvfiles[:10]  # limit to first 10 for debug
 	return torqcsvfiles
 
 def get_engine_session(args: argparse.Namespace) -> Session:
