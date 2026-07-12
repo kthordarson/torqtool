@@ -23,7 +23,7 @@ from datamodels import database_init, COLUMN_TYPES
 from schemas import canonicalize_column_name, canonicalize_columns
 from schemas import TRIP_METRIC_COLUMNS, column_mapping
 
-MIN_FILESIZE = 3000
+MIN_FILESIZE = 10000
 
 def get_parser(appname):
 	parser = argparse.ArgumentParser(description=appname)
@@ -74,13 +74,7 @@ def create_or_update_table(session, table_name, columns, column_types):
 	metadata = MetaData()
 
 	# Check existing table columns and normalize to lowercase
-	try:
-		existing_columns = [col.lower() for col in get_table_columns(session, table_name)]
-		logger.debug(f"Existing columns: {len(existing_columns)}")
-	except Exception as e:
-		logger.error(f"Error checking existing columns: {e} {type(e)} table_name={table_name}")
-		existing_columns = []
-
+	existing_columns = [col.lower() for col in get_table_columns(session, table_name)]
 	# Create table definition with all columns
 	table_columns = [Column(col, column_types.get(col, String)) for col in sorted(columns)]
 
@@ -102,13 +96,10 @@ def create_or_update_table(session, table_name, columns, column_types):
 						# Get original case version of column name
 						orig_col = next(c for c in columns if c.lower() == col)
 						sqlalchemy_type = column_types.get(orig_col, String)
-						if isinstance(sqlalchemy_type, type):
-							sql_type = sqlalchemy_type().compile(dialect=conn.dialect)
-						else:
-							sql_type = sqlalchemy_type.compile(dialect=conn.dialect)
+						sql_type = sqlalchemy_type().compile(dialect=conn.dialect)
 						alter_sql = text(f'ALTER TABLE {table_name} ADD COLUMN "{orig_col}" {sql_type}')
 						conn.execute(alter_sql)
-						logger.debug(f"Added column: {orig_col} ({sql_type})")
+
 					except Exception as e:
 						if "duplicate column" in str(e).lower() or "already exists" in str(e).lower():
 							logger.debug(f"Column {orig_col} already exists, skipping")
@@ -526,7 +517,7 @@ def read_csv_data(csvfile: dict, conn, normalized_actual_columns, allowed_cols, 
 	"""
 	Read a CSV file into a DataFrame, normalize column names, and collapse duplicates.
 	"""
-	df = pd.read_csv(csvfile['filename'])
+	df = pd.read_csv(csvfile['filename'], dtype=str)
 
 	# Normalize columns using shared Torq header mapping.
 	original_columns = df.columns.to_list()
@@ -571,9 +562,6 @@ def read_csv_data(csvfile: dict, conn, normalized_actual_columns, allowed_cols, 
 	for col in df.columns:
 		duration_check = 0
 		if _is_datetime_column_name(col):
-			if args.debug:
-				logger.debug(f'Converting column {col} to datetime {df[col].iloc[0]} {df[col].iloc[-1]} {df[col].iloc[-2]}')
-			# df[col] = df[col].apply(lambda x: convert_string_to_datetime(x) if isinstance(x, str) and pd.notnull(x) else pd.NaT)  # type: ignore
 			df[col] = df[col].apply(lambda x: convert_string_to_datetime(x))  # type: ignore
 			if col == 'gpstime':
 				try:
@@ -588,7 +576,7 @@ def read_csv_data(csvfile: dict, conn, normalized_actual_columns, allowed_cols, 
 					# logger.warning(f'{csvfile} - trip duration too long: {duration_check}')
 				except Exception as e:
 					logger.warning(f"{e} {type(e)} Error calculating trip duration for {csvfile['filename']}: {e} {type(e)} df shape: {df.shape} columns: {list(df.columns)}\ndfiloc: {df.iloc[-1]}")
-			if duration_check > 86400//2:
+			if duration_check > 300:
 				logger.warning(f'{csvfile} - trip duration too long: {duration_check}')
 				df = df.iloc[:-1]  # drop last row if trip duration is too long
 	fileid = get_file_id(df, conn, csvfile)
@@ -619,7 +607,7 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs') -> None:
 	Returns the concatenated DataFrame and a dictionary of column stats.
 	"""
 	SQLITE_MAX_VARS = 999
-	csv_files = [{'filename': k, 'size': k.stat().st_size, 'hash': md5(k.read_bytes()).hexdigest(),'valid': -1} for k in Path(args.logpath).glob("**/trackLog*.csv") if k.stat().st_size > 3000]
+	csv_files = [{'filename': k, 'size': k.stat().st_size, 'hash': md5(k.read_bytes()).hexdigest(),'valid': -1} for k in Path(args.logpath).glob("**/trackLog*.csv") if k.stat().st_size > MIN_FILESIZE]
 	if not csv_files:
 		logger.warning("No CSV files found")
 		return None
@@ -637,7 +625,18 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs') -> None:
 	# The Torqlogs ORM model only declares a handful of columns; grow the actual
 	# table to cover every canonical Torque metric so CSV data isn't silently dropped.
 	all_canonical_columns = sorted(set(column_mapping.values()))
-	create_or_update_table(session, table_name, all_canonical_columns, COLUMN_TYPES)
+	column_types = COLUMN_TYPES.copy()
+	invalid_cols = []
+	for col in all_canonical_columns:
+		if col not in column_types:
+			column_types[col] = String
+			invalid_cols.append(col)
+			# if args.debug:
+			# 	logger.warning(f"Column {col} not in COLUMN_TYPES, defaulting to String")
+	if args.debug:
+		if invalid_cols:
+			logger.warning(f"Columns not in COLUMN_TYPES, defaulting to String: {invalid_cols}")
+	create_or_update_table(session, table_name, all_canonical_columns, column_types=column_types)
 
 	with session.get_bind().connect() as conn:  # type: ignore[union-attr]
 		hash_list = conn.execute(text("SELECT fileid,csvhash FROM torqfiles")).all()
@@ -663,7 +662,7 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs') -> None:
 		valid_files.append((csvfile['filename'], [], csvhash))
 		csvfile['valid'] = 1
 	csv_files = [f for f in csv_files if f['valid'] == 1]
-	for csvfile in csv_files:
+	for idx,csvfile in enumerate(csv_files):
 		read_started = time.perf_counter()
 		# Read CSV file
 		df, fileid = read_csv_data(csvfile, session, normalized_actual_columns, allowed_cols, args)
@@ -677,7 +676,7 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs') -> None:
 			df.to_sql(table_name, conn, if_exists='append', index=False, method='multi', chunksize=effective_chunksize,)
 		except Exception as e:
 			import traceback
-			logger.error(f"Error inserting data for file {csvfile['filename']} (fileid {fileid}): {e} {type(e)}\n{traceback.format_exc()}")
+			logger.error(f"[{idx}/{len(csv_files)}] Error inserting data for file {csvfile['filename']} (fileid {fileid}): {e} {type(e)}\n{traceback.format_exc()}")
 			break
 
 		# Update trip and file info for this fileid
@@ -687,7 +686,7 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs') -> None:
 		read_elapsed = float(time.perf_counter() - read_started)
 		# Update TorqFile import timings and row count
 		conn.execute(text(""" UPDATE torqfiles SET sent_rows = :rows, readtime = :readtime, sendtime = :sendtime WHERE fileid = :fileid """),{"rows": len(df), "readtime": read_elapsed, "sendtime": send_elapsed, "fileid": fileid})
-		logger.info(f"Sent {len(df)} rows from {csvfile['filename']} ")
+		logger.info(f"[{idx}/{len(csv_files)}] Sent {len(df)} rows from {csvfile['filename']} ")
 		session.commit()
 
 def get_csv_files(searchpath: Path, args):

@@ -1,96 +1,96 @@
 import polars as pl
+
 # from polars import String,Float64,Int64
 import re
 import unicodedata
 from enum import Enum
 from typing import TypedDict
 
-
 dataschema = {
-    'gpstime': pl.String,
-    'devicetime': pl.String,
-    'longitude': pl.Float64,
-    'latitude': pl.Float64,
-    'gpsspeedkmh': pl.Float64,
-    'horizontaldilutionofprecision': pl.Float64,
-    'altitude': pl.Float64,
-    'altitudem': pl.Float64,
-    'bearing': pl.Float64,
-    'gravityxg': pl.Float64,
-    'gravityyg': pl.Float64,
-    'gravityzg': pl.Float64,
-    'gcalibrated': pl.Float64,
-    'accelerationsensortotalg': pl.Float64,
-    'accelerationsensorxaxisg': pl.Float64,
-    'accelerationsensoryaxisg': pl.Float64,
-    'accelerationsensorzaxisg': pl.Float64,
-    'actualenginetorque': pl.String,
-    'airfuelratiomeasured1': pl.Float64,
-    'androiddevicebatterylevel': pl.Int64,
-    'averagetripspeedwhilstmovingonlykmh': pl.Float64,
-    'averagetripspeedwhilststoppedormovingkmh': pl.Float64,
-    'barometricpressurefromvehiclepsi': pl.Float64,
-    'coingkmaveragegkm': pl.Float64,
-    'coingkminstantaneousgkm': pl.Float64,
-    'distancetoemptyestimatedkm': pl.Int64,
-    'distancetravelledwithmilcellitkm': pl.Int64,
-    'enginecoolanttemperaturec': pl.Int64,
-    'enginecoolanttemperaturef': pl.Int64,
-    'enginekwatthewheelskw': pl.Float64,
-    'engineload': pl.Float64,
-    'enginerpmrpm': pl.Float64,
-    'fuelcosttripcost': pl.Float64,
-    'fuelflowratehourlhr': pl.Float64,
-    'fuelflowrateminuteccmin': pl.Float64,
-    'fuelrailpressurepsi': pl.Float64,
-    'fuelremainingcalculatedfromvehicleprofile': pl.Int64,
-    'fuelusedtripl': pl.Float64,
-    'fuelrailpressurekpa': pl.Float64,
-    'gpsaccuracym': pl.Float64,
-    'gpsaltitudem': pl.Float64,
-    'gpsbearing': pl.Float64,
-    'gpslatitude': pl.Float64,
-    'gpslongitude': pl.Float64,
-    'gpssatellites': pl.Int64,
-    'gpsspeedmeterssecond': pl.Float64,
-    'gpsvsobdspeeddifferencekmh': pl.Float64,
-    'horsepoweratthewheelshp': pl.Float64,
-    'intakeairtemperaturec': pl.Int64,
-    'intakemanifoldpressurepsi': pl.Float64,
-    'kilometersperlitreinstantkpl': pl.Float64,
-    'kilometersperlitrelongtermaveragekpl': pl.Float64,
-    'litresper100kilometerinstantl100km': pl.Float64,
-    'litresper100kilometerlongtermaveragel100km': pl.Float64,
-    'massairflowrategs': pl.Float64,
-    'milespergalloninstantmpg': pl.Float64,
-    'milespergallonlongtermaveragempg': pl.Float64,
-    'o2sensor1widerangecurrentma': pl.Float64,
-    'o2bank1sensor1widerangeequivalenceratio': pl.Float64,
-    'o2bank1sensor1widerangevoltagev': pl.Float64,
-    'speedgpskmh': pl.Float64,
-    'speedobdkmh': pl.Int64,
-    'torquenm': pl.Float64,
-    'torqueftlb': pl.Float64,
-    'tripaveragekplkpl': pl.Float64,
-    'tripaveragelitres100kml100km': pl.Float64,
-    'tripaveragempgmpg': pl.Float64,
-    'tripdistancekm': pl.Float64,
-    'tripdistancestoredinvehicleprofilekm': pl.Float64,
-    'triptimesincejourneystarts': pl.Float64,
-    'triptimewhilstmovings': pl.Float64,
-    'triptimewhilststationarys': pl.Float64,
-    'turboboostvacuumgaugepsi': pl.Float64,
-    'turboboostvacuumgaugebar': pl.Float64,
-    'voltageobdadapterv': pl.Float64,
-    'volumetricefficiencycalculated': pl.Int64,
-    'ambientairtempc': pl.Float64,
-    'costpermilekminstantkm': pl.Float64,
-    'costpermilekmtripkm': pl.Float64,
-    'positivekineticenergypkekmhr': pl.Float64,
-    'throttlepositionmanifold': pl.Float64,
-    'voltagecontrolmodulev': pl.Float64,
-    'o2sensor1widerangeequivalenceratio': pl.Float64,
-    'o2sensor1widerangevoltagev': pl.Float64
+    "gpstime": pl.String,
+    "devicetime": pl.String,
+    "longitude": pl.Float64,
+    "latitude": pl.Float64,
+    "gpsspeedkmh": pl.Float64,
+    "horizontaldilutionofprecision": pl.Float64,
+    "altitude": pl.Float64,
+    "altitudem": pl.Float64,
+    "bearing": pl.Float64,
+    "gravityxg": pl.Float64,
+    "gravityyg": pl.Float64,
+    "gravityzg": pl.Float64,
+    "gcalibrated": pl.Float64,
+    "accelerationsensortotalg": pl.Float64,
+    "accelerationsensorxaxisg": pl.Float64,
+    "accelerationsensoryaxisg": pl.Float64,
+    "accelerationsensorzaxisg": pl.Float64,
+    "actualenginetorque": pl.String,
+    "airfuelratiomeasured1": pl.Float64,
+    "androiddevicebatterylevel": pl.Int64,
+    "averagetripspeedwhilstmovingonlykmh": pl.Float64,
+    "averagetripspeedwhilststoppedormovingkmh": pl.Float64,
+    "barometricpressurefromvehiclepsi": pl.Float64,
+    "coingkmaveragegkm": pl.Float64,
+    "coingkminstantaneousgkm": pl.Float64,
+    "distancetoemptyestimatedkm": pl.Int64,
+    "distancetravelledwithmilcellitkm": pl.Int64,
+    "enginecoolanttemperaturec": pl.Int64,
+    "enginecoolanttemperaturef": pl.Int64,
+    "enginekwatthewheelskw": pl.Float64,
+    "engineload": pl.Float64,
+    "enginerpmrpm": pl.Float64,
+    "fuelcosttripcost": pl.Float64,
+    "fuelflowratehourlhr": pl.Float64,
+    "fuelflowrateminuteccmin": pl.Float64,
+    "fuelrailpressurepsi": pl.Float64,
+    "fuelremainingcalculatedfromvehicleprofile": pl.Int64,
+    "fuelusedtripl": pl.Float64,
+    "fuelrailpressurekpa": pl.Float64,
+    "gpsaccuracym": pl.Float64,
+    "gpsaltitudem": pl.Float64,
+    "gpsbearing": pl.Float64,
+    "gpslatitude": pl.Float64,
+    "gpslongitude": pl.Float64,
+    "gpssatellites": pl.Int64,
+    "gpsspeedmeterssecond": pl.Float64,
+    "gpsvsobdspeeddifferencekmh": pl.Float64,
+    "horsepoweratthewheelshp": pl.Float64,
+    "intakeairtemperaturec": pl.Int64,
+    "intakemanifoldpressurepsi": pl.Float64,
+    "kilometersperlitreinstantkpl": pl.Float64,
+    "kilometersperlitrelongtermaveragekpl": pl.Float64,
+    "litresper100kilometerinstantl100km": pl.Float64,
+    "litresper100kilometerlongtermaveragel100km": pl.Float64,
+    "massairflowrategs": pl.Float64,
+    "milespergalloninstantmpg": pl.Float64,
+    "milespergallonlongtermaveragempg": pl.Float64,
+    "o2sensor1widerangecurrentma": pl.Float64,
+    "o2bank1sensor1widerangeequivalenceratio": pl.Float64,
+    "o2bank1sensor1widerangevoltagev": pl.Float64,
+    "speedgpskmh": pl.Float64,
+    "speedobdkmh": pl.Int64,
+    "torquenm": pl.Float64,
+    "torqueftlb": pl.Float64,
+    "tripaveragekplkpl": pl.Float64,
+    "tripaveragelitres100kml100km": pl.Float64,
+    "tripaveragempgmpg": pl.Float64,
+    "tripdistancekm": pl.Float64,
+    "tripdistancestoredinvehicleprofilekm": pl.Float64,
+    "triptimesincejourneystarts": pl.Float64,
+    "triptimewhilstmovings": pl.Float64,
+    "triptimewhilststationarys": pl.Float64,
+    "turboboostvacuumgaugepsi": pl.Float64,
+    "turboboostvacuumgaugebar": pl.Float64,
+    "voltageobdadapterv": pl.Float64,
+    "volumetricefficiencycalculated": pl.Int64,
+    "ambientairtempc": pl.Float64,
+    "costpermilekminstantkm": pl.Float64,
+    "costpermilekmtripkm": pl.Float64,
+    "positivekineticenergypkekmhr": pl.Float64,
+    "throttlepositionmanifold": pl.Float64,
+    "voltagecontrolmodulev": pl.Float64,
+    "o2sensor1widerangeequivalenceratio": pl.Float64,
+    "o2sensor1widerangevoltagev": pl.Float64,
 }
 
 column_mapping = {
@@ -335,204 +335,277 @@ TRIP_METRIC_COLUMNS = [
     "volumetricefficiencycalculated",
 ]
 
+
 class MetricCategory(Enum):
-	"""Categories for different types of vehicle metrics."""
-	SPEED = "Speed"
-	ENGINE = "Engine"
-	FUEL = "Fuel"
-	GPS = "GPS/Location"
-	ACCELERATION = "Acceleration/G-Force"
-	TEMPERATURE = "Temperature"
-	PRESSURE = "Pressure"
-	TRIP = "Trip Summary"
-	EFFICIENCY = "Efficiency"
-	EMISSION = "Emissions"
-	OTHER = "Other"
+    """Categories for different types of vehicle metrics."""
+
+    SPEED = "Speed"
+    ENGINE = "Engine"
+    FUEL = "Fuel"
+    GPS = "GPS/Location"
+    ACCELERATION = "Acceleration/G-Force"
+    TEMPERATURE = "Temperature"
+    PRESSURE = "Pressure"
+    TRIP = "Trip Summary"
+    EFFICIENCY = "Efficiency"
+    EMISSION = "Emissions"
+    OTHER = "Other"
+
 
 # Metric categorization map: normalized name -> (category, display_name, unit)
 METRIC_CATEGORIES = {
-	# Speed metrics
-	"speedgpskmh": (MetricCategory.SPEED, "GPS Speed", "km/h"),
-	"speedobdkmh": (MetricCategory.SPEED, "OBD Speed", "km/h"),
-	"gpsspeedmeterssecond": (MetricCategory.SPEED, "GPS Speed", "m/s"),
-	"averagetripspeedwhilstmovingkmh": (MetricCategory.SPEED, "Avg Speed (Moving)", "km/h"),
-	"averagetripspeedwhilststoppedormovingkmh": (MetricCategory.SPEED, "Avg Speed (All)", "km/h"),
-	"gpsvsObDspeeddifferencekmh": (MetricCategory.SPEED, "GPS-OBD Speed Diff", "km/h"),
-
-	# Engine metrics
-	"enginerpmrpm": (MetricCategory.ENGINE, "Engine RPM", "rpm"),
-	"engineload": (MetricCategory.ENGINE, "Engine Load", "%"),
-	"actualenginetorque": (MetricCategory.ENGINE, "Engine Torque", "Nm"),
-	"enginekwatthewheelskw": (MetricCategory.ENGINE, "Power Output", "kW"),
-	"horsepoweratthewheelshp": (MetricCategory.ENGINE, "Horsepower", "hp"),
-	"volumetricefficiencycalculated": (MetricCategory.ENGINE, "Volumetric Efficiency", "%"),
-
-	# Fuel metrics
-	"fuelflowratehourlhr": (MetricCategory.FUEL, "Fuel Flow Rate (hourly)", "l/h"),
-	"fuelflowrateminuteccmin": (MetricCategory.FUEL, "Fuel Flow Rate (minute)", "cc/min"),
-	"fuelusedtripl": (MetricCategory.FUEL, "Fuel Used", "l"),
-	"fuelremainingcalculatedfromvehicleprofile": (MetricCategory.FUEL, "Fuel Remaining", "l"),
-	"fuelcosttripcost": (MetricCategory.FUEL, "Fuel Cost", "cost"),
-	"costpermilekminstantkm": (MetricCategory.FUEL, "Cost per km (instant)", "cost/km"),
-	"costpermilekmtripkm": (MetricCategory.FUEL, "Cost per km (trip)", "cost/km"),
-	"distancetoemptyestimatedkm": (MetricCategory.FUEL, "Distance to Empty", "km"),
-
-	# Efficiency metrics
-	"milespergalloninstantmpg": (MetricCategory.EFFICIENCY, "Instant MPG", "mpg"),
-	"milespergallonlongtermaveragempg": (MetricCategory.EFFICIENCY, "Long-term Avg MPG", "mpg"),
-	"tripaveragempgmpg": (MetricCategory.EFFICIENCY, "Trip Avg MPG", "mpg"),
-	"kilometersperlitreinstantkpl": (MetricCategory.EFFICIENCY, "Instant KPL", "km/l"),
-	"kilometersperlitrelongtermaveragekpl": (MetricCategory.EFFICIENCY, "Long-term Avg KPL", "km/l"),
-	"tripaveragekplkpl": (MetricCategory.EFFICIENCY, "Trip Avg KPL", "km/l"),
-	"litresper100kilometerinstantl100km": (MetricCategory.EFFICIENCY, "Instant L/100km", "l/100km"),
-	"litresper100kilometerlongtermaveragel100km": (MetricCategory.EFFICIENCY, "Long-term L/100km", "l/100km"),
-	"tripaveragelitres100kml100km": (MetricCategory.EFFICIENCY, "Trip Avg L/100km", "l/100km"),
-
-	# GPS/Location metrics
-	"gpslatitude": (MetricCategory.GPS, "Latitude", "°"),
-	"gpslongitude": (MetricCategory.GPS, "Longitude", "°"),
-	"gpsaltitudem": (MetricCategory.GPS, "Altitude", "m"),
-	"gpsbearing": (MetricCategory.GPS, "Bearing", "°"),
-	"gpsaccuracym": (MetricCategory.GPS, "GPS Accuracy", "m"),
-	"gpssatellites": (MetricCategory.GPS, "Satellites", "count"),
-	"horizontaldilutionofprecision": (MetricCategory.GPS, "HDOP", ""),
-	"latitude": (MetricCategory.GPS, "Latitude", "°"),
-	"longitude": (MetricCategory.GPS, "Longitude", "°"),
-	"bearing": (MetricCategory.GPS, "Bearing", "°"),
-	"altitude": (MetricCategory.GPS, "Altitude", "m"),
-
-	# Acceleration/G-Force metrics
-	"accelerationsensortotalg": (MetricCategory.ACCELERATION, "Total G-Force", "g"),
-	"accelerationsensorxaxisg": (MetricCategory.ACCELERATION, "X-axis Acceleration", "g"),
-	"accelerationsensoryaxisg": (MetricCategory.ACCELERATION, "Y-axis Acceleration", "g"),
-	"accelerationsensorzaxisg": (MetricCategory.ACCELERATION, "Z-axis Acceleration", "g"),
-	"gravityxg": (MetricCategory.ACCELERATION, "Gravity X", "g"),
-	"gravityyg": (MetricCategory.ACCELERATION, "Gravity Y", "g"),
-	"gravityzg": (MetricCategory.ACCELERATION, "Gravity Z", "g"),
-	"gcalibrated": (MetricCategory.ACCELERATION, "G-Force (Calibrated)", "g"),
-
-	# Temperature metrics
-	"enginecoolanttemperaturef": (MetricCategory.TEMPERATURE, "Coolant Temp", "°F"),
-	"intakeairtemperaturef": (MetricCategory.TEMPERATURE, "Intake Air Temp", "°F"),
-	"ambientairtempf": (MetricCategory.TEMPERATURE, "Ambient Air Temp", "°F"),
-
-	# Pressure metrics
-	"intakemanifoldpressurekpa": (MetricCategory.PRESSURE, "Intake Manifold Pressure", "kPa"),
-	"barometricpressurefromvehiclekpa": (MetricCategory.PRESSURE, "Barometric Pressure", "kPa"),
-	"fuelrailpressurekpa": (MetricCategory.PRESSURE, "Fuel Rail Pressure", "kPa"),
-	"fuelpressurekpa": (MetricCategory.PRESSURE, "Fuel Pressure", "kPa"),
-	"turboboostvacuumgaugebar": (MetricCategory.PRESSURE, "Turbo Boost/Vacuum", "bar"),
-
-	# Emissions metrics
-	"coaingkmaveragegkm": (MetricCategory.EMISSION, "CO Avg", "g/km"),
-	"coaingkminstantaneousgkm": (MetricCategory.EMISSION, "CO Instant", "g/km"),
-	"coingkminstantaneousgkm": (MetricCategory.EMISSION, "CO (inst)", "g/km"),
-
-	# Trip summary metrics
-	"tripdistancekm": (MetricCategory.TRIP, "Trip Distance", "km"),
-	"tripdistancestoredinvehicleprofilekm": (MetricCategory.TRIP, "Vehicle Profile Distance", "km"),
-	"triptimesincejourneystarts": (MetricCategory.TRIP, "Trip Time", "s"),
-	"triptimewhilstmovings": (MetricCategory.TRIP, "Time Moving", "s"),
-	"triptimewhilststationarys": (MetricCategory.TRIP, "Time Stationary", "s"),
-
-	# Other metrics
-	"voltageobdadapterv": (MetricCategory.OTHER, "OBD Adapter Voltage", "V"),
-	"voltagecontrolmodulev": (MetricCategory.OTHER, "Control Module Voltage", "V"),
-	"androiddevicebatterylevel": (MetricCategory.OTHER, "Device Battery", "%"),
-	"massairflowrategs": (MetricCategory.OTHER, "Mass Air Flow", "g/s"),
-	"airfuelratiomeasured1": (MetricCategory.OTHER, "Air-Fuel Ratio", "ratio"),
-	"o2sensor1widerangecurrentma": (MetricCategory.OTHER, "O2 Sensor Current", "mA"),
-	"o2sensor1widerangeequivalenceratio": (MetricCategory.OTHER, "O2 Equivalence Ratio", "ratio"),
-	"o2sensor1widerangevoltagev": (MetricCategory.OTHER, "O2 Sensor Voltage", "V"),
-	"o2bank1sensor1widerangeequivalenceratio": (MetricCategory.OTHER, "O2 Bank 1 Equivalence", "ratio"),
-	"o2bank1sensor1widerangevoltagev": (MetricCategory.OTHER, "O2 Bank 1 Voltage", "V"),
-	"throttlepositionmanifold": (MetricCategory.OTHER, "Throttle Position", "%"),
-	"positivekineticenergypkekmhr": (MetricCategory.OTHER, "Positive Kinetic Energy", "km/h"),
-	"distancetravelledwithmilcellitkm": (MetricCategory.OTHER, "MIL Distance", "km"),
+    # Speed metrics
+    "speedgpskmh": (MetricCategory.SPEED, "GPS Speed", "km/h"),
+    "speedobdkmh": (MetricCategory.SPEED, "OBD Speed", "km/h"),
+    "gpsspeedmeterssecond": (MetricCategory.SPEED, "GPS Speed", "m/s"),
+    "averagetripspeedwhilstmovingkmh": (
+        MetricCategory.SPEED,
+        "Avg Speed (Moving)",
+        "km/h",
+    ),
+    "averagetripspeedwhilststoppedormovingkmh": (
+        MetricCategory.SPEED,
+        "Avg Speed (All)",
+        "km/h",
+    ),
+    "gpsvsObDspeeddifferencekmh": (MetricCategory.SPEED, "GPS-OBD Speed Diff", "km/h"),
+    # Engine metrics
+    "enginerpmrpm": (MetricCategory.ENGINE, "Engine RPM", "rpm"),
+    "engineload": (MetricCategory.ENGINE, "Engine Load", "%"),
+    "actualenginetorque": (MetricCategory.ENGINE, "Engine Torque", "Nm"),
+    "enginekwatthewheelskw": (MetricCategory.ENGINE, "Power Output", "kW"),
+    "horsepoweratthewheelshp": (MetricCategory.ENGINE, "Horsepower", "hp"),
+    "volumetricefficiencycalculated": (
+        MetricCategory.ENGINE,
+        "Volumetric Efficiency",
+        "%",
+    ),
+    # Fuel metrics
+    "fuelflowratehourlhr": (MetricCategory.FUEL, "Fuel Flow Rate (hourly)", "l/h"),
+    "fuelflowrateminuteccmin": (
+        MetricCategory.FUEL,
+        "Fuel Flow Rate (minute)",
+        "cc/min",
+    ),
+    "fuelusedtripl": (MetricCategory.FUEL, "Fuel Used", "l"),
+    "fuelremainingcalculatedfromvehicleprofile": (
+        MetricCategory.FUEL,
+        "Fuel Remaining",
+        "l",
+    ),
+    "fuelcosttripcost": (MetricCategory.FUEL, "Fuel Cost", "cost"),
+    "costpermilekminstantkm": (MetricCategory.FUEL, "Cost per km (instant)", "cost/km"),
+    "costpermilekmtripkm": (MetricCategory.FUEL, "Cost per km (trip)", "cost/km"),
+    "distancetoemptyestimatedkm": (MetricCategory.FUEL, "Distance to Empty", "km"),
+    # Efficiency metrics
+    "milespergalloninstantmpg": (MetricCategory.EFFICIENCY, "Instant MPG", "mpg"),
+    "milespergallonlongtermaveragempg": (
+        MetricCategory.EFFICIENCY,
+        "Long-term Avg MPG",
+        "mpg",
+    ),
+    "tripaveragempgmpg": (MetricCategory.EFFICIENCY, "Trip Avg MPG", "mpg"),
+    "kilometersperlitreinstantkpl": (MetricCategory.EFFICIENCY, "Instant KPL", "km/l"),
+    "kilometersperlitrelongtermaveragekpl": (
+        MetricCategory.EFFICIENCY,
+        "Long-term Avg KPL",
+        "km/l",
+    ),
+    "tripaveragekplkpl": (MetricCategory.EFFICIENCY, "Trip Avg KPL", "km/l"),
+    "litresper100kilometerinstantl100km": (
+        MetricCategory.EFFICIENCY,
+        "Instant L/100km",
+        "l/100km",
+    ),
+    "litresper100kilometerlongtermaveragel100km": (
+        MetricCategory.EFFICIENCY,
+        "Long-term L/100km",
+        "l/100km",
+    ),
+    "tripaveragelitres100kml100km": (
+        MetricCategory.EFFICIENCY,
+        "Trip Avg L/100km",
+        "l/100km",
+    ),
+    # GPS/Location metrics
+    "gpslatitude": (MetricCategory.GPS, "Latitude", "°"),
+    "gpslongitude": (MetricCategory.GPS, "Longitude", "°"),
+    "gpsaltitudem": (MetricCategory.GPS, "Altitude", "m"),
+    "gpsbearing": (MetricCategory.GPS, "Bearing", "°"),
+    "gpsaccuracym": (MetricCategory.GPS, "GPS Accuracy", "m"),
+    "gpssatellites": (MetricCategory.GPS, "Satellites", "count"),
+    "horizontaldilutionofprecision": (MetricCategory.GPS, "HDOP", ""),
+    "latitude": (MetricCategory.GPS, "Latitude", "°"),
+    "longitude": (MetricCategory.GPS, "Longitude", "°"),
+    "bearing": (MetricCategory.GPS, "Bearing", "°"),
+    "altitude": (MetricCategory.GPS, "Altitude", "m"),
+    # Acceleration/G-Force metrics
+    "accelerationsensortotalg": (MetricCategory.ACCELERATION, "Total G-Force", "g"),
+    "accelerationsensorxaxisg": (
+        MetricCategory.ACCELERATION,
+        "X-axis Acceleration",
+        "g",
+    ),
+    "accelerationsensoryaxisg": (
+        MetricCategory.ACCELERATION,
+        "Y-axis Acceleration",
+        "g",
+    ),
+    "accelerationsensorzaxisg": (
+        MetricCategory.ACCELERATION,
+        "Z-axis Acceleration",
+        "g",
+    ),
+    "gravityxg": (MetricCategory.ACCELERATION, "Gravity X", "g"),
+    "gravityyg": (MetricCategory.ACCELERATION, "Gravity Y", "g"),
+    "gravityzg": (MetricCategory.ACCELERATION, "Gravity Z", "g"),
+    "gcalibrated": (MetricCategory.ACCELERATION, "G-Force (Calibrated)", "g"),
+    # Temperature metrics
+    "enginecoolanttemperaturef": (MetricCategory.TEMPERATURE, "Coolant Temp", "°F"),
+    "intakeairtemperaturef": (MetricCategory.TEMPERATURE, "Intake Air Temp", "°F"),
+    "ambientairtempf": (MetricCategory.TEMPERATURE, "Ambient Air Temp", "°F"),
+    # Pressure metrics
+    "intakemanifoldpressurekpa": (
+        MetricCategory.PRESSURE,
+        "Intake Manifold Pressure",
+        "kPa",
+    ),
+    "barometricpressurefromvehiclekpa": (
+        MetricCategory.PRESSURE,
+        "Barometric Pressure",
+        "kPa",
+    ),
+    "fuelrailpressurekpa": (MetricCategory.PRESSURE, "Fuel Rail Pressure", "kPa"),
+    "fuelpressurekpa": (MetricCategory.PRESSURE, "Fuel Pressure", "kPa"),
+    "turboboostvacuumgaugebar": (MetricCategory.PRESSURE, "Turbo Boost/Vacuum", "bar"),
+    # Emissions metrics
+    "coaingkmaveragegkm": (MetricCategory.EMISSION, "CO Avg", "g/km"),
+    "coaingkminstantaneousgkm": (MetricCategory.EMISSION, "CO Instant", "g/km"),
+    "coingkminstantaneousgkm": (MetricCategory.EMISSION, "CO (inst)", "g/km"),
+    # Trip summary metrics
+    "tripdistancekm": (MetricCategory.TRIP, "Trip Distance", "km"),
+    "tripdistancestoredinvehicleprofilekm": (
+        MetricCategory.TRIP,
+        "Vehicle Profile Distance",
+        "km",
+    ),
+    "triptimesincejourneystarts": (MetricCategory.TRIP, "Trip Time", "s"),
+    "triptimewhilstmovings": (MetricCategory.TRIP, "Time Moving", "s"),
+    "triptimewhilststationarys": (MetricCategory.TRIP, "Time Stationary", "s"),
+    # Other metrics
+    "voltageobdadapterv": (MetricCategory.OTHER, "OBD Adapter Voltage", "V"),
+    "voltagecontrolmodulev": (MetricCategory.OTHER, "Control Module Voltage", "V"),
+    "androiddevicebatterylevel": (MetricCategory.OTHER, "Device Battery", "%"),
+    "massairflowrategs": (MetricCategory.OTHER, "Mass Air Flow", "g/s"),
+    "airfuelratiomeasured1": (MetricCategory.OTHER, "Air-Fuel Ratio", "ratio"),
+    "o2sensor1widerangecurrentma": (MetricCategory.OTHER, "O2 Sensor Current", "mA"),
+    "o2sensor1widerangeequivalenceratio": (
+        MetricCategory.OTHER,
+        "O2 Equivalence Ratio",
+        "ratio",
+    ),
+    "o2sensor1widerangevoltagev": (MetricCategory.OTHER, "O2 Sensor Voltage", "V"),
+    "o2bank1sensor1widerangeequivalenceratio": (
+        MetricCategory.OTHER,
+        "O2 Bank 1 Equivalence",
+        "ratio",
+    ),
+    "o2bank1sensor1widerangevoltagev": (MetricCategory.OTHER, "O2 Bank 1 Voltage", "V"),
+    "throttlepositionmanifold": (MetricCategory.OTHER, "Throttle Position", "%"),
+    "positivekineticenergypkekmhr": (
+        MetricCategory.OTHER,
+        "Positive Kinetic Energy",
+        "km/h",
+    ),
+    "distancetravelledwithmilcellitkm": (MetricCategory.OTHER, "MIL Distance", "km"),
 }
 
+
 class AnalysisSuggestion(TypedDict):
-	"""Suggestion for how to analyze and visualize a metric."""
-	analysis_type: str
-	visualization: str
-	unit: str
-	description: str
+    """Suggestion for how to analyze and visualize a metric."""
+
+    analysis_type: str
+    visualization: str
+    unit: str
+    description: str
+
 
 # Analysis suggestions for each category
 ANALYSIS_SUGGESTIONS = {
-	MetricCategory.SPEED: AnalysisSuggestion(
-		analysis_type="Speed Profile Analysis",
-		visualization="Line plot over time + color-coded map scatter",
-		unit="km/h",
-		description="Analyze acceleration patterns, speed distribution, and cornering speeds. Compare GPS vs OBD for validation.",
-	),
-	MetricCategory.ENGINE: AnalysisSuggestion(
-		analysis_type="Engine Performance Analysis",
-		visualization="RPM vs Load scatter, Power output timeline",
-		unit="mixed",
-		description="Monitor engine stress, operational modes, and power efficiency. Identify sustained high-load conditions.",
-	),
-	MetricCategory.FUEL: AnalysisSuggestion(
-		analysis_type="Fuel Consumption Analysis",
-		visualization="Flow rate timeline, Cost accumulation curve",
-		unit="l/h or l/min",
-		description="Track fuel consumption patterns, identify inefficient driving segments, calculate cost per trip.",
-	),
-	MetricCategory.GPS: AnalysisSuggestion(
-		analysis_type="Route & Location Analysis",
-		visualization="Geographic map with altitude/accuracy overlays",
-		unit="mixed",
-		description="Examine route geometry, elevation changes, and GPS signal quality. Useful for route optimization.",
-	),
-	MetricCategory.ACCELERATION: AnalysisSuggestion(
-		analysis_type="Driving Behavior & Dynamics Analysis",
-		visualization="3D acceleration vectors, G-force distribution histogram",
-		unit="g",
-		description="Assess driving smoothness, aggressive acceleration/braking, and cornering forces.",
-	),
-	MetricCategory.TEMPERATURE: AnalysisSuggestion(
-		analysis_type="Thermal Performance Analysis",
-		visualization="Temperature timeline, thermal stress heat map",
-		unit="°F or °C",
-		description="Monitor engine coolant health, intake temperature variations, and thermal management.",
-	),
-	MetricCategory.PRESSURE: AnalysisSuggestion(
-		analysis_type="System Pressure Analysis",
-		visualization="Pressure timelines, pressure vs load correlation",
-		unit="kPa or bar",
-		description="Track fuel system, intake, and boost pressures for diagnostics.",
-	),
-	MetricCategory.TRIP: AnalysisSuggestion(
-		analysis_type="Trip Summary Statistics",
-		visualization="Trip overview cards, duration/distance gauge",
-		unit="mixed",
-		description="High-level trip metrics for quick assessment.",
-	),
-	MetricCategory.EFFICIENCY: AnalysisSuggestion(
-		analysis_type="Fuel Economy Analysis",
-		visualization="MPG/KPL timeline, efficiency vs speed correlation",
-		unit="mpg/kpl",
-		description="Identify optimal driving speeds and conditions for best fuel economy.",
-	),
-	MetricCategory.EMISSION: AnalysisSuggestion(
-		analysis_type="Emissions Analysis",
-		visualization="Emission levels on map, correlation with engine load",
-		unit="g/km",
-		description="Track pollutant levels and identify high-emission driving segments.",
-	),
-	MetricCategory.OTHER: AnalysisSuggestion(
-		analysis_type="System Diagnostics",
-		visualization="Voltage/sensor signal quality charts",
-		unit="varies",
-		description="Monitor vehicle system health and sensor calibration.",
-	),
+    MetricCategory.SPEED: AnalysisSuggestion(
+        analysis_type="Speed Profile Analysis",
+        visualization="Line plot over time + color-coded map scatter",
+        unit="km/h",
+        description="Analyze acceleration patterns, speed distribution, and cornering speeds. Compare GPS vs OBD for validation.",
+    ),
+    MetricCategory.ENGINE: AnalysisSuggestion(
+        analysis_type="Engine Performance Analysis",
+        visualization="RPM vs Load scatter, Power output timeline",
+        unit="mixed",
+        description="Monitor engine stress, operational modes, and power efficiency. Identify sustained high-load conditions.",
+    ),
+    MetricCategory.FUEL: AnalysisSuggestion(
+        analysis_type="Fuel Consumption Analysis",
+        visualization="Flow rate timeline, Cost accumulation curve",
+        unit="l/h or l/min",
+        description="Track fuel consumption patterns, identify inefficient driving segments, calculate cost per trip.",
+    ),
+    MetricCategory.GPS: AnalysisSuggestion(
+        analysis_type="Route & Location Analysis",
+        visualization="Geographic map with altitude/accuracy overlays",
+        unit="mixed",
+        description="Examine route geometry, elevation changes, and GPS signal quality. Useful for route optimization.",
+    ),
+    MetricCategory.ACCELERATION: AnalysisSuggestion(
+        analysis_type="Driving Behavior & Dynamics Analysis",
+        visualization="3D acceleration vectors, G-force distribution histogram",
+        unit="g",
+        description="Assess driving smoothness, aggressive acceleration/braking, and cornering forces.",
+    ),
+    MetricCategory.TEMPERATURE: AnalysisSuggestion(
+        analysis_type="Thermal Performance Analysis",
+        visualization="Temperature timeline, thermal stress heat map",
+        unit="°F or °C",
+        description="Monitor engine coolant health, intake temperature variations, and thermal management.",
+    ),
+    MetricCategory.PRESSURE: AnalysisSuggestion(
+        analysis_type="System Pressure Analysis",
+        visualization="Pressure timelines, pressure vs load correlation",
+        unit="kPa or bar",
+        description="Track fuel system, intake, and boost pressures for diagnostics.",
+    ),
+    MetricCategory.TRIP: AnalysisSuggestion(
+        analysis_type="Trip Summary Statistics",
+        visualization="Trip overview cards, duration/distance gauge",
+        unit="mixed",
+        description="High-level trip metrics for quick assessment.",
+    ),
+    MetricCategory.EFFICIENCY: AnalysisSuggestion(
+        analysis_type="Fuel Economy Analysis",
+        visualization="MPG/KPL timeline, efficiency vs speed correlation",
+        unit="mpg/kpl",
+        description="Identify optimal driving speeds and conditions for best fuel economy.",
+    ),
+    MetricCategory.EMISSION: AnalysisSuggestion(
+        analysis_type="Emissions Analysis",
+        visualization="Emission levels on map, correlation with engine load",
+        unit="g/km",
+        description="Track pollutant levels and identify high-emission driving segments.",
+    ),
+    MetricCategory.OTHER: AnalysisSuggestion(
+        analysis_type="System Diagnostics",
+        visualization="Voltage/sensor signal quality charts",
+        unit="varies",
+        description="Monitor vehicle system health and sensor calibration.",
+    ),
 }
-
 
 
 def _strip_accents(value: str) -> str:
     return "".join(
-        ch for ch in unicodedata.normalize("NFKD", value) if not unicodedata.combining(ch)
+        ch
+        for ch in unicodedata.normalize("NFKD", value)
+        if not unicodedata.combining(ch)
     )
 
 
@@ -549,7 +622,7 @@ def _fallback_column_name(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", key)
 
 
-COLUMN_MAP = { _normalize_lookup_key(k): v for k, v in column_mapping.items() }
+COLUMN_MAP = {_normalize_lookup_key(k): v for k, v in column_mapping.items()}
 
 
 def canonicalize_column_name(column_name: str) -> str:
@@ -562,6 +635,7 @@ def canonicalize_column_name(column_name: str) -> str:
 
 def canonicalize_columns(columns: list[str]) -> dict[str, str]:
     return {col: canonicalize_column_name(col) for col in columns}
+
 
 if __name__ == "__main__":
     pass

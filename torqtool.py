@@ -34,12 +34,7 @@ async def scanpath(session, args):
     'results' : {'unfixed' : list_of_unfixed_files}}
     }
     """
-    # results = { 'results': {'unfixed': []}}
     newfilelist = []
-    # t0 = datetime.now()
-    # Session = sessionmaker(bind=engine)
-    # session = Session()
-
     filelist = get_csv_files(searchpath=Path(args.logpath), args=args)
     filelist = sorted(filelist, key=lambda x: x["csvfile"])  # sort by filename (date)
 
@@ -59,9 +54,6 @@ async def collect_info(engine) -> AsyncIterable[str]:
     with engine.connect() as conn:
         logcount = conn.execute(text("select count(*) from torqlogs")).all()
         yield logcount
-        # yield conn.query(Torqtrips).count()
-        # yield conn.query(TorqFile).count()
-        #  yield conn.query(Torqlogs).count()
 
 async def collect(async_iterable):
     return [item async for item in async_iterable]

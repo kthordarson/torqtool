@@ -490,17 +490,11 @@ def collect_db_columnstats(args):
         notnulls = total_rows - nulls
         nullratio = nulls / total_rows
         if nullratio > 0.9:
-            logger.warning(
-                f"[{idx}/{len(column_pairs)}]  {requested_col}->{actual_col} nulls {nulls} ratio:  {nullratio} notnulls:{notnulls} nlr: {notnulls/total_rows}"
-            )
+            logger.warning(f"[{idx}/{len(column_pairs)}]  {requested_col}->{actual_col} nulls {nulls} ratio:  {nullratio} notnulls:{notnulls} nlr: {notnulls/total_rows}")
         else:
-            pass
+            # pass
             # logger.info(f"[{idx}/{len(column_pairs)}] {requested_col}->{actual_col} nulls {nulls} ratio:  {nullratio} notnulls:{notnulls} nlr: {notnulls/total_rows}")
-        tempres[actual_col] = {
-            "column_name": actual_col,
-            "nulls": nulls,
-            "nullratio": nullratio,
-        }
+            tempres[actual_col] = {"column_name": actual_col, "nulls": nulls, "nullratio": nullratio, }
 
     results = pd.DataFrame([tempres[k] for k in tempres])
     try:
@@ -811,15 +805,9 @@ def collect_db_torqtrips(args):
                 col_name = f"{metric}_{suffix}"
                 if col_name.lower() in existing:
                     continue
-                session.execute(
-                    text(
-                        f'ALTER TABLE torqtrips ADD COLUMN "{col_name}" {numeric_sql_type}'
-                    )
-                )
+                session.execute(text(f'ALTER TABLE torqtrips ADD COLUMN "{col_name}" {numeric_sql_type}'))
                 existing.add(col_name.lower())
-                logger.debug(
-                    f"Added column {col_name} to torqtrips for metric {metric}"
-                )
+                # logger.debug(f"Added column {col_name} to torqtrips for metric {metric}")
 
     resolved = _resolve_schema_columns(session, ["gpstime", *TRIP_METRIC_COLUMNS])
     time_col = resolved.get("gpstime")

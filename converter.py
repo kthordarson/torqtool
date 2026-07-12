@@ -13,10 +13,8 @@ from sqlalchemy.exc import DataError, IntegrityError, OperationalError
 from sqlalchemy.orm import sessionmaker, Session
 import sqlite3
 from datamodels import TorqFile, database_init, stable_fileid_from_csvhash
-from utils import get_parser, get_engine_session, MIN_FILESIZE, convert_string_to_datetime, read_csvs_to_dataframe_and_insert
+from utils import get_parser, get_engine_session, convert_string_to_datetime, read_csvs_to_dataframe_and_insert
 from schemas import canonicalize_columns
-
-pd.set_option("future.no_silent_downcasting", True)
 
 # tool to rename and import tripLogs from older versions of the app
 # get tripdate from profile.properties file and rename the log file to the new format
@@ -27,18 +25,11 @@ pd.set_option("future.no_silent_downcasting", True)
 # new filenames are in the format: trackLog-2021-Dec-01_23-40-45.csv
 # datetime.fromtimestamp(1708245165793/1000).strftime("%Y-%b-%d_%H-%M-%S")
 
-# move small logs
-# for f in $(find /home/kth/development/torq/torqueLogs/ -type f ); do linecount=$(cat $f | wc -l); if [ $linecount -lt 10 ]; then echo "file $f lc=$linecount";fi;done;
-
-# x = latitude y = longitude !
-
 class Polarsreaderror(Exception):
 	pass
 
-
 def _normalized_col_name(value: str) -> str:
 	return "".join(ch.lower() for ch in str(value) if ch.isalnum())
-
 
 def _resolve_col_name(columns: list[str], candidates: list[str]) -> str | None:
 	if not columns:
@@ -153,7 +144,6 @@ async def send_data_to_db(args: argparse.Namespace, data: pd.DataFrame, csvfilen
 
 	try:
 		send_started = time.perf_counter()
-		# _ = data.to_sql("torqlogs", con=engine, if_exists="append", index=False)
 		_ = data.to_sql("torqlogs", con=session.get_bind(), if_exists="append", index=False, method='multi', chunksize=args.sqlchunksize)
 		send_results["sent_rows"] = session.execute(text(f"select count(*) from torqlogs where fileid={t.fileid} ; ")).one()[0]
 		send_results["sendtime"] = float(time.perf_counter() - send_started)
@@ -172,46 +162,6 @@ async def send_data_to_db(args: argparse.Namespace, data: pd.DataFrame, csvfilen
 	finally:
 		session.close()
 	return send_results
-
-async def calculate_hash(path):
-	"""Calculate MD5 hash of a file asynchronously"""
-	loop = asyncio.get_running_loop()
-	return await loop.run_in_executor(
-		None,
-		lambda: md5(open(path, "rb").read()).hexdigest()
-	)
-
-async def process_single_file(csvfilename, args):
-	try:
-		read_started = time.perf_counter()
-		data = await read_csv_file(logfile=csvfilename, args=args)
-		read_elapsed = float(time.perf_counter() - read_started)
-		if len(data) == 0:
-			logger.warning(f'no data in {csvfilename}')
-			return None
-
-		# Extract metadata here once
-		metadata = None
-		if not data.empty:
-			metadata = {
-				'dtripstart': data['gpstime'][0],
-				'dtripend': data['gpstime'][len(data)-1],
-				'dlatstart': float(data['latitude'][0]),
-				'dlonstart': float(data['longitude'][0]),
-				'dlatend': float(data['latitude'][len(data)-1]),
-				'dlonend': float(data['longitude'][len(data)-1]),
-			}
-
-		send_result = await send_data_to_db(args, data, csvfilename, readtime=read_elapsed)
-		if metadata is not None and send_result is not None:
-			metadata["readtime"] = read_elapsed
-			metadata["sendtime"] = send_result.get("sendtime")
-			metadata["sent_rows"] = send_result.get("sent_rows")
-		# Return metadata with the result
-		return {'file': csvfilename, 'result': send_result, 'metadata': metadata}
-	except Exception as e:
-		logger.error(f"Error processing {csvfilename}: {type(e)} {e}")
-		return None
 
 async def cli_main(args):
 	if args.dbinfo:

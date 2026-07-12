@@ -19,7 +19,6 @@ from sqlalchemy import (
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-
 COLUMN_TYPES = {
     "GPS_Time": String,
     "Device_Time": String,
@@ -99,6 +98,293 @@ COLUMN_TYPES = {
     "Voltage_Control_ModuleV": Float,
     "O2_Sensor1_Wide_Range_Equivalence_Ratio": Float,
     "O2_Sensor1_Wide_Range_VoltageV": Float,
+    "gpstime": String,
+    "devicetime": String,
+    "longitude": Float,
+    "latitude": Float,
+    "gpsspeedmeterssecond": Float,
+    "horizontaldilutionofprecision": Float,
+    "altitude": Float,
+    "bearing": Float,
+    "gx": Float,
+    "gy": Float,
+    "gz": Float,
+    "gcalibrated": Float,
+    "accelerationsensortotalg": Float,
+    "accelerationsensorxaxisg": Float,
+    "accelerationsensoryaxisg": Float,
+    "accelerationsensorzaxisg": Float,
+    "actualenginetorque": Float,
+    "airfuelratiomeasured1": Float,
+    "androiddevicebatterylevel": Integer,
+    "averagetripspeedwhilstmovingonlykmh": Float,
+    "averagetripspeedwhilststoppedormovingkmh": Float,
+    "barometricpressurefromvehiclepsi": Float,
+    "coingkmaveragegkm": Float,
+    "coingkminstantaneousgkm": Float,
+    "distancetoemptyestimatedkm": Float,
+    "distancetravelledwithmilcellitkm": Float,
+    "enginecoolanttemperaturec": Float,
+    "enginekwatthewheelskw": Float,
+    "engineload": Float,
+    "enginerpmrpm": Float,
+    "fuelcosttripcost": Float,
+    "fuelflowratehourlhr": Float,
+    "fuelflowrateminuteccmin": Float,
+    "fuelrailpressurepsi": Float,
+    "fuelremainingcalculatedfromvehicleprofile": Float,
+    "fuelusedtripl": Float,
+    "gpsaccuracym": Float,
+    "gpsaltitudem": Float,
+    "gpsbearing": Float,
+    "gpslatitude": Float,
+    "gpslongitude": Float,
+    "gpssatellites": Integer,
+    "gpsvsobdspeeddifferencekmh": Float,
+    "horsepoweratthewheelshp": Float,
+    "intakeairtemperaturec": Float,
+    "intakemanifoldpressurepsi": Float,
+    "kilometersperlitreinstantkpl": Float,
+    "kilometersperlitrelongtermaveragekpl": Float,
+    "litresper100kilometerinstantl100km": Float,
+    "litresper100kilometerlongtermaveragel100km": Float,
+    "massairflowrategs": Float,
+    "milespergalloninstantmpg": Float,
+    "milespergallonlongtermaveragempg": Float,
+    "o2sensor1widerangecurrentma": Float,
+    "o2bank1sensor1widerangeequivalenceratio": Float,
+    "o2bank1sensor1widerangevoltagev": Float,
+    "speedgpskmh": Float,
+    "speedobdkmh": Float,
+    "torquenm": Float,
+    "tripaveragekplkpl": Float,
+    "tripaveragelitres100kml100km": Float,
+    "tripaveragempgmpg": Float,
+    "tripdistancekm": Float,
+    "tripdistancestoredinvehicleprofilekm": Float,
+    "triptimesincejourneystarts": Float,
+    "triptimewhilstmovings": Float,
+    "triptimewhilststationarys": Float,
+    "turboboostvacuumgaugepsi": Float,
+    "voltageobdadapterv": Float,
+    "volumetricefficiencycalculated": Float,
+    "ambientairtempc": Float,
+    "costpermilekminstantkm": Float,
+    "costpermilekmtripkm": Float,
+    "positivekineticenergypkekmhr": Float,
+    "throttlepositionmanifold": Float,
+    "voltagecontrolmodulev": Float,
+    "o2sensor1widerangeequivalenceratio": Float,
+    "o2sensor1widerangevoltagev": Float,
+    "barometer_on_android_devicemb": Float,
+    "barometricpressurefromvehiclekpa": Float,
+    "catalyst_temperature_bank_1_sensor_1c": Float,
+    "catalyst_temperature_bank_1_sensor_1f": Float,
+    "catalyst_temperature_bank_1_sensor_2c": Float,
+    "catalyst_temperature_bank_1_sensor_2f": Float,
+    "catalyst_temperature_bank_2_sensor_1c": Float,
+    "catalyst_temperature_bank_2_sensor_1f": Float,
+    "catalyst_temperature_bank_2_sensor_2c": Float,
+    "catalyst_temperature_bank_2_sensor_2f": Float,
+    "charge_air_cooler_temperature_cactc": Float,
+    "charge_air_cooler_temperature_cactf": Float,
+    "commanded_equivalence_ratiolambda": Float,
+    "cost_per_milekm_instantkm": Float,
+    "cost_per_milekm_tripkm": Float,
+    "distance_travelled_since_codes_clearedkm": Float,
+    "dpf_pressurebar": Float,
+    "dpf_pressurepsi": Float,
+    "dpf_temperaturec": Float,
+    "dpf_temperaturef": Float,
+    "drivers_demand_engine__torque": Float,
+    "egr_commanded": Float,
+    "egr_error": Float,
+    "eighthMileTime": Float,
+    "engine_loadabsolute": Float,
+    "engine_oil_temperaturec": Float,
+    "engine_oil_temperaturef": Float,
+    "engine_reference_torquenm": Float,
+    "enginecoolanttemperaturef": Float,
+    "ethanol_fuel_": Float,
+    "evap_system_vapour_pressurepa": Float,
+    "exhaust_gas_temp_bank_1_sensor_1c": Float,
+    "exhaust_gas_temp_bank_1_sensor_1f": Float,
+    "exhaust_gas_temp_bank_1_sensor_2c": Float,
+    "exhaust_gas_temp_bank_1_sensor_2f": Float,
+    "exhaust_gas_temp_bank_1_sensor_3c": Float,
+    "exhaust_gas_temp_bank_1_sensor_3f": Float,
+    "exhaust_gas_temp_bank_1_sensor_4c": Float,
+    "exhaust_gas_temp_bank_1_sensor_4f": Float,
+    "exhaust_gas_temp_bank_2_sensor_1c": Float,
+    "exhaust_gas_temp_bank_2_sensor_1f": Float,
+    "exhaust_gas_temp_bank_2_sensor_2c": Float,
+    "exhaust_gas_temp_bank_2_sensor_2f": Float,
+    "exhaust_gas_temp_bank_2_sensor_3c": Float,
+    "exhaust_gas_temp_bank_2_sensor_3f": Float,
+    "exhaust_gas_temp_bank_2_sensor_4c": Float,
+    "exhaust_gas_temp_bank_2_sensor_4f": Float,
+    "exhaust_pressurebar": Float,
+    "exhaust_pressurepsi": Float,
+    "fuel_level_from_engine_ecu": Float,
+    "fuel_pressurepsi": Float,
+    "fuel_rail_pressure_relative_to_manifold_vacuumkpa": Float,
+    "fuel_rail_pressure_relative_to_manifold_vacuumpsi": Float,
+    "fuel_rate_direct_from_eculm": Float,
+    "fuel_trim_bank_1_long_term": Float,
+    "fuel_trim_bank_1_sensor_1": Float,
+    "fuelpressurekpa": Float,
+    "fuelrailpressurekpa": Float,
+    "gpsspeedkmh": Float,
+    "gravityx": Float,
+    "gravityxg": Float,
+    "gravityy": Float,
+    "gravityyg": Float,
+    "gravityz": Float,
+    "gravityzg": Float,
+    "hybrid_battery_charge_": Float,
+    "intakeairtemperaturef": Float,
+    "intakemanifoldpressurekpa": Float,
+    "kphTime0-100": Float,
+    "kphTime0-200": Float,
+    "kphTime0200": Float,
+    "kphTime100-0": Float,
+    "kphTime100-200": Float,
+    "kphTime1000": Float,
+    "kphTime100200": Float,
+    "kphTime80-120": Float,
+    "miletimes14": Float,
+    "miletimes18": Float,
+    "mphTime0-100": Float,
+    "mphTime0-30": Float,
+    "mphTime0-60": Float,
+    "mphTime40-60": Float,
+    "mphTime60-0": Float,
+    "mphTime60-120": Float,
+    "mphTime60-130": Float,
+    "mphTime60-80": Float,
+    "mphTime80-100": Float,
+    "mphtimes01008": Float,
+    "mphtimes030": Float,
+    "mphtimes060": Float,
+    "mphtimes60120": Float,
+    "mphtimes60130": Float,
+    "mphtimes6080": Float,
+    "nox_post_scrppm": Float,
+    "nox_pre_scrppm": Float,
+    "o2_sensor1_equivalence_ratio": Float,
+    "o2_sensor1_equivalence_ratioalternate": Float,
+    "percentage_of_highway_driving": Float,
+    "percentageofcitydriving": Float,
+    "percentageofidledriving": Float,
+    "quarterMileTime": Float,
+    "relative_accelerator_pedal_position": Float,
+    "relative_throttle_position": Float,
+    "run_time_since_engine_starts": Float,
+    "timing_advance": Float,
+    "torqueftlb": Float,
+    "transmission_temperaturemethod_1c": Float,
+    "transmission_temperaturemethod_1f": Float,
+    "transmission_temperaturemethod_2c": Float,
+    "transmission_temperaturemethod_2f": Float,
+    "turbo_pressure_controlbar": Float,
+    "turbo_pressure_controlpsi": Float,
+    "turboboostvacuumgaugebar": Float,
+    "absolute_throttle_position_b": Float,
+    "accelerator_pedalposition_d": Float,
+    "accelerator_pedalposition_e": Float,
+    "accelerator_pedalposition_f": Float,
+    "air_fuel_ratiocommanded1": Float,
+    "altitudem": Float,
+    "ambientairtempf": Float
+}
+
+
+old_COLUMN_TYPES = {
+    "GPS_Time": String,
+    "Device_Time": String,
+    "Longitude": Float,
+    "Latitude": Float,
+    "GPS_Speed_Meterssecond": Float,
+    "Horizontal_Dilution_of_Precision": Float,
+    "Altitude": Float,
+    "altitudem": Float,
+    "Bearing": Float,
+    "Gx": Float,
+    "Gy": Float,
+    "Gz": Float,
+    "Gcalibrated": Float,
+    "Acceleration_SensorTotalg": Float,
+    "Acceleration_SensorX_axisg": Float,
+    "Acceleration_SensorY_axisg": Float,
+    "Acceleration_SensorZ_axisg": Float,
+    "Actual_engine_torque": Float,
+    "Air_Fuel_RatioMeasured1": Float,
+    "Android_device_Battery_Level": Integer,
+    "Average_trip_speedwhilst_moving_onlykmh": Float,
+    "Average_trip_speedwhilst_stopped_or_movingkmh": Float,
+    "Barometric_pressure_from_vehiclepsi": Float,
+    "CO_in_gkm_Averagegkm": Float,
+    "CO_in_gkm_Instantaneousgkm": Float,
+    "Distance_to_empty_Estimatedkm": Float,
+    "Distance_travelled_with_MILCEL_litkm": Float,
+    "Engine_Coolant_TemperatureC": Float,
+    "Engine_kW_At_the_wheelskW": Float,
+    "Engine_Load": Float,
+    "Engine_RPMrpm": Float,
+    "Fuel_cost_tripcost": Float,
+    "Fuel_flow_ratehourlhr": Float,
+    "Fuel_flow_rateminuteccmin": Float,
+    "Fuel_Rail_Pressurepsi": Float,
+    "Fuel_Remaining_Calculated_from_vehicle_profile": Float,
+    "Fuel_used_tripl": Float,
+    "GPS_Accuracym": Float,
+    "GPS_Altitudem": Float,
+    "GPS_Bearing": Float,
+    "GPS_Latitude": Float,
+    "GPS_Longitude": Float,
+    "GPS_Satellites": Integer,
+    "GPS_vs_OBD_Speed_differencekmh": Float,
+    "Horsepower_At_the_wheelshp": Float,
+    "Intake_Air_TemperatureC": Float,
+    "Intake_Manifold_Pressurepsi": Float,
+    "Kilometers_Per_LitreInstantkpl": Float,
+    "Kilometers_Per_LitreLong_Term_Averagekpl": Float,
+    "Litres_Per_100_KilometerInstantl100km": Float,
+    "Litres_Per_100_KilometerLong_Term_Averagel100km": Float,
+    "Mass_Air_Flow_Rategs": Float,
+    "Miles_Per_GallonInstantmpg": Float,
+    "Miles_Per_GallonLong_Term_Averagempg": Float,
+    "O2_Sensor1_Wide_Range_CurrentmA": Float,
+    "O2_Bank_1_Sensor_1_Wide_Range_Equivalence_Ratio": Float,
+    "O2_Bank_1_Sensor_1_Wide_Range_VoltageV": Float,
+    "Speed_GPSkmh": Float,
+    "Speed_OBDkmh": Float,
+    "TorqueNm": Float,
+    "Trip_average_KPLkpl": Float,
+    "Trip_average_Litres100_KMl100km": Float,
+    "Trip_average_MPGmpg": Float,
+    "Trip_Distancekm": Float,
+    "Trip_distance_stored_in_vehicle_profilekm": Float,
+    "Trip_TimeSince_journey_starts": Float,
+    "Trip_timewhilst_movings": Float,
+    "Trip_timewhilst_stationarys": Float,
+    "Turbo_Boost_Vacuum_Gaugepsi": Float,
+    "Voltage_OBD_AdapterV": Float,
+    "Volumetric_Efficiency_Calculated": Float,
+    "Ambient_air_tempC": Float,
+    "Cost_per_milekm_Instantkm": Float,
+    "Cost_per_milekm_Tripkm": Float,
+    "Positive_Kinetic_Energy_PKEkmhr": Float,
+    "Throttle_PositionManifold": Float,
+    "Voltage_Control_ModuleV": Float,
+    "O2_Sensor1_Wide_Range_Equivalence_Ratio": Float,
+    "O2_Sensor1_Wide_Range_VoltageV": Float,
+    "accelerator_pedalposition_d": Float,
+    "accelerator_pedalposition_e": Float,
+    "accelerator_pedalposition_f": Float,
+    "air_fuel_ratiocommanded1": Float,
+    "absolute_throttle_position_b": Float,
+    "ambientairtempf": Float,
 }
 
 # Also support normalized Torq header variants (for example GPS_Time -> gpstime).
@@ -222,6 +508,7 @@ class Torqtrips(Base):
     def __init__(self, fileid):
         self.fileid = fileid
 
+
 class Torqlogs(Base):
     __tablename__ = "torqlogs"
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -314,38 +601,52 @@ def database_init(engine):  # create tables
 
             # Structural indexes not covered by the per-metric partial indexes.
             # torqlogs(fileid): plain index for all general WHERE fileid = / IN queries.
-            conn.execute(text(
-                "CREATE INDEX IF NOT EXISTS ix_torqlogs_fileid ON torqlogs (fileid)"
-            ))
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_torqlogs_fileid ON torqlogs (fileid)"
+                )
+            )
             # torqfiles FK lookup columns used in JOINs to startpos/endpos.
-            conn.execute(text(
-                "CREATE INDEX IF NOT EXISTS ix_torqfiles_startid ON torqfiles (startid)"
-            ))
-            conn.execute(text(
-                "CREATE INDEX IF NOT EXISTS ix_torqfiles_endid ON torqfiles (endid)"
-            ))
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_torqfiles_startid ON torqfiles (startid)"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_torqfiles_endid ON torqfiles (endid)"
+                )
+            )
             # torqtrips(fileid): used in the trip_start_end_summary view JOIN.
-            conn.execute(text(
-                "CREATE INDEX IF NOT EXISTS ix_torqtrips_fileid ON torqtrips (fileid)"
-            ))
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_torqtrips_fileid ON torqtrips (fileid)"
+                )
+            )
             # filestats(fileid): FK column for per-file stat lookups.
-            conn.execute(text(
-                "CREATE INDEX IF NOT EXISTS ix_filestats_fileid ON filestats (fileid)"
-            ))
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_filestats_fileid ON filestats (fileid)"
+                )
+            )
             # startpos/endpos spatial range queries (map bounds BETWEEN filtering).
-            conn.execute(text(
-                "CREATE INDEX IF NOT EXISTS ix_startpos_latlon ON startpos (latstart, lonstart)"
-            ))
-            conn.execute(text(
-                "CREATE INDEX IF NOT EXISTS ix_endpos_latlon ON endpos (latend, lonend)"
-            ))
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_startpos_latlon ON startpos (latstart, lonstart)"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_endpos_latlon ON endpos (latend, lonend)"
+                )
+            )
             # startpos/endpos label columns for label-group trip selection queries.
-            conn.execute(text(
-                "CREATE INDEX IF NOT EXISTS ix_startpos_label ON startpos (label)"
-            ))
-            conn.execute(text(
-                "CREATE INDEX IF NOT EXISTS ix_endpos_label ON endpos (label)"
-            ))
+            conn.execute(
+                text("CREATE INDEX IF NOT EXISTS ix_startpos_label ON startpos (label)")
+            )
+            conn.execute(
+                text("CREATE INDEX IF NOT EXISTS ix_endpos_label ON endpos (label)")
+            )
             logger.debug("Structural indexes ensured")
     except (OperationalError, AssertionError) as e:
         logger.error(f"[dbinit] {type(e)} {e}")
