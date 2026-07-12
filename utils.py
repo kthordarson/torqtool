@@ -475,11 +475,6 @@ def update_trip_and_file_for_fileid(conn, fileid, csvfile):
 	# csvfile_path = conn.execute(text("SELECT csvfile FROM torqfiles WHERE fileid = :fileid"), {"fileid": fileid}).scalar()
 	# csvfile_path = conn.execute(text("SELECT csvfile FROM torqfiles WHERE fileid = :fileid"), {"fileid": fileid}).scalar()
 	profile = _read_trip_profile(csvfile['filename'])
-	if not profile:
-		profile = "unknown"
-		logger.warning(f"Could not read profile for fileid {fileid} from {csvfile['filename']}, defaulting to unknown")
-	else:
-		logger.debug(f"Read profile for fileid {fileid} from {csvfile['filename']}: {profile}")
 	# Insert if missing, then update all calculated fields.
 	conn.execute(text("""
 		INSERT INTO torqtrips (fileid, tripdate, time, trip_distance, profile)
@@ -705,7 +700,7 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs') -> None:
 		csvfile['valid'] = 1
 	csv_files = [f for f in csv_files if f['valid'] == 1]
 	if args.debug:
-		csv_files = csv_files[:10]  # limit to first 10 for debug
+		# csv_files = csv_files[:10]  # limit to first 10 for debug
 		logger.debug(f"Processing {len(csv_files)} valid CSV files")
 	for idx,csvfile in enumerate(csv_files):
 		read_started = time.perf_counter()
@@ -743,9 +738,6 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs') -> None:
 def get_csv_files(searchpath: Path, args):
 	# scan searchpath for csv files
 	torqcsvfiles = [({"csvfile": k, "csvhash": md5(open(k, "rb").read()).hexdigest(), "size": os.stat(k).st_size, "dbmode": args.dbmode, }) for k in searchpath.glob("**/*.csv") if k.stat().st_size >= MIN_FILESIZE]  # and not os.path.exists(f'{k}.fixed.csv')]
-	if args.debug:
-		logger.debug(f"Found {len(torqcsvfiles)} CSV files in {searchpath}")
-		return torqcsvfiles[:10]  # limit to first 10 for debug
 	return torqcsvfiles
 
 def get_engine_session(args: argparse.Namespace) -> Session:
