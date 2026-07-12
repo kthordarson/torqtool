@@ -194,8 +194,6 @@ def collect_db_filestats(args, todatabase=True, droptable=False):
         session.execute(text("pragma mmap_size = 30000000000;"))
         # session.execute(text('pragma journal_mode = memory;'))
     q = "select fileid from torqfiles"
-    if args.db_limit:
-        q += f" limit {args.db_limit}"
     q += ";"
     fileid_rows = session.execute(text(q)).all()
     file_ids = [int(row[0]) for row in fileid_rows if row and row[0] is not None]
@@ -544,8 +542,6 @@ def collect_db_speeds(args):
         f'min("{time_col}") as gpstime '
         f"from torqlogs group by fileid; "
     )
-    if args.db_limit:
-        q += f" limit {args.limit}"
     try:
         df = pd.DataFrame(session.execute(text(q)).all()).fillna(0)
         logger.info(f"dbspeeds:{df.describe()}")
@@ -622,8 +618,6 @@ def collect_db_startends(args, update_start=True, update_end=True, force_refresh
         logger.info("collect_db_startends called with nothing to update")
         return 0
 
-    if args.db_limit:
-        pending_q += f" LIMIT {int(args.db_limit)}"
     pending_fileids_rows = session.execute(text(pending_q)).all()
     pending_fileids = [
         int(row[0]) for row in pending_fileids_rows if row and row[0] is not None
@@ -828,8 +822,6 @@ def collect_db_torqtrips(args):
     session.commit()
 
     q_fileids = "SELECT fileid FROM torqfiles"
-    if args.db_limit:
-        q_fileids += f" LIMIT {int(args.db_limit)}"
     fileid_rows = session.execute(text(q_fileids)).all()
     fileids = [int(row[0]) for row in fileid_rows if row and row[0] is not None]
     if not fileids:

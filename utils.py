@@ -23,7 +23,7 @@ from datamodels import database_init, COLUMN_TYPES
 from schemas import canonicalize_column_name, canonicalize_columns
 from schemas import TRIP_METRIC_COLUMNS, column_mapping
 
-MIN_FILESIZE = 10000
+MIN_FILESIZE = 3000000
 
 def get_parser(appname):
 	parser = argparse.ArgumentParser(description=appname)
@@ -37,8 +37,6 @@ def get_parser(appname):
 	parser.add_argument("--dbpass", default="qrot", help="dbpass", action="store")
 	parser.add_argument("--dbuser", default="torq", help="dbuser", action="store")
 	parser.add_argument("--dbfile", default="torqdata.db", help="database file", action="store")
-	parser.add_argument("--db_limit", default=False, help="db_limit", action="store", dest="db_limit")
-	parser.add_argument("--file_limit", default=False, help="file_limit", action="store_true", dest="file_limit")
 	parser.add_argument("--file", nargs="?", default=".", help="path to single csv file", action="store")
 	parser.add_argument("--logpath", nargs="?", default=".", help="path to csv files", action="store")
 	parser.add_argument("--sqlchunksize", nargs="?", default=1000, type=int, help="sql chunk", action="store")
