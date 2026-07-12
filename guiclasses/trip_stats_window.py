@@ -893,7 +893,7 @@ class TripStatsWindow(QMainWindow):
                 "duration_h": round(dur_h, 2),
                 "avg_speed_kmh": round(float(_clean(g.get("speedobdkmh_avg", pd.Series(dtype=float))).mean()), 1),
                 "avg_kpl": round(float(_clean(g.get("tripaveragekplkpl_avg", pd.Series(dtype=float))).mean()), 2),
-                "latest_trip": pd.to_datetime(g.get("tripdate"), errors="coerce").max(),
+                "latest_trip": pd.to_datetime(g.get("tripdate"), errors="coerce").max(),  # type: ignore
             })
 
         grouped = pd.DataFrame(rows, columns=empty_cols)

@@ -1471,7 +1471,7 @@ class MainWindow(QMainWindow):
 
 		self.left_tabs.setCurrentIndex(0)
 		selected_fileids = self._get_selected_fileids(matching_rows)
-		self._populate_metric_columns(selected_fileids if selected_fileids else None)
+		self._populate_metric_columns(selected_fileids)
 		if selected_fileids and force_async_plot:
 			self._force_next_plot_async = True
 			self._start_async_plot_for_fileids(selected_fileids)
@@ -1495,7 +1495,7 @@ class MainWindow(QMainWindow):
 					self.main_splitter.setSizes([320, max(1, total - 320)])
 		if index == 0:
 			rows = sorted(set(idx.row() for idx in self.table.selectionModel().selectedRows())) if self.table.selectionModel() is not None else []
-			self._populate_metric_columns(self._get_selected_fileids(rows) if rows else None)
+			self._populate_metric_columns(self._get_selected_fileids(rows))
 		elif index == 1:
 			self._ensure_start_end_tab_embedded()
 		elif index == 2:
@@ -1504,7 +1504,7 @@ class MainWindow(QMainWindow):
 	def _on_initial_trips_error(self, error_message: str):
 		logger.error(error_message)
 
-	def _populate_metric_columns(self, fileids: list[int] | None = None):
+	def _populate_metric_columns(self, fileids: list[int]):
 		prev_selected = set(self._get_selected_metrics())
 		summary_df = self._get_metric_summary_for_selection(fileids)
 		self._set_metric_table_model(summary_df)
@@ -2941,6 +2941,6 @@ class MainWindow(QMainWindow):
 			self._populate_metric_columns(self._get_selected_fileids(rows))
 			self._plot_refresh_timer.start(250)
 		else:
-			self._populate_metric_columns(None)
+			# self._populate_metric_columns(None)
 			self.stats_label.setText("No trip selected")
 			self._set_all_metrics_table_model(pd.DataFrame(columns=["metric", "min", "avg", "max"]))

@@ -1,9 +1,7 @@
 # utils and db things here
 from math import radians, cos, sin, sqrt, atan2
 import numpy as np
-import random
 import os
-import re
 import sys
 import time
 from datetime import datetime
@@ -13,15 +11,12 @@ import argparse
 import pandas as pd
 import pytz
 from loguru import logger
-from sqlalchemy import DateTime
 from sqlalchemy import create_engine, text, MetaData, Table, Column, Float, String, Integer
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy import inspect
-from sqlalchemy.exc import IntegrityError
-from psycopg2.errors import UniqueViolation
 from commonformats import fmt_20, fmt_24, fmt_26, fmt_28, fmt_30, fmt_34, fmt_36
 from datamodels import database_init, COLUMN_TYPES
-from schemas import canonicalize_column_name, canonicalize_columns
+from schemas import canonicalize_columns
 from schemas import TRIP_METRIC_COLUMNS, column_mapping
 
 MIN_FILESIZE = 100000
@@ -393,7 +388,7 @@ def update_trip_and_file_for_fileid(conn, fileid):
 			metric_values[f"{metric_name}_stdev"] = None
 
 	# Calculate trip duration
-	trip_duration = None
+	trip_duration = 0
 	if trip_start and trip_end:
 		try:
 			trip_start_dt = convert_string_to_datetime(str(trip_start))
@@ -402,10 +397,10 @@ def update_trip_and_file_for_fileid(conn, fileid):
 				trip_duration = (trip_end_dt - trip_start_dt).total_seconds()
 			else:
 				logger.warning(f"Could not parse trip_start or trip_end as datetime for fileid {fileid}: {trip_start} ({type(trip_start)}), {trip_end} ({type(trip_end)})")
-				trip_duration = None
+				trip_duration = 0
 		except Exception as e:
 			logger.error(f'{e} {type(e)} {trip_start=} {trip_end=}')
-			trip_duration = None
+			trip_duration = 0
 		if trip_duration > 86400//2:
 			logger.warning(f'fileid: {fileid} - trip duration too long: {trip_duration}')
 	# Calculate trip distance (sum of point-to-point GPS distances for this fileid)
@@ -546,8 +541,8 @@ def read_csv_data(csvfile: dict, conn, normalized_actual_columns, allowed_cols, 
 	df = pd.read_csv(csvfile['filename'], dtype=str)
 
 	# Normalize columns using shared Torq header mapping.
-	original_columns = df.columns.to_list()
-	normalized_columns = [canonicalize_column_name(col) for col in original_columns]
+	# original_columns = df.columns.to_list()
+	# normalized_columns = [canonicalize_column_name(col) for col in original_columns]
 
 	# Process columns and data
 	df = df.rename(columns=canonicalize_columns(list(df.columns)))
@@ -614,17 +609,14 @@ def read_csv_data(csvfile: dict, conn, normalized_actual_columns, allowed_cols, 
 				df = df.iloc[:-1]  # drop last row if trip duration is too long
 	fileid = get_file_id(df, conn, csvfile)
 	df.insert(0, 'fileid', fileid)
+	df = df.copy()
 	return df, fileid
 
 def get_file_id(df: pd.DataFrame, conn, csvfile) -> int:
 	trip_start_candidate = _extract_trip_start_from_dataframe(df)
 	if trip_start_candidate is not None:
-		date_sql = text("SELECT fileid FROM torqfiles WHERE trip_start IS NOT NULL AND datetime(trip_start) = datetime(:ts_dt)")
-		# if conn.bind.dialect.name == 'sqlite':
-		# 	date_sql = text("SELECT fileid FROM torqfiles WHERE trip_start IS NOT NULL AND datetime(trip_start) = datetime(:ts_dt)")
-		# else:
-		# 	date_sql = text("SELECT fileid FROM torqfiles WHERE trip_start IS NOT NULL AND trip_start = CAST(:ts_dt AS timestamp)")
-		existing_trip = conn.execute(date_sql, {"ts_dt": trip_start_candidate.strftime('%Y-%m-%d %H:%M:%S')}).first()
+		date_sql = text("SELECT fileid FROM torqfiles WHERE trip_start IS NOT NULL AND trip_start = :ts_dt")
+		existing_trip = conn.execute(date_sql, {"ts_dt": trip_start_candidate}).first()
 		if existing_trip:
 			logger.warning(f"duplicate trip_start  {trip_start_candidate} already exists (fileid {existing_trip[0]})")
 
@@ -715,8 +707,12 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs') -> None:
 			for col in insert_df.columns:
 				if pd.api.types.is_datetime64_any_dtype(insert_df[col]):
 					insert_df[col] = insert_df[col].dt.strftime('%Y-%m-%d %H:%M:%S.%f')
-			records = insert_df.where(insert_df.notna(), None).to_dict(orient='records')
-			conn.execute(torqlogs_table.insert(), records)
+			records = insert_df.to_dict(orient='records')
+			for record in records:
+				for col, value in record.items():
+					if isinstance(value, float) and pd.isna(value):
+						record[col] = None
+			conn.execute(torqlogs_table.insert(), records)  # type: ignore[arg-type]
 		except Exception as e:
 			import traceback
 			logger.error(f"[{idx}/{len(csv_files)}] Error inserting data for file {csvfile['filename']} (fileid {fileid}): {e} {type(e)}\n{traceback.format_exc()}")

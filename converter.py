@@ -10,7 +10,7 @@ import polars as pl
 from loguru import logger
 from sqlalchemy import text
 from sqlalchemy.exc import DataError, IntegrityError, OperationalError
-from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.orm import sessionmaker
 import sqlite3
 from datamodels import TorqFile, database_init, stable_fileid_from_csvhash
 from utils import get_parser, get_engine_session, convert_string_to_datetime, read_csvs_to_dataframe_and_insert

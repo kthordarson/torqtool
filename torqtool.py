@@ -3,15 +3,14 @@ import asyncio
 import sys
 from sqlalchemy.orm import sessionmaker
 from collections.abc import AsyncIterable
-from pathlib import Path
 import pandas as pd
 from loguru import logger
 from sqlalchemy.exc import OperationalError
 from sqlalchemy import text
 # sys.path.append('c:/apps/torqtool/torqtool')
 from utils import get_parser
-from datamodels import TorqFile, Torqlogs, database_dropall, send_torqfiles
-from utils import generate_torqdata, get_csv_files, get_engine_session, send_torqtripdata
+from datamodels import TorqFile, Torqlogs, database_dropall
+from utils import generate_torqdata, get_engine_session, send_torqtripdata
 
 # june2024 rewrite: log files are stored diffrently from previous versions
 # now the app stores the logs on the phone under /storage/emulated/0/Documents/torqueLogs
