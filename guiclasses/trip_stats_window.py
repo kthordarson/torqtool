@@ -41,7 +41,8 @@ _SENTINEL_THRESHOLD = 1e30
 
 def _clean(series: pd.Series) -> pd.Series:
     """Replace sentinel/overflow float values with NaN."""
-    return series.where(series.abs() < _SENTINEL_THRESHOLD)
+    numeric = pd.to_numeric(series, errors="coerce")
+    return numeric.where(numeric.abs() < _SENTINEL_THRESHOLD)
 
 
 def _normalize_metric_name(value: str) -> str:

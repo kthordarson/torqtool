@@ -574,7 +574,7 @@ def read_csv_data(csvfile: dict, conn, normalized_actual_columns, allowed_cols, 
 				except Exception as e:
 					logger.warning(f"{e} {type(e)} Error calculating trip duration for {csvfile['filename']}: {e} {type(e)} df shape: {df.shape} columns: {list(df.columns)}\ndfiloc: {df.iloc[-1]}")
 			if duration_check > 300:
-				logger.warning(f'{csvfile} - trip duration too long: {duration_check}')
+				logger.warning(f'trip duration too long in file: {csvfile["filename"]} size:{csvfile["size"]}  duration_check: {duration_check}')
 				df = df.iloc[:-1]  # drop last row if trip duration is too long
 	fileid = get_file_id(df, conn, csvfile)
 	df.insert(0, 'fileid', fileid)
@@ -610,7 +610,7 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs') -> None:
 		return None
 	if args.debug:
 		logger.debug(f"Found {len(csv_files)} CSV files in {args.logpath}")
-		csv_files = csv_files[:10]  # limit to first 10 for debug
+		csv_files = csv_files[:100]  # limit to first 100 for debug
 
 	valid_files = []
 	csvhash = ''
