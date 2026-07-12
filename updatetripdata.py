@@ -938,29 +938,26 @@ def collect_db_torqtrips(args):
                 # logger.debug(f"[{row_idx}/{len(rows)}] Prepared record for fileid {rec['fileid']} records: {len(records)}")
 
             if records:
-                logger.debug(
-                    f"Writing {len(records)} torqtrips records for batch {batch_start // batch_size + 1} inserted_rows: {inserted_rows}"
-                )
-                pd.DataFrame(records).to_sql(
-                    name="torqtrips",
-                    con=session.connection(),
-                    if_exists="append",
-                    index=False,
-                    method="multi",
-                    chunksize=args.sqlchunksize,
-                )
+                logger.debug(f"Writing {len(records)} torqtrips records for batch {batch_start // batch_size + 1} inserted_rows: {inserted_rows}")
+                try:
+                    # method="multi" builds one INSERT with all rows in the chunk, so the
+                    # bound-parameter count is ncols * chunksize; cap chunksize to stay under
+                    # each dialect's per-statement parameter limit (sqlite ~999, postgres 65535).
+                    ncols = len(records[0])
+                    max_params = 999 if args.dbmode == "sqlite" else 65535
+                    safe_chunksize = max(1, min(args.sqlchunksize, max_params // ncols))
+                    pd.DataFrame(records).to_sql(name="torqtrips", con=session.connection(), if_exists="append", index=False, method="multi", chunksize=safe_chunksize,)
+                except Exception as e:
+                    logger.error(f"Failed to write torqtrips records for batch {batch_start // batch_size + 1}: {e} ({type(e)})")
+                    session.rollback()
+                    return -1
                 inserted_rows += len(records)
 
             session.commit()
-            logger.info(
-                f"torqtrips batch {batch_start // batch_size + 1}: "
-                f"{min(batch_start + len(batch), len(fileids))}/{len(fileids)} fileids"
-            )
+            logger.info(f"torqtrips batch {batch_start // batch_size + 1}: {min(batch_start + len(batch), len(fileids))}/{len(fileids)} fileids")
         except Exception as e:
             session.rollback()
-            logger.error(
-                f"torqtrips batch {batch_start // batch_size + 1} failed: {e} ({type(e)})"
-            )
+            logger.error(f"torqtrips batch  ({type(e)}) {batch_start // batch_size + 1} failed: {e}")
             return -1
 
     logger.info(f"collect_db_torqtrips completed, wrote {inserted_rows} rows")
