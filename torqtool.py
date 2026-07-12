@@ -24,44 +24,10 @@ from utils import generate_torqdata, get_csv_files, get_engine_session, send_tor
 # if a log files contains entries from more than 24h, check and split ???
 # more ....
 
-async def scanpath(session, args):
-    """
-    scan a path for log files
-    param: engine sqlalchemy engine
-    param: args argparse namespace
-    return: dict with results
-    {
-    'results' : {'unfixed' : list_of_unfixed_files}}
-    }
-    """
-    # results = { 'results': {'unfixed': []}}
-    newfilelist = []
-    # t0 = datetime.now()
-    # Session = sessionmaker(bind=engine)
-    # session = Session()
-
-    filelist = get_csv_files(searchpath=Path(args.logpath), args=args)
-    filelist = sorted(filelist, key=lambda x: x["csvfile"])  # sort by filename (date)
-
-    if len(filelist) == 0:
-        logger.error(f"no csv files found in {args.logpath}")
-        sys.exit(1)
-    try:
-        newfilelist = await send_torqfiles(filelist, session, debug=args.debug)
-    except Exception as e:
-        logger.error(f"[!] unhandled {type(e)} {e}")
-        sys.exit(1)
-    finally:
-        pass
-    return newfilelist
-
 async def collect_info(engine) -> AsyncIterable[str]:
     with engine.connect() as conn:
         logcount = conn.execute(text("select count(*) from torqlogs")).all()
         yield logcount
-        # yield conn.query(Torqtrips).count()
-        # yield conn.query(TorqFile).count()
-        #  yield conn.query(Torqlogs).count()
 
 async def collect(async_iterable):
     return [item async for item in async_iterable]

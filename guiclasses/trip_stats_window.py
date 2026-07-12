@@ -1,0 +1,1053 @@
+"""Trip Statistics tab aggregated analysis of torqtrips data."""
+from __future__ import annotations
+
+from typing import Any
+import re
+
+import folium
+from folium.plugins import HeatMap
+import matplotlib
+import matplotlib.dates as mdates
+import matplotlib.figure
+import pandas as pd
+from loguru import logger
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+from sqlalchemy.orm import sessionmaker
+
+from PySide6.QtCore import QObject, QThread, Qt, Signal
+from PySide6.QtGui import QFont
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QComboBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QPushButton,
+    QSizePolicy,
+    QSplitter,
+    QTabWidget,
+    QTableView,
+    QVBoxLayout,
+    QWidget,
+)
+
+from .map_canvas import FoliumMapView
+from .pandas_model import PandasModel
+from metric_analysis import categorize_metric
+
+# ── sentinel threshold (float32 max ≈ 3.4e38) ────────────────────────────────
+_SENTINEL_THRESHOLD = 1e30
+
+
+def _clean(series: pd.Series) -> pd.Series:
+    """Replace sentinel/overflow float values with NaN."""
+    numeric = pd.to_numeric(series, errors="coerce")
+    return numeric.where(numeric.abs() < _SENTINEL_THRESHOLD)
+
+
+def _normalize_metric_name(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9]+", "", str(value)).lower()
+
+
+# ── background data loader ────────────────────────────────────────────────────
+
+class _TripStatsLoader(QObject):
+    finished: Signal = Signal(object, object)
+    error: Signal = Signal(str)
+
+    def __init__(self, engine: Any) -> None:
+        super().__init__()
+        self.engine = engine
+
+    def run(self) -> None:
+        try:
+            Session = sessionmaker(bind=self.engine)
+            session = Session()
+            try:
+                conn = session.connection()
+                df = pd.read_sql(
+                    """
+                    SELECT
+                        tt.*,
+                        tf.startlat,
+                        tf.startlon,
+                        tf.endlat,
+                        tf.endlon,
+                        tf.trip_start,
+                        tf.trip_end,
+                        sp.label AS start_label,
+                        ep.label AS end_label
+                    FROM torqtrips tt
+                    LEFT JOIN torqfiles tf ON tf.fileid = tt.fileid
+                    LEFT JOIN startpos sp ON sp.startid = tf.startid
+                    LEFT JOIN endpos ep ON ep.endid = tf.endid
+                    ORDER BY tt.tripdate
+                    """,
+                    con=conn,
+                )
+                quality_raw = pd.read_sql(
+                    """
+                    SELECT fs.fileid, fs.column_name, fs.nullratio
+                    FROM filestats fs
+                    INNER JOIN (
+                        SELECT DISTINCT fileid FROM torqtrips
+                    ) tt ON tt.fileid = fs.fileid
+                    """,
+                    con=conn,
+                )
+            finally:
+                session.close()
+            logger.debug(f"Loaded {len(df)} trips with {df.shape[1]} columns for TripStatsWindow")
+            self.finished.emit(df, quality_raw)
+        except Exception as exc:
+            logger.error(f"TripStatsLoader error: {exc} ({type(exc)})")
+            self.error.emit(str(exc))
+
+
+# ── chart helpers ─────────────────────────────────────────────────────────────
+
+def _make_figure(rows: int = 1, cols: int = 1, **kwargs: Any) -> tuple[matplotlib.figure.Figure, Any]:
+    fig = matplotlib.figure.Figure(figsize=(10, 3.5 * rows), tight_layout=True, **kwargs)
+    axes = fig.subplots(rows, cols, squeeze=False)
+    return fig, axes
+
+
+def _ax_date_fmt(ax: Any, df: pd.DataFrame, date_col: str = "tripdate") -> None:
+    """Apply readable date tick labels to an axes."""
+    span_days = (df[date_col].max() - df[date_col].min()).days if len(df) > 1 else 1
+    if span_days < 90:
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %d"))
+    elif span_days < 730:
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%b '%y"))
+    else:
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y"))
+    ax.figure.autofmt_xdate(rotation=30, ha="right")
+
+
+def _build_timeline_figure(df: pd.DataFrame, group_by: str) -> matplotlib.figure.Figure:
+    """Trips per period bar + cumulative distance line."""
+    fig, axes = _make_figure(2, 1)
+    ax_count = axes[0][0]
+    ax_dist = axes[1][0]
+
+    if df.empty or "tripdate" not in df.columns:
+        ax_count.set_title("No data")
+        return fig
+
+    dated = df.dropna(subset=["tripdate"]).copy()
+    dated["tripdate"] = pd.to_datetime(dated["tripdate"], errors="coerce")
+    dated = dated.dropna(subset=["tripdate"])
+    if dated.empty:
+        ax_count.set_title("No dated trips")
+        return fig
+
+    freq_map = {"Month": "ME", "Week": "W", "Day": "D"}
+    freq = freq_map.get(group_by, "ME")
+    dated = dated.set_index("tripdate").sort_index()
+
+    counts = dated.resample(freq).size()
+    dist_km = _clean(dated.get("trip_distance", pd.Series(dtype=float))).resample(freq).sum() / 1000.0 if "trip_distance" in dated.columns else pd.Series(dtype=float)
+
+    ax_count.bar(counts.index, counts.values, width={"ME": 20, "W": 5, "D": 0.8}.get(group_by, 20), color="#4C72B0", alpha=0.8)
+    ax_count.set_title(f"Trips per {group_by.lower()}")
+    ax_count.set_ylabel("Trip count")
+    ax_count.grid(axis="y", linestyle="--", alpha=0.4)
+    _ax_date_fmt(ax_count, counts.reset_index().rename(columns={"tripdate": "tripdate"}), "tripdate")
+
+    if not dist_km.empty:
+        cumulative = dist_km.cumsum()
+        ax_dist.fill_between(cumulative.index, cumulative.values, alpha=0.35, color="#55A868")
+        ax_dist.plot(cumulative.index, cumulative.values, color="#2d6a4f", linewidth=1.5)
+        ax_dist.set_title("Cumulative distance (km)")
+        ax_dist.set_ylabel("km")
+        ax_dist.grid(axis="y", linestyle="--", alpha=0.4)
+        _ax_date_fmt(ax_dist, cumulative.reset_index().rename(columns={"tripdate": "tripdate"}), "tripdate")
+    else:
+        ax_dist.set_title("Distance data not available")
+    return fig
+
+
+def _build_speed_engine_figure(df: pd.DataFrame) -> matplotlib.figure.Figure:
+    fig, axes = _make_figure(2, 2)
+
+    dated = df.copy()
+    dated["tripdate"] = pd.to_datetime(dated.get("tripdate"), errors="coerce")  # type: ignore
+    dated = dated.dropna(subset=["tripdate"]).sort_values("tripdate")
+
+    def _scatter(ax: Any, col: str, label: str, color: str) -> None:
+        if col not in dated.columns:
+            ax.set_title(f"{label} – not available")
+            return
+        y = _clean(dated[col]).dropna()
+        x = dated.loc[y.index, "tripdate"]
+        ax.scatter(x, y, s=14, alpha=0.6, color=color, linewidths=0)
+        ax.set_title(label)
+        ax.grid(linestyle="--", alpha=0.3)
+        _ax_date_fmt(ax, pd.DataFrame({"tripdate": x}))
+
+    def _hist(ax: Any, col: str, label: str, color: str, bins: int = 30) -> None:
+        if col not in dated.columns:
+            ax.set_title(f"{label} – not available")
+            return
+        vals = _clean(dated[col]).dropna()
+        ax.hist(vals, bins=bins, color=color, alpha=0.75, edgecolor="white", linewidth=0.4)
+        ax.set_title(label)
+        ax.set_xlabel(label)
+        ax.set_ylabel("Trips")
+        ax.grid(axis="y", linestyle="--", alpha=0.3)
+
+    _scatter(axes[0][0], "speedobdkmh_avg", "Avg OBD speed (km/h) over time", "#4C72B0")
+    _scatter(axes[0][1], "speedobdkmh_max", "Max OBD speed (km/h) over time", "#C44E52")
+    _hist(axes[1][0], "enginerpmrpm_avg", "Avg RPM distribution", "#8172B2")
+    _hist(axes[1][1], "engineload_avg", "Avg engine load (%)", "#CCB974")
+
+    return fig
+
+
+def _build_fuel_figure(df: pd.DataFrame) -> matplotlib.figure.Figure:
+    fig, axes = _make_figure(2, 2)
+
+    dated = df.copy()
+    dated["tripdate"] = pd.to_datetime(dated.get("tripdate"), errors="coerce")  # type: ignore
+    dated = dated.dropna(subset=["tripdate"]).sort_values("tripdate")
+
+    def _scatter(ax: Any, col: str, label: str, color: str) -> None:
+        if col not in dated.columns:
+            ax.set_title(f"{label} – not available")
+            return
+        y = _clean(dated[col]).dropna()
+        x = dated.loc[y.index, "tripdate"]
+        ax.scatter(x, y, s=14, alpha=0.6, color=color, linewidths=0)
+        ax.set_title(label)
+        ax.grid(linestyle="--", alpha=0.3)
+        _ax_date_fmt(ax, pd.DataFrame({"tripdate": x}))
+
+    def _hist(ax: Any, col: str, label: str, color: str, bins: int = 25) -> None:
+        if col not in dated.columns:
+            ax.set_title(f"{label} – not available")
+            return
+        vals = _clean(dated[col]).dropna()
+        ax.hist(vals, bins=bins, color=color, alpha=0.75, edgecolor="white", linewidth=0.4)
+        ax.set_title(label)
+        ax.set_xlabel(label)
+        ax.set_ylabel("Trips")
+        ax.grid(axis="y", linestyle="--", alpha=0.3)
+
+    _scatter(axes[0][0], "tripaveragekplkpl_avg", "Trip avg efficiency (km/L) over time", "#55A868")
+    _scatter(axes[0][1], "fuelusedtripl_avg", "Avg fuel used per trip (L) over time", "#C44E52")
+    _hist(axes[1][0], "enginecoolanttemperaturec_avg", "Avg coolant temp (°C)", "#4C72B0")
+    _hist(axes[1][1], "ambientairtempc_avg", "Avg ambient temp (°C)", "#CCB974")
+
+    return fig
+
+
+def _build_distance_figure(df: pd.DataFrame) -> matplotlib.figure.Figure:
+    fig, axes = _make_figure(1, 2)
+
+    def _hist(ax: Any, col: str, label: str, unit: str, color: str, bins: int = 30) -> None:
+        if col not in df.columns:
+            ax.set_title(f"{label} – not available")
+            return
+        vals = _clean(df[col]).dropna()
+        ax.hist(vals, bins=bins, color=color, alpha=0.75, edgecolor="white", linewidth=0.4)
+        ax.set_title(label)
+        ax.set_xlabel(unit)
+        ax.set_ylabel("Trips")
+        ax.grid(axis="y", linestyle="--", alpha=0.3)
+
+    dist_col = "trip_distance" if "trip_distance" in df.columns else None
+    if dist_col:
+        dist_km = _clean(df[dist_col]) / 1000.0
+        axes[0][0].hist(dist_km.dropna(), bins=30, color="#4C72B0", alpha=0.75, edgecolor="white", linewidth=0.4)
+        axes[0][0].set_title("Trip distance distribution")
+        axes[0][0].set_xlabel("km")
+        axes[0][0].set_ylabel("Trips")
+        axes[0][0].grid(axis="y", linestyle="--", alpha=0.3)
+    else:
+        axes[0][0].set_title("trip_distance – not available")
+
+    time_col = "time" if "time" in df.columns else None
+    if time_col:
+        dur_min = _clean(df[time_col]) / 60.0
+        axes[0][1].hist(dur_min.dropna(), bins=30, color="#8172B2", alpha=0.75, edgecolor="white", linewidth=0.4)
+        axes[0][1].set_title("Trip duration distribution")
+        axes[0][1].set_xlabel("minutes")
+        axes[0][1].set_ylabel("Trips")
+        axes[0][1].grid(axis="y", linestyle="--", alpha=0.3)
+    else:
+        axes[0][1].set_title("trip time – not available")
+
+    return fig
+
+
+def _build_map(df: pd.DataFrame) -> folium.Map:
+    """Folium map with start-position heatmap and start/end markers."""
+    starts = df.dropna(subset=["startlat", "startlon"])
+    if starts.empty:
+        center = [0.0, 0.0]
+        zoom = 2
+    else:
+        center = [float(starts["startlat"].mean()), float(starts["startlon"].mean())]
+        zoom = 7
+
+    fmap = folium.Map(location=center, zoom_start=zoom, tiles="CartoDB positron")
+
+    # Heatmap of trip start positions
+    heat_data = [
+        [float(r.startlat), float(r.startlon)]  # type: ignore
+        for r in starts.itertuples()
+        if -90 <= float(r.startlat) <= 90 and -180 <= float(r.startlon) <= 180  # type: ignore
+    ]
+    if heat_data:
+        HeatMap(heat_data, radius=12, blur=18, min_opacity=0.3).add_to(fmap)
+
+    # Circle markers coloured by trip_distance
+    if "trip_distance" in df.columns:
+        dist_vals = _clean(df["trip_distance"]).fillna(0)
+        vmax = float(dist_vals.quantile(0.95)) or 1.0
+        colormap = matplotlib.colormaps.get_cmap("RdYlGn")
+        for row in df.dropna(subset=["startlat", "startlon"]).itertuples():
+            lat, lon = float(row.startlat), float(row.startlon)  # type: ignore
+            if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+                continue
+            dist = float(getattr(row, "trip_distance", 0) or 0)
+            dist_km = dist / 1000.0
+            norm = min(dist / vmax, 1.0)
+            r, g, b, _ = colormap(norm)
+            color = "#{:02x}{:02x}{:02x}".format(int(r * 255), int(g * 255), int(b * 255))
+            tripdate_str = str(getattr(row, "tripdate", ""))[:10]
+            folium.CircleMarker(
+                location=[lat, lon],
+                radius=4,
+                color=color,
+                fill=True,
+                fill_opacity=0.7,
+                tooltip=f"{tripdate_str} – {dist_km:.1f} km",
+            ).add_to(fmap)
+
+    return fmap
+
+
+def _build_label_group_figure(grouped_df: pd.DataFrame, top_n: int = 15) -> matplotlib.figure.Figure:
+    """Horizontal bar charts of trip count and distance per position-label group."""
+    fig, axes = _make_figure(2, 1)
+    ax_trips = axes[0][0]
+    ax_dist = axes[1][0]
+
+    if grouped_df.empty:
+        ax_trips.set_title("No label groups")
+        ax_dist.set_title("No label groups")
+        return fig
+
+    top_trips = grouped_df.sort_values("trips", ascending=False).head(top_n).iloc[::-1]
+    ax_trips.barh(top_trips["label"], top_trips["trips"], color="#4C72B0")
+    ax_trips.set_title(f"Top {len(top_trips)} labels by trip count")
+    ax_trips.set_xlabel("Trips")
+    ax_trips.grid(axis="x", linestyle="--", alpha=0.3)
+
+    top_dist = grouped_df.sort_values("distance_km", ascending=False).head(top_n).iloc[::-1]
+    ax_dist.barh(top_dist["label"], top_dist["distance_km"], color="#55A868")
+    ax_dist.set_title(f"Top {len(top_dist)} labels by total distance (km)")
+    ax_dist.set_xlabel("km")
+    ax_dist.grid(axis="x", linestyle="--", alpha=0.3)
+
+    return fig
+
+
+def _build_metric_explorer_figure(df: pd.DataFrame, metric_name: str) -> matplotlib.figure.Figure:
+    fig, axes = _make_figure(2, 1)
+    ax_ts = axes[0][0]
+    ax_hist = axes[1][0]
+
+    if not metric_name:
+        ax_ts.set_title("Select a metric")
+        return fig
+
+    category, display_name, unit = categorize_metric(metric_name)
+    unit_txt = f" ({unit})" if unit else ""
+
+    value_col = f"{metric_name}_avg"
+    if value_col not in df.columns:
+        ax_ts.set_title(f"{display_name}{unit_txt} - avg column not available")
+        return fig
+
+    dated = df.copy()
+    dated["tripdate"] = pd.to_datetime(dated.get("tripdate"), errors="coerce")  # type: ignore
+    dated = dated.dropna(subset=["tripdate"]).sort_values("tripdate")
+    if dated.empty:
+        ax_ts.set_title("No dated trips")
+        return fig
+
+    values = _clean(pd.to_numeric(dated[value_col], errors="coerce")).dropna()
+    if values.empty:
+        ax_ts.set_title(f"{display_name}{unit_txt} - no usable values")
+        return fig
+
+    x = dated.loc[values.index, "tripdate"]
+    ax_ts.plot(x, values, color="#2d6a4f", linewidth=1.2, alpha=0.9)
+    ax_ts.scatter(x, values, color="#40916c", s=12, alpha=0.6, linewidths=0)
+    ax_ts.set_title(f"{display_name}{unit_txt} over time [{category.value}]")
+    ax_ts.grid(linestyle="--", alpha=0.3)
+    _ax_date_fmt(ax_ts, pd.DataFrame({"tripdate": x}))
+
+    ax_hist.hist(values, bins=30, color="#4C72B0", alpha=0.75, edgecolor="white", linewidth=0.4)
+    ax_hist.set_title(f"{display_name}{unit_txt} distribution")
+    ax_hist.set_ylabel("Trips")
+    ax_hist.grid(axis="y", linestyle="--", alpha=0.3)
+
+    return fig
+
+
+# ── main window class ─────────────────────────────────────────────────────────
+
+class TripStatsWindow(QMainWindow):
+    def __init__(self, args: Any, engine: Any, parent: Any = None) -> None:
+        super().__init__(parent)
+        self.args = args
+        self.engine = engine
+        self.setWindowTitle("Trip Statistics")
+        self.resize(1400, 860)
+
+        self._df: pd.DataFrame = pd.DataFrame()
+        self._quality_raw_df: pd.DataFrame = pd.DataFrame()
+        self._quality_df: pd.DataFrame = pd.DataFrame()
+        self._metric_bases: list[str] = []
+        self._loader_thread: QThread | None = None
+        self._loader_worker: _TripStatsLoader | None = None
+        self._label_group_mode: str = "start"
+        self._grouped_label_df: pd.DataFrame = pd.DataFrame()
+        self._label_group_to_fileids: dict[str, list[int]] = {}
+        self._active_label_fileids: list[int] | None = None
+
+        self.Session = sessionmaker(bind=self.engine)
+
+        # ── central widget & top-level layout ─────────────────────────────
+        central = QWidget()
+        root_layout = QVBoxLayout(central)
+        root_layout.setContentsMargins(4, 4, 4, 4)
+        root_layout.setSpacing(4)
+
+        # ── toolbar ───────────────────────────────────────────────────────
+        toolbar = QWidget()
+        toolbar.setMaximumHeight(32)
+        tb_layout = QHBoxLayout(toolbar)
+        tb_layout.setContentsMargins(2, 2, 2, 2)
+        tb_layout.setSpacing(6)
+
+        self.refresh_btn = QPushButton("Refresh")
+        self.refresh_btn.setFixedHeight(26)
+        self.refresh_btn.clicked.connect(self._load_data)
+
+        tb_layout.addWidget(QLabel("Group by:"))
+        self.group_combo = QComboBox()
+        self.group_combo.addItems(["Month", "Week", "Day"])
+        self.group_combo.setFixedWidth(80)
+        self.group_combo.currentTextChanged.connect(self._on_group_changed)
+        tb_layout.addWidget(self.group_combo)
+        tb_layout.addWidget(self.refresh_btn)
+
+        self.status_label = QLabel("Loading…")
+        tb_layout.addStretch()
+        tb_layout.addWidget(self.status_label)
+        root_layout.addWidget(toolbar)
+
+        # ── main splitter (left summary | right charts+map) ───────────────
+        main_splitter = QSplitter(Qt.Orientation.Horizontal)
+
+        # ── left panel: summary cards + table ────────────────────────────
+        left_panel = QWidget()
+        left_layout = QVBoxLayout(left_panel)
+        left_layout.setContentsMargins(2, 2, 2, 2)
+        left_layout.setSpacing(4)
+
+        self.summary_label = QLabel("No data loaded.")
+        self.summary_label.setWordWrap(True)
+        self.summary_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        self.summary_label.setFont(QFont("Monospace", 8))
+        self.summary_label.setMaximumHeight(160)
+        left_layout.addWidget(self.summary_label)
+
+        self.trips_table = QTableView()
+        self.trips_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.trips_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.trips_table.setSortingEnabled(True)
+        self.trips_table.verticalHeader().setVisible(False)
+        self.trips_table.setFont(QFont("Monospace", 7))
+        left_layout.addWidget(self.trips_table)
+
+        main_splitter.addWidget(left_panel)
+
+        # ── right panel: tab widget (charts + map) ────────────────────────
+        self.chart_tabs = QTabWidget()
+
+        # Timeline tab
+        self._timeline_fig, _ = _make_figure(2, 1)
+        self._timeline_canvas = FigureCanvas(self._timeline_fig)
+        self._timeline_canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.chart_tabs.addTab(self._timeline_canvas, "Timeline")
+
+        # Distance / Duration tab
+        self._dist_fig, _ = _make_figure(1, 2)
+        self._dist_canvas = FigureCanvas(self._dist_fig)
+        self._dist_canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.chart_tabs.addTab(self._dist_canvas, "Distance & Duration")
+
+        # Speed & Engine tab
+        self._speed_fig, _ = _make_figure(2, 2)
+        self._speed_canvas = FigureCanvas(self._speed_fig)
+        self._speed_canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.chart_tabs.addTab(self._speed_canvas, "Speed & Engine")
+
+        # Fuel tab
+        self._fuel_fig, _ = _make_figure(2, 2)
+        self._fuel_canvas = FigureCanvas(self._fuel_fig)
+        self._fuel_canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.chart_tabs.addTab(self._fuel_canvas, "Fuel & Temp")
+
+        # Data quality tab
+        quality_tab = QWidget()
+        quality_layout = QVBoxLayout(quality_tab)
+        quality_layout.setContentsMargins(4, 4, 4, 4)
+        quality_layout.setSpacing(4)
+        self.quality_summary_label = QLabel("Metric quality pending")
+        self.quality_summary_label.setWordWrap(True)
+        quality_layout.addWidget(self.quality_summary_label)
+        self.quality_table = QTableView()
+        self.quality_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.quality_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.quality_table.setSortingEnabled(True)
+        self.quality_table.verticalHeader().setVisible(False)
+        self.quality_table.setFont(QFont("Monospace", 7))
+        quality_layout.addWidget(self.quality_table)
+        self.chart_tabs.addTab(quality_tab, "Data Quality")
+
+        # Metric explorer tab
+        explorer_tab = QWidget()
+        explorer_layout = QVBoxLayout(explorer_tab)
+        explorer_layout.setContentsMargins(4, 4, 4, 4)
+        explorer_layout.setSpacing(4)
+        explorer_toolbar = QWidget()
+        explorer_tb_layout = QHBoxLayout(explorer_toolbar)
+        explorer_tb_layout.setContentsMargins(0, 0, 0, 0)
+        explorer_tb_layout.addWidget(QLabel("Category:"))
+        self.metric_category_combo = QComboBox()
+        self.metric_category_combo.addItem("All", "all")
+        self.metric_category_combo.currentIndexChanged.connect(self._on_metric_category_changed)
+        explorer_tb_layout.addWidget(self.metric_category_combo)
+        explorer_tb_layout.addWidget(QLabel("Metric:"))
+        self.metric_combo = QComboBox()
+        self.metric_combo.currentIndexChanged.connect(self._on_metric_changed)
+        explorer_tb_layout.addWidget(self.metric_combo)
+        explorer_tb_layout.addStretch()
+        self.metric_quality_label = QLabel("Quality: -")
+        explorer_tb_layout.addWidget(self.metric_quality_label)
+        explorer_layout.addWidget(explorer_toolbar)
+        self._metric_fig, _ = _make_figure(2, 1)
+        self._metric_canvas = FigureCanvas(self._metric_fig)
+        self._metric_canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        explorer_layout.addWidget(self._metric_canvas)
+        self.chart_tabs.addTab(explorer_tab, "Metric Explorer")
+
+        # Position labels tab
+        labels_tab = QWidget()
+        labels_layout = QVBoxLayout(labels_tab)
+        labels_layout.setContentsMargins(4, 4, 4, 4)
+        labels_layout.setSpacing(4)
+
+        labels_toolbar = QWidget()
+        labels_tb_layout = QHBoxLayout(labels_toolbar)
+        labels_tb_layout.setContentsMargins(0, 0, 0, 0)
+        labels_tb_layout.addWidget(QLabel("Group by:"))
+        self.label_group_combo = QComboBox()
+        self.label_group_combo.addItem("Start label", "start")
+        self.label_group_combo.addItem("End label", "end")
+        self.label_group_combo.addItem("Start -> End label", "pair")
+        self.label_group_combo.currentIndexChanged.connect(self._on_label_group_mode_changed)
+        labels_tb_layout.addWidget(self.label_group_combo)
+        self.label_group_filter_edit = QLineEdit()
+        self.label_group_filter_edit.setPlaceholderText("Filter labels")
+        self.label_group_filter_edit.setClearButtonEnabled(True)
+        self.label_group_filter_edit.setFixedWidth(200)
+        self.label_group_filter_edit.textChanged.connect(self._on_label_group_filter_changed)
+        labels_tb_layout.addWidget(self.label_group_filter_edit)
+        self.clear_label_filter_btn = QPushButton("Clear filter")
+        self.clear_label_filter_btn.setFixedHeight(24)
+        self.clear_label_filter_btn.clicked.connect(self._on_clear_label_filter)
+        labels_tb_layout.addWidget(self.clear_label_filter_btn)
+        labels_tb_layout.addStretch()
+        self.label_group_status = QLabel("")
+        labels_tb_layout.addWidget(self.label_group_status)
+        labels_layout.addWidget(labels_toolbar)
+        labels_hint = QLabel("Select one or more label groups below to scope every tab (Timeline, Distance, Speed, Fuel, Metric Explorer, Map) to matching trips.")
+        labels_hint.setWordWrap(True)
+        labels_layout.addWidget(labels_hint)
+
+        labels_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.label_group_table = QTableView()
+        self.label_group_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.label_group_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.label_group_table.setSortingEnabled(True)
+        self.label_group_table.verticalHeader().setVisible(False)
+        self.label_group_table.setFont(QFont("Monospace", 7))
+        labels_splitter.addWidget(self.label_group_table)
+
+        self._label_fig, _ = _make_figure(2, 1)
+        self._label_canvas = FigureCanvas(self._label_fig)
+        self._label_canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        labels_splitter.addWidget(self._label_canvas)
+        labels_splitter.setSizes([420, 640])
+        labels_layout.addWidget(labels_splitter)
+
+        self.chart_tabs.insertTab(0, labels_tab, "Position Labels")
+
+        # Map tab
+        self._stats_map_canvas = FoliumMapView()
+        self.chart_tabs.addTab(self._stats_map_canvas, "Map")
+
+        main_splitter.addWidget(self.chart_tabs)
+        main_splitter.setSizes([340, 1060])
+
+        root_layout.addWidget(main_splitter)
+        self.setCentralWidget(central)
+
+        # load on open
+        self._load_data()
+
+    # ── data loading ──────────────────────────────────────────────────────────
+
+    def _load_data(self) -> None:
+        self.refresh_btn.setEnabled(False)
+        self.status_label.setText("Loading…")
+
+        if self._loader_thread is not None:
+            try:
+                if self._loader_thread.isRunning():
+                    self.status_label.setText("Loading…")
+                    return
+            except RuntimeError:
+                # Qt already deleted the underlying C++ object; clear stale refs.
+                self._loader_thread = None
+                self._loader_worker = None
+
+        thread = QThread(self)
+        worker = _TripStatsLoader(self.engine)
+        worker.moveToThread(thread)
+
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_data_loaded)
+        worker.error.connect(self._on_load_error)
+        worker.finished.connect(thread.quit)
+        worker.error.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        worker.error.connect(worker.deleteLater)
+        thread.finished.connect(self._on_loader_thread_finished)
+        thread.finished.connect(thread.deleteLater)
+
+        self._loader_thread = thread
+        self._loader_worker = worker
+        thread.start()
+
+    def _on_load_error(self, msg: str) -> None:
+        self.status_label.setText(f"Error: {msg}")
+        self.refresh_btn.setEnabled(True)
+
+    def _on_loader_thread_finished(self) -> None:
+        self._loader_thread = None
+        self._loader_worker = None
+
+    def _on_data_loaded(self, df: pd.DataFrame, quality_raw: pd.DataFrame) -> None:
+        df["start_label"] = df.get("start_label", pd.Series(dtype=str)).fillna("").astype(str).str.strip()
+        df["end_label"] = df.get("end_label", pd.Series(dtype=str)).fillna("").astype(str).str.strip()
+        df.loc[df["start_label"] == "", "start_label"] = "(no start label)"
+        df.loc[df["end_label"] == "", "end_label"] = "(no end label)"
+        self._df = df
+        self._quality_raw_df = quality_raw
+        self.refresh_btn.setEnabled(True)
+        self._refresh_all()
+
+    def _on_group_changed(self, _: str) -> None:
+        if not self._df.empty:
+            self._refresh_timeline()
+
+    def _on_metric_category_changed(self, _: int) -> None:
+        self._refresh_metric_options()
+        self._refresh_metric_explorer()
+
+    def _on_metric_changed(self, _: int) -> None:
+        self._refresh_metric_explorer()
+
+    @staticmethod
+    def _discover_metric_bases(df: pd.DataFrame) -> list[str]:
+        suffixes = {"min", "max", "avg", "stdev"}
+        bases: set[str] = set()
+        for col in df.columns:
+            parts = str(col).rsplit("_", 1)
+            if len(parts) != 2:
+                continue
+            base, suffix = parts
+            if suffix in suffixes and base:
+                bases.add(base)
+        return sorted(bases)
+
+    @staticmethod
+    def _build_quality_summary(quality_raw: pd.DataFrame, metric_bases: list[str]) -> pd.DataFrame:
+        if quality_raw.empty or not metric_bases:
+            return pd.DataFrame(columns=["metric", "files", "mean_nullratio", "availability_pct", "usable"])
+
+        dfq = quality_raw.copy()
+        dfq["metric"] = dfq["column_name"].astype(str).map(_normalize_metric_name)
+        metric_set = {_normalize_metric_name(m) for m in metric_bases}
+        dfq = dfq[dfq["metric"].isin(metric_set)]
+        if dfq.empty:
+            return pd.DataFrame(columns=["metric", "files", "mean_nullratio", "availability_pct", "usable"])
+
+        grouped = (
+            dfq.groupby("metric", as_index=False)
+            .agg(files=("fileid", "nunique"), mean_nullratio=("nullratio", "mean"), median_nullratio=("nullratio", "median"))
+        )
+        grouped["availability_pct"] = (1.0 - grouped["mean_nullratio"]).clip(lower=0.0, upper=1.0) * 100.0
+        grouped["usable"] = grouped["mean_nullratio"] < 0.9
+        grouped.sort_values(by=["usable", "availability_pct", "metric"], ascending=[False, False, True], inplace=True)
+        grouped.reset_index(drop=True, inplace=True)
+        return grouped
+
+    # ── rendering ─────────────────────────────────────────────────────────────
+
+    def _refresh_all(self) -> None:
+        if self._df.empty:
+            self.status_label.setText("No data.")
+            return
+
+        self._metric_bases = self._discover_metric_bases(self._df)
+        self._refresh_metric_categories()
+        self._refresh_metric_options()
+
+        self._active_label_fileids = None
+        self._refresh_label_groups()
+        self._apply_scope()
+
+    def _scoped_df(self) -> pd.DataFrame:
+        if self._active_label_fileids is None or self._df.empty or "fileid" not in self._df.columns:
+            return self._df
+        return self._df[self._df["fileid"].isin(self._active_label_fileids)]
+
+    def _scoped_quality_raw(self, scoped_df: pd.DataFrame) -> pd.DataFrame:
+        if self._quality_raw_df.empty or self._active_label_fileids is None:
+            return self._quality_raw_df
+        fileids = set(pd.to_numeric(scoped_df.get("fileid", pd.Series(dtype=int)), errors="coerce").dropna().astype(int))
+        return self._quality_raw_df[self._quality_raw_df["fileid"].isin(fileids)]
+
+    def _apply_scope(self) -> None:
+        scoped = self._scoped_df()
+        self._quality_df = self._build_quality_summary(self._scoped_quality_raw(scoped), self._metric_bases)
+
+        self._refresh_summary(scoped)
+        self._refresh_table(scoped)
+        self._refresh_timeline(scoped)
+        self._refresh_dist(scoped)
+        self._refresh_speed(scoped)
+        self._refresh_fuel(scoped)
+        self._refresh_map(scoped)
+        self._refresh_quality_tab()
+        self._refresh_metric_explorer(scoped)
+        self._update_scope_status(scoped)
+
+    def _update_scope_status(self, scoped: pd.DataFrame) -> None:
+        total = len(self._df)
+        shown = len(scoped)
+        n_groups = len(self._grouped_label_df)
+        if self._active_label_fileids is None:
+            self.status_label.setText(f"{total} trips loaded.")
+            self.label_group_status.setText(f"{n_groups} label group(s)")
+        else:
+            self.status_label.setText(f"{shown} of {total} trips shown (label filter active).")
+            self.label_group_status.setText(f"{n_groups} label group(s) — filter active: {shown} trips")
+
+    def _refresh_metric_categories(self) -> None:
+        current = str(self.metric_category_combo.currentData() or "all")
+        self.metric_category_combo.blockSignals(True)
+        self.metric_category_combo.clear()
+        self.metric_category_combo.addItem("All", "all")
+        categories = sorted({categorize_metric(m)[0].value for m in self._metric_bases})
+        for cat_name in categories:
+            self.metric_category_combo.addItem(cat_name, cat_name)
+        idx = self.metric_category_combo.findData(current)
+        self.metric_category_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self.metric_category_combo.blockSignals(False)
+
+    def _refresh_metric_options(self) -> None:
+        selected_category = str(self.metric_category_combo.currentData() or "all")
+        current_metric = str(self.metric_combo.currentData() or "")
+
+        candidates = self._metric_bases
+        if selected_category != "all":
+            candidates = [m for m in candidates if categorize_metric(m)[0].value == selected_category]
+
+        self.metric_combo.blockSignals(True)
+        self.metric_combo.clear()
+        for metric in candidates:
+            _, display_name, unit = categorize_metric(metric)
+            suffix = f" ({unit})" if unit else ""
+            self.metric_combo.addItem(f"{display_name}{suffix}  [{metric}]", metric)
+        idx = self.metric_combo.findData(current_metric)
+        self.metric_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self.metric_combo.blockSignals(False)
+
+    def _refresh_quality_tab(self) -> None:
+        if self._quality_df.empty:
+            self.quality_summary_label.setText("No filestats quality data available for discovered metrics.")
+            self.quality_table.setModel(PandasModel(pd.DataFrame(columns=["metric", "files", "mean_nullratio", "availability_pct", "usable"])))
+            return
+
+        display = self._quality_df.copy()
+        display["mean_nullratio"] = display["mean_nullratio"].round(3)
+        display["median_nullratio"] = display["median_nullratio"].round(3)
+        display["availability_pct"] = display["availability_pct"].round(1)
+        model = PandasModel(display)
+        self.quality_table.setModel(model)
+        self.quality_table.resizeColumnsToContents()
+
+        usable_count = int(display["usable"].sum())
+        total_count = len(display)
+        self.quality_summary_label.setText(
+            f"Metrics with quality data: {total_count}. Usable (<0.9 nullratio): {usable_count}."
+        )
+
+    def _refresh_metric_explorer(self, df: pd.DataFrame | None = None) -> None:
+        metric_name = str(self.metric_combo.currentData() or "")
+        if not metric_name:
+            self.metric_quality_label.setText("Quality: no metric selected")
+            fig, axes = _make_figure(2, 1)
+            axes[0][0].set_title("No metric available")
+            self._replace_figure(self._metric_canvas, fig)
+            self._metric_fig = fig
+            return
+
+        quality_row = self._quality_df[self._quality_df["metric"] == _normalize_metric_name(metric_name)]
+        if not quality_row.empty:
+            q = quality_row.iloc[0]
+            self.metric_quality_label.setText(
+                f"Quality: nullratio={float(q['mean_nullratio']):.3f}, availability={float(q['availability_pct']):.1f}%, usable={bool(q['usable'])}"
+            )
+        else:
+            self.metric_quality_label.setText("Quality: no filestats row")
+
+        data = df if df is not None else self._scoped_df()
+        fig = _build_metric_explorer_figure(data, metric_name)
+        self._replace_figure(self._metric_canvas, fig)
+        self._metric_fig = fig
+
+    @staticmethod
+    def _label_group_key(row: pd.Series, mode: str) -> str:
+        start_label = str(row.get("start_label", "") or "(no start label)")
+        end_label = str(row.get("end_label", "") or "(no end label)")
+        if mode == "start":
+            return start_label
+        if mode == "end":
+            return end_label
+        return f"{start_label} -> {end_label}"
+
+    def _on_label_group_mode_changed(self, _: int) -> None:
+        self._label_group_mode = str(self.label_group_combo.currentData() or "start")
+        self._refresh_label_groups()
+        self._update_scope_status(self._scoped_df())
+
+    def _on_label_group_filter_changed(self, _: str) -> None:
+        self._refresh_label_groups()
+        self._update_scope_status(self._scoped_df())
+
+    def _on_clear_label_filter(self) -> None:
+        if self.label_group_table.selectionModel() is not None:
+            self.label_group_table.selectionModel().clearSelection()
+        self._active_label_fileids = None
+        self._apply_scope()
+
+    def _refresh_label_groups(self) -> None:
+        empty_cols = ["label", "trips", "distance_km", "avg_dist_km", "duration_h", "avg_speed_kmh", "avg_kpl", "latest_trip"]
+        df = self._df
+        if df.empty or "start_label" not in df.columns or "fileid" not in df.columns:
+            self._grouped_label_df = pd.DataFrame(columns=empty_cols)
+            self.label_group_table.setModel(PandasModel(self._grouped_label_df))
+            self._label_group_to_fileids = {}
+            self.label_group_status.setText("No label data")
+            self._replace_figure(self._label_canvas, _build_label_group_figure(self._grouped_label_df))
+            return
+
+        work = df.copy()
+        work["_label_group"] = work.apply(lambda r: self._label_group_key(r, self._label_group_mode), axis=1)
+
+        rows: list[dict[str, Any]] = []
+        self._label_group_to_fileids = {}
+        for label, g in work.groupby("_label_group", dropna=False):
+            fileids = sorted(set(int(v) for v in pd.to_numeric(g["fileid"], errors="coerce").dropna().astype(int).tolist()))
+            self._label_group_to_fileids[str(label)] = fileids
+            dist_km = float(_clean(g.get("trip_distance", pd.Series(dtype=float))).sum()) / 1000.0
+            dur_h = float(_clean(g.get("time", pd.Series(dtype=float))).sum()) / 3600.0
+            trips = len(g)
+            rows.append({
+                "label": str(label),
+                "trips": trips,
+                "distance_km": round(dist_km, 2),
+                "avg_dist_km": round(dist_km / trips, 2) if trips else 0.0,
+                "duration_h": round(dur_h, 2),
+                "avg_speed_kmh": round(float(_clean(g.get("speedobdkmh_avg", pd.Series(dtype=float))).mean()), 1),
+                "avg_kpl": round(float(_clean(g.get("tripaveragekplkpl_avg", pd.Series(dtype=float))).mean()), 2),
+                "latest_trip": pd.to_datetime(g.get("tripdate"), errors="coerce").max(),
+            })
+
+        grouped = pd.DataFrame(rows, columns=empty_cols)
+        filter_text = self.label_group_filter_edit.text().strip().casefold()
+        if filter_text and not grouped.empty:
+            grouped = grouped[grouped["label"].astype(str).str.casefold().str.contains(filter_text, na=False)].copy()
+        if not grouped.empty:
+            grouped.sort_values(by=["trips", "distance_km"], ascending=[False, False], inplace=True)
+            grouped["latest_trip"] = pd.to_datetime(grouped["latest_trip"], errors="coerce").dt.strftime("%Y-%m-%d")
+            grouped.reset_index(drop=True, inplace=True)
+
+        self._grouped_label_df = grouped
+        self.label_group_table.setModel(PandasModel(self._grouped_label_df))
+        self.label_group_table.resizeColumnsToContents()
+        if self.label_group_table.selectionModel() is not None:
+            self.label_group_table.selectionModel().selectionChanged.connect(self._on_label_group_selection_changed)
+
+        fig = _build_label_group_figure(self._grouped_label_df)
+        self._replace_figure(self._label_canvas, fig)
+        self._label_fig = fig
+
+    def _on_label_group_selection_changed(self, selected, deselected) -> None:
+        if self.label_group_table.selectionModel() is None or self._grouped_label_df.empty:
+            return
+        rows = self.label_group_table.selectionModel().selectedRows()
+        if not rows:
+            self._active_label_fileids = None
+            self._apply_scope()
+            return
+        fileids: list[int] = []
+        for row in rows:
+            view_idx = row.row()
+            if view_idx < 0 or view_idx >= len(self._grouped_label_df.index):
+                continue
+            label = str(self._grouped_label_df.iloc[view_idx]["label"])
+            fileids.extend(self._label_group_to_fileids.get(label, []))
+        if not fileids:
+            return
+        self._active_label_fileids = sorted(set(fileids))
+        self._apply_scope()
+
+    def _refresh_summary(self, df: pd.DataFrame) -> None:
+        total = len(df)
+        dist_km = (_clean(df["trip_distance"]) / 1000.0).sum() if "trip_distance" in df.columns else float("nan")
+        dur_h = (_clean(df["time"]) / 3600.0).sum() if "time" in df.columns else float("nan")
+        avg_dist = dist_km / total if total else float("nan")
+        avg_spd = _clean(df.get("speedobdkmh_avg", pd.Series(dtype=float))).mean()
+        avg_kpl = _clean(df.get("tripaveragekplkpl_avg", pd.Series(dtype=float))).mean()
+        max_spd = _clean(df.get("speedobdkmh_max", pd.Series(dtype=float))).max()
+
+        lines = [
+            f"Trips:          {total:>8,}",
+            f"Total distance: {dist_km:>8.1f} km",
+            f"Total duration: {dur_h:>8.1f} h",
+            f"Avg dist/trip:  {avg_dist:>8.1f} km",
+            f"Avg speed:      {avg_spd:>8.1f} km/h",
+            f"Avg efficiency: {avg_kpl:>8.2f} km/L",
+            f"Max speed ever: {max_spd:>8.1f} km/h",
+        ]
+        self.summary_label.setText("\n".join(lines))
+
+    def _refresh_table(self, df: pd.DataFrame) -> None:
+        display_cols = [
+            c for c in [
+                "fileid", "tripdate", "trip_distance", "time",
+                "speedobdkmh_avg", "speedobdkmh_max",
+                "enginerpmrpm_avg", "engineload_avg",
+                "tripaveragekplkpl_avg", "fuelusedtripl_avg",
+                "enginecoolanttemperaturec_avg", "ambientairtempc_avg",
+            ] if c in df.columns
+        ]
+        display_df = df[display_cols].copy()
+
+        if "trip_distance" in display_df.columns:
+            display_df["trip_distance"] = (_clean(display_df["trip_distance"]) / 1000.0).round(2)
+        if "time" in display_df.columns:
+            display_df["time"] = (_clean(display_df["time"]) / 60.0).round(1)
+
+        for col in display_df.select_dtypes(include="number").columns:
+            if col not in ("fileid",):
+                display_df[col] = _clean(display_df[col]).round(2)
+
+        display_df = display_df.rename(columns={
+            "trip_distance": "dist_km",
+            "time": "dur_min",
+            "speedobdkmh_avg": "spd_avg",
+            "speedobdkmh_max": "spd_max",
+            "enginerpmrpm_avg": "rpm_avg",
+            "engineload_avg": "load_avg",
+            "tripaveragekplkpl_avg": "kpl_avg",
+            "fuelusedtripl_avg": "fuel_L",
+            "enginecoolanttemperaturec_avg": "coolant_C",
+            "ambientairtempc_avg": "ambient_C",
+        })
+
+        model = PandasModel(display_df)
+        self.trips_table.setModel(model)
+        self.trips_table.resizeColumnsToContents()
+
+    def _refresh_timeline(self, df: pd.DataFrame | None = None) -> None:
+        data = df if df is not None else self._scoped_df()
+        group_by = self.group_combo.currentText()
+        new_fig = _build_timeline_figure(data, group_by)
+        self._replace_figure(self._timeline_canvas, new_fig)
+        self._timeline_fig = new_fig
+
+    def _quality_badge_for_metric(self, metric_base: str) -> str:
+        metric_norm = _normalize_metric_name(metric_base)
+        row = self._quality_df[self._quality_df["metric"] == metric_norm]
+        if row.empty:
+            return f"{metric_base}:N/A"
+        q = row.iloc[0]
+        availability = float(q["availability_pct"])
+        usable = bool(q["usable"])
+        status = "OK" if usable else "LOW"
+        return f"{metric_base}:{status} {availability:.1f}%"
+
+    def _apply_quality_caption(self, fig: matplotlib.figure.Figure, metric_bases: list[str]) -> None:
+        if not metric_bases:
+            return
+        badges = [self._quality_badge_for_metric(m) for m in metric_bases]
+        caption = "Quality " + " | ".join(badges)
+        fig.suptitle(caption, fontsize=9)
+        fig.subplots_adjust(top=0.9)
+
+    def _refresh_dist(self, df: pd.DataFrame) -> None:
+        new_fig = _build_distance_figure(df)
+        self._apply_quality_caption(new_fig, ["tripdistancekm", "triptimesincejourneystarts"])
+        self._replace_figure(self._dist_canvas, new_fig)
+        self._dist_fig = new_fig
+
+    def _refresh_speed(self, df: pd.DataFrame) -> None:
+        new_fig = _build_speed_engine_figure(df)
+        self._apply_quality_caption(new_fig, ["speedobdkmh", "enginerpmrpm", "engineload"])
+        self._replace_figure(self._speed_canvas, new_fig)
+        self._speed_fig = new_fig
+
+    def _refresh_fuel(self, df: pd.DataFrame) -> None:
+        new_fig = _build_fuel_figure(df)
+        self._apply_quality_caption(new_fig, ["tripaveragekplkpl", "fuelusedtripl", "enginecoolanttemperaturec", "ambientairtempc"])
+        self._replace_figure(self._fuel_canvas, new_fig)
+        self._fuel_fig = new_fig
+
+    def _refresh_map(self, df: pd.DataFrame) -> None:
+        try:
+            fmap = _build_map(df)
+            html = fmap._repr_html_()
+            self._stats_map_canvas.setHtml(html)
+        except Exception as exc:
+            logger.warning(f"TripStatsWindow map render failed: {exc} ({type(exc)})")
+
+    @staticmethod
+    def _replace_figure(canvas: FigureCanvas, new_fig: matplotlib.figure.Figure) -> None:
+        """Swap the figure in an existing FigureCanvas in place."""
+        canvas.figure = new_fig
+        new_fig.set_canvas(canvas)
+        canvas.draw_idle()

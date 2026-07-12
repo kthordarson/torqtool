@@ -1,7 +1,9 @@
 import io
+import math
 import json
 import time
 from typing import Any, cast
+from folium.utilities import JsCode
 import numpy as np
 import pandas as pd
 import folium
@@ -18,7 +20,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QFont, QAction, QCloseEvent
 from PySide6.QtCore import Qt, QTimer, QThread, QItemSelectionModel
 from PySide6.QtWidgets import QHeaderView
-
+from psycopg2.errors import InvalidTextRepresentation
 from schemas import dataschema
 from metric_analysis import categorize_metric, get_analysis_suggestion, group_metrics_by_category
 from .map_canvas import FoliumMapView
@@ -57,6 +59,7 @@ class MainWindow(QMainWindow):
 		self._mw_current_fileids: list[int] = []
 		self._mw_last_metric: str = 'speedobdkmh'
 		self._metric_summary_cache: dict[tuple[int, ...], pd.DataFrame] = {}
+		self._last_metric_filter_info: dict[str, int] = {"candidates": 0, "eligible": 0}
 		self._metric_source_df = pd.DataFrame(columns=["name", "min", "max", "avg"])
 		self._label_groups_df = pd.DataFrame(columns=["label", "start_points", "end_points", "total_points", "total_count"])
 		self._start_end_points_df = pd.DataFrame(columns=["pos_type", "pos_id", "lat", "lon", "count", "label_group"])
@@ -212,6 +215,9 @@ class MainWindow(QMainWindow):
 		self.metric_filter_edit.setFixedWidth(220)
 		self.metric_filter_edit.textChanged.connect(self._on_metric_filter_changed)
 		metric_filter_layout.addWidget(self.metric_filter_edit)
+		self.metric_filter_status = QLabel("filestats<0.9: 0/0")
+		self.metric_filter_status.setToolTip("Eligible metrics / candidate metrics from dataschema")
+		metric_filter_layout.addWidget(self.metric_filter_status)
 		metric_filter_layout.addStretch()
 		self.metric_table = QTableView()
 		self.metric_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -323,12 +329,16 @@ class MainWindow(QMainWindow):
 		self.select_trips_by_labels_btn = QPushButton("Select trips by labels")
 		self.select_trips_by_labels_btn.setFixedHeight(24)
 		self.select_trips_by_labels_btn.clicked.connect(self._select_torqtrips_for_selected_labels)
+		self.plot_selected_btn = QPushButton("Plot selected")
+		self.plot_selected_btn.setFixedHeight(24)
+		self.plot_selected_btn.clicked.connect(self._trigger_label_groups_trip_plot)
 		self.cancel_plot_load_btn = QPushButton("Cancel load")
 		self.cancel_plot_load_btn.setEnabled(False)
 		self.cancel_plot_load_btn.setFixedHeight(24)
 		self.cancel_plot_load_btn.clicked.connect(self._cancel_async_plot_load)
 		label_toolbar_layout.addWidget(self.label_group_mode_combo)
 		label_toolbar_layout.addWidget(self.select_trips_by_labels_btn)
+		label_toolbar_layout.addWidget(self.plot_selected_btn)
 		label_toolbar_layout.addWidget(self.cancel_plot_load_btn)
 		label_toolbar_layout.addStretch()
 		label_toolbar.setMaximumHeight(30)
@@ -418,6 +428,10 @@ class MainWindow(QMainWindow):
 		self.left_tabs.addTab(self._start_end_tab_container, "Start/End")
 		self.left_tabs.addTab(self._positions_tab_container, "Positions")
 		self.left_tabs.addTab(label_tab, "Label groups")
+
+		from .trip_stats_window import TripStatsWindow
+		self._trip_stats_window = TripStatsWindow(args, engine, self)
+		self.left_tabs.addTab(self._trip_stats_window, "Trip Stats")
 
 		self.left_tabs.currentChanged.connect(self._on_left_tab_changed)
 
@@ -777,8 +791,8 @@ class MainWindow(QMainWindow):
 			try:
 				cq = text(
 					"""
-					SELECT COUNT(*)
-					FROM torqlogs
+					SELECT sent_rows
+					FROM torqfiles
 					WHERE fileid = :fileid
 					"""
 				)
@@ -787,7 +801,7 @@ class MainWindow(QMainWindow):
 				if value is not None:
 					count = max(0, int(value))
 			except Exception as e:
-				logger.warning(f"Could not count torqlogs rows for fileid={fileid}: {e} ({type(e)})")
+				logger.warning(f"Could not count torqfiles sent_rows for fileid={fileid}: {e} ({type(e)})")
 				count = 0
 		self._trip_row_count_cache[int(fileid)] = int(count)
 		return int(count)
@@ -991,7 +1005,7 @@ class MainWindow(QMainWindow):
 			self._start_end_overlay_data.append(dict(point))
 
 		if features:
-			on_each_feature = (
+			on_each_feature = JsCode(
 				"function(feature, layer) {"
 				"  layer.on('click', function(e) {"
 				"    e.originalEvent.stopPropagation();"
@@ -1059,6 +1073,16 @@ class MainWindow(QMainWindow):
 		selection_model = self.metric_table.selectionModel()
 		if selection_model is not None:
 			selection_model.selectionChanged.connect(lambda *_: self.on_metric_selection_changed())
+		self._update_metric_filter_status()
+
+	def _update_metric_filter_status(self) -> None:
+		if not hasattr(self, "metric_filter_status"):
+			logger.warning(f'{self} missing metric_filter_status label; cannot update filter status')
+			return
+		candidates = int(self._last_metric_filter_info.get("candidates", 0) or 0)
+		eligible = int(self._last_metric_filter_info.get("eligible", 0) or 0)
+		shown = len(self._metric_df.index) if hasattr(self, "_metric_df") else 0
+		self.metric_filter_status.setText(f"filestats<0.9: {eligible}/{candidates} (shown {shown})")
 
 	def _on_metric_filter_changed(self, text: str) -> None:
 		prev_selected = set(self._get_selected_metrics())
@@ -1178,13 +1202,7 @@ class MainWindow(QMainWindow):
 		self._initial_trips_worker = worker
 		self._initial_trips_thread = thread
 		self._active_threads.add(thread)
-		self._register_thread(
-			thread,
-			owner_name="MainWindow",
-			task_name="Initial trips load",
-			launched_by="_start_async_initial_trips_load",
-			worker=worker,
-		)
+		self._register_thread(thread, owner_name="MainWindow", task_name="Initial trips load", launched_by="_start_async_initial_trips_load", worker=worker,)
 		if self.args.debug:
 			logger.debug(f'Starting initial trips load in thread {thread} active threads: {len(self._active_threads)})')
 		thread.start()
@@ -1280,8 +1298,6 @@ class MainWindow(QMainWindow):
 		labels = self._get_selected_label_groups()
 		if labels:
 			self._plot_label_groups_on_map(labels)
-			if self._get_selected_metrics():
-				self._trigger_label_groups_trip_plot()
 
 	def _trigger_label_groups_trip_plot(self) -> None:
 		"""Silently select and async-plot trips for the currently selected label groups."""
@@ -1410,7 +1426,7 @@ class MainWindow(QMainWindow):
 			with self.engine.connect() as conn:
 				rows = conn.execute(query, params).mappings().all()
 		except Exception as e:
-			logger.error(f"Failed to query torqtrips by labels: {e} ({type(e)})")
+			logger.error(f"Failed to query torqfiles by labels: {e} ({type(e)})")
 			QMessageBox.warning(self, "Query failed", f"Could not select trips by labels:\n{e}")
 			return
 
@@ -1432,7 +1448,7 @@ class MainWindow(QMainWindow):
 		table_df = self.df_trips.reset_index(drop=True)
 		matching_rows = [
 			int(idx)
-			for idx, fid in enumerate(pd.to_numeric(table_df.get("fileid"), errors="coerce").fillna(-1).astype(int).tolist())
+			for idx, fid in enumerate(pd.to_numeric(table_df.get("fileid"), errors="coerce").fillna(-1).astype(int).tolist())  # type: ignore
 			if fid in fileids
 		]
 		if not matching_rows:
@@ -1464,14 +1480,19 @@ class MainWindow(QMainWindow):
 		return True
 
 	def _on_left_tab_changed(self, index: int):
+		full_width_tabs = {2, 4}  # Positions, Trip Stats
 		if hasattr(self, "right_panel") and self.right_panel is not None:
-			self.right_panel.setVisible(index != 2)
+			self.right_panel.setVisible(index not in full_width_tabs)
 		if hasattr(self, "main_splitter") and self.main_splitter is not None:
 			sizes = self.main_splitter.sizes()
 			if len(sizes) >= 2:
 				total = max(1, sizes[0] + sizes[1])
-				if index == 0:
+				if index in full_width_tabs:
+					self.main_splitter.setSizes([total, 0])
+				elif index == 0:
 					self.main_splitter.setSizes([320, max(900, total - 320)])
+				else:
+					self.main_splitter.setSizes([320, max(1, total - 320)])
 		if index == 0:
 			rows = sorted(set(idx.row() for idx in self.table.selectionModel().selectedRows())) if self.table.selectionModel() is not None else []
 			self._populate_metric_columns(self._get_selected_fileids(rows) if rows else None)
@@ -1489,7 +1510,7 @@ class MainWindow(QMainWindow):
 		self._set_metric_table_model(summary_df)
 
 		if self._metric_df.empty:
-			logger.warning("No metrics with valid non-zero data were found for current selection")
+			logger.warning(f"No metrics with valid non-zero data were found for current selection. Selected fileids: {fileids[:10]} prev_selected: {len(prev_selected)} summary_df: {len(summary_df)}")
 			return
 
 		selection_model = self.metric_table.selectionModel()
@@ -1519,10 +1540,53 @@ class MainWindow(QMainWindow):
 	def _resolve_actual_torqlogs_column(self, requested_column: str) -> str | None:
 		return self._torqlogs_norm_to_actual.get(_normalize_col_name(requested_column))
 
+	def _get_filestats_allowed_columns(self, fileids: list[int] | None = None, threshold: float = 0.9) -> set[str]:
+		"""Return filestats-backed column names whose mean nullratio is below threshold."""
+		if threshold <= 0:
+			return set()
+
+		params: dict[str, Any] = {"threshold": float(threshold)}
+		where_clause = ""
+		if fileids:
+			placeholder_parts = []
+			for idx, fid in enumerate(sorted(set(int(fid) for fid in fileids))):
+				key = f"fid{idx}"
+				params[key] = fid
+				placeholder_parts.append(f":{key}")
+			if placeholder_parts:
+				where_clause = f"WHERE fileid IN ({', '.join(placeholder_parts)})"
+
+		query = text(
+			f"""
+			SELECT column_name
+			FROM filestats
+			{where_clause}
+			GROUP BY column_name
+			HAVING AVG(COALESCE(nullratio, 1.0)) < :threshold
+			"""
+		)
+
+		try:
+			with self.engine.connect() as conn:
+				rows = conn.execute(query, params).all()
+		except Exception as e:
+			logger.warning(f"Could not read filestats eligible columns: {e} ({type(e)})")
+			return set()
+		result = {str(row[0]) for row in rows if row and row[0] is not None and '$' not in str(row[0])}
+		if len(result) == 0:
+			logger.warning(f"No eligible filestats columns found for threshold {threshold} and fileids {fileids}")
+		return result
+
 	def _get_metric_summary_for_selection(self, fileids: list[int] | None = None) -> pd.DataFrame:
+		empty_df = pd.DataFrame(columns=["name", "min", "max", "avg"])
 		cache_key = tuple(sorted(int(fid) for fid in fileids)) if fileids else tuple()
 		cached = self._metric_summary_cache.get(cache_key)
 		if cached is not None:
+			if self.args.debug and len(cached) > 0:
+				logger.debug(f"Using cached metric summary for {len(fileids) if fileids else 'all'} trips ({len(cached)} metrics)")
+			elif self.args.debug and len(cached) == 0:
+				logger.warning(f"Using cached metric summary for {len(fileids) if fileids else 'all'} trips (no metrics) cache_key: {cache_key}")
+			self._update_metric_filter_status()
 			return cached.copy()
 
 		requested = sorted(dataschema.keys())
@@ -1534,8 +1598,23 @@ class MainWindow(QMainWindow):
 				column_pairs.append((req, actual))
 
 		if not column_pairs:
-			empty_df = pd.DataFrame(columns=["name", "min", "max", "avg"])
+			self._last_metric_filter_info = {"candidates": 0, "eligible": 0}
 			self._metric_summary_cache[cache_key] = empty_df
+			self._update_metric_filter_status()
+			if self.args.debug:
+				logger.warning(f"No numeric columns found for requested metrics ({len(requested)} total) for {len(fileids) if fileids else 'all'} trips. cache_key: {cache_key}")
+			return empty_df.copy()
+
+		candidate_count = len(column_pairs)
+		allowed_cols = self._get_filestats_allowed_columns(fileids=fileids, threshold=0.9)
+		column_pairs = [(requested_col, actual_col) for requested_col, actual_col in column_pairs if actual_col in allowed_cols]
+		self._last_metric_filter_info = {"candidates": candidate_count, "eligible": len(column_pairs)}
+
+		if not column_pairs:
+			self._metric_summary_cache[cache_key] = empty_df
+			self._update_metric_filter_status()
+			if self.args.debug:
+				logger.warning(f"No columns with filestats nullratio < 0.9 found for requested metrics ({len(requested)} total) for {len(fileids) if fileids else 'all'} trips. cache_key: {cache_key}")
 			return empty_df.copy()
 
 		select_parts: list[str] = []
@@ -1562,6 +1641,10 @@ class MainWindow(QMainWindow):
 		rows: list[dict[str, float | str]] = []
 		try:
 			df = pd.read_sql(query, self.engine)
+		except Exception as e:
+			logger.error(f"Failed to evaluate metric summary for selection: {e} ({type(e)})")
+			df = pd.DataFrame()  # empty df to trigger fallback
+		try:
 			if not df.empty:
 				row = df.iloc[0]
 				for idx, (requested_col, _) in enumerate(column_pairs):
@@ -1581,8 +1664,10 @@ class MainWindow(QMainWindow):
 						"max": float(max_val),
 						"avg": float(avg_val),
 					})
-		except Exception as e:
+		except InvalidTextRepresentation as e:
 			logger.warning(f"Failed to evaluate metric summary for selection: {e} ({type(e)})")
+		except Exception as e:
+			logger.error(f"Failed to evaluate metric summary for selection: {e} ({type(e)})")
 
 		summary_df = pd.DataFrame(rows, columns=["name", "min", "max", "avg"])
 		if not summary_df.empty:
@@ -1591,6 +1676,9 @@ class MainWindow(QMainWindow):
 			summary_df[["min", "max", "avg"]] = summary_df[["min", "max", "avg"]].round(3)
 
 		self._metric_summary_cache[cache_key] = summary_df
+		self._update_metric_filter_status()
+		if self.args.debug:
+			logger.debug(f"filestats metric filter (<0.9 nullratio) retained {len(column_pairs)} of {candidate_count} columns  for {len(fileids) if fileids else 'all'} trips")
 		return summary_df.copy()
 
 	def _get_metric_columns_with_valid_data(self, fileids: list[int] | None = None) -> list[str]:
@@ -1602,7 +1690,8 @@ class MainWindow(QMainWindow):
 	def refresh_plot(self):
 		rows = sorted(set(index.row() for index in self.table.selectionModel().selectedRows()))
 		if rows:
-			logger.debug(f"refresh_plot triggered with {len(rows)} selected row(s): {rows[:5]}{'...' if len(rows) > 5 else ''} _force_next_plot_async: {self._force_next_plot_async}")
+			if self.args.debug:
+				logger.debug(f"refresh_plot triggered with {len(rows)} selected row(s): {rows[:5]}{'...' if len(rows) > 5 else ''} _force_next_plot_async: {self._force_next_plot_async}")
 			if self._force_next_plot_async or len(rows) > 1:
 				self._force_next_plot_async = False
 				self._start_async_plot_for_rows(rows)
@@ -1698,13 +1787,7 @@ class MainWindow(QMainWindow):
 		self._plot_data_worker = worker
 		self._plot_data_thread = thread
 		self._active_threads.add(thread)
-		self._register_thread(
-			thread,
-			owner_name="MainWindow",
-			task_name="Trip plot background load",
-			launched_by="_load_plot_data_async",
-			worker=worker,
-		)
+		self._register_thread(thread, owner_name="MainWindow", task_name="Trip plot background load", launched_by="_load_plot_data_async", worker=worker,)
 		thread.start()
 
 	def _on_async_plot_preview(self, request_id: int, payload: object) -> None:
@@ -1937,23 +2020,25 @@ class MainWindow(QMainWindow):
 		lon_col = self._resolved_torqlogs_columns.get('longitude')
 		time_col = (self._resolve_actual_torqlogs_column('gpstime')
 					or self._resolve_actual_torqlogs_column('devicetime'))
+		bearing_col = self._resolve_actual_torqlogs_column('gpsbearing')
 		if not (lat_col and lon_col):
 			return None
 
 		time_select = f', "{time_col}" AS metric_time' if time_col else ''
+		bearing_select = f', "{bearing_col}" AS gpsbearing' if bearing_col else ''
 		order_expr = f'"{time_col}", id' if time_col else 'id'
 		sample_step = self._sample_step_for_fileid(fileid)
 		q = text(
 			f'''
 			WITH ordered AS (
-				SELECT "{lon_col}" AS longitude, "{lat_col}" AS latitude{time_select},
+				SELECT "{lon_col}" AS longitude, "{lat_col}" AS latitude{time_select}{bearing_select},
 					ROW_NUMBER() OVER (ORDER BY {order_expr}) AS rn
 				FROM torqlogs
 				WHERE fileid = :fileid
 					AND "{lon_col}" IS NOT NULL
 					AND "{lat_col}" IS NOT NULL
 			)
-			SELECT longitude, latitude{', metric_time' if time_col else ''}
+			SELECT longitude, latitude{', metric_time' if time_col else ''}{', gpsbearing' if bearing_col else ''}
 			FROM ordered
 			WHERE (:sample_step <= 1) OR ((rn - 1) % :sample_step = 0)
 			ORDER BY rn
@@ -1966,7 +2051,7 @@ class MainWindow(QMainWindow):
 			logger.error(f"Failed to load geo data for trip fileid={fileid}: {e} ({type(e)})")
 			df_geo = pd.DataFrame()
 		if df_geo.empty:
-			payload = {"lat": [], "lon": [], "time": []}
+			payload = {"lat": [], "lon": [], "time": [], "gpsbearing": []}
 			self._trip_geo_cache[fileid] = payload
 			return payload
 
@@ -1975,8 +2060,11 @@ class MainWindow(QMainWindow):
 		time_values: list = []
 		if 'metric_time' in df_geo.columns:
 			time_values = pd.to_datetime(df_geo['metric_time'], errors='coerce').tolist()
+		bearing_values: list = []
+		if 'gpsbearing' in df_geo.columns:
+			bearing_values = pd.to_numeric(df_geo['gpsbearing'], errors='coerce').tolist()
 
-		payload = {"lat": lat_vals, "lon": lon_vals, "time": time_values}
+		payload = {"lat": lat_vals, "lon": lon_vals, "time": time_values, "gpsbearing": bearing_values}
 		self._trip_geo_cache[fileid] = payload
 		return payload
 
@@ -2030,25 +2118,23 @@ class MainWindow(QMainWindow):
 		lat_vals = geo_payload["lat"]
 		lon_vals = geo_payload["lon"]
 		time_values = geo_payload["time"]
+		bearing_values = geo_payload.get("gpsbearing", [])
 		points = min(len(lat_vals), len(lon_vals), len(speed_series))
 		if time_values:
 			points = min(points, len(time_values))
+		if bearing_values:
+			points = min(points, len(bearing_values))
 
 		payload: dict[str, list] = {
 			"lat": lat_vals[:points],
 			"lon": lon_vals[:points],
 			"speed": speed_series.tolist()[:points],
 			"time": time_values[:points] if time_values else [],
+			"gpsbearing": bearing_values[:points] if bearing_values else [],
 		}
 		self._trip_plot_cache[cache_key] = payload
 		logger.debug(f"Loaded trip plot data for fileid={fileid}, metric_name={metric_name}, points={len(payload['lat'])}")
 		return payload
-
-	def _selection_key(self, fileids: list[int], metric_name: str) -> str:
-		return (
-			f"{self._map_cache_version}|metric={metric_name}|sample={self._sampling_cache_token(fileids)}|"
-			+ ",".join(str(fid) for fid in sorted(fileids))
-		)
 
 	def _timeseries_selection_key(self, fileids: list[int], metric_names: list[str]) -> str:
 		metrics_part = ",".join(metric_names)
@@ -2220,8 +2306,11 @@ class MainWindow(QMainWindow):
 			lat_vals = item.get("lat", [])
 			lon_vals = item.get("lon", [])
 			speed_vals = self._speed_values_for_map_item(item)
+			bearing_vals = item.get("gpsbearing", [])
 			fileid = int(item.get("fileid", -1))
 			if not lat_vals:
+				if self.args.debug:
+					logger.warning(f"No latitude data for trip fileid={fileid}, skipping map layer")
 				continue
 			base_rgba = fileid_color_map.get(fileid, cmap(idx % self._colormap_cycle_length(colormap_name)))
 			base_hex = mcolors.to_hex(base_rgba)
@@ -2248,6 +2337,31 @@ class MainWindow(QMainWindow):
 				name=f"Trip {fileid}",
 			)
 			layer.add_to(m)
+
+			# Add arrows for direction using gpsbearing
+			if bearing_vals and len(bearing_vals) == len(lat_vals):
+				for i in range(0, len(lat_vals), max(1, len(lat_vals)//30)):
+					lat = lat_vals[i]
+					lon = lon_vals[i]
+					bearing = bearing_vals[i]
+					if not bearing:
+						if self.args.debug:
+							logger.warning(f"No bearing data for fileid={fileid} at index {i}, skipping arrow")
+						bearing = 0.0
+					# Arrow length in degrees (very small, for visual effect)
+					arrow_length = 0.0005
+					# Convert bearing to radians
+					theta = math.radians(bearing)
+					# Calculate end point
+					dlat = arrow_length * math.cos(theta)
+					dlon = arrow_length * math.sin(theta) / max(1e-6, math.cos(math.radians(lat)))
+					lat2 = lat + dlat
+					lon2 = lon + dlon
+					try:
+						folium.PolyLine(locations=[(lat, lon), (lat2, lon2)], color=base_hex, weight=2, opacity=0.9, tooltip=f"Bearing: {bearing:.1f}°",).add_to(m)
+					except ValueError as e:
+						if self.args.debug:
+							logger.warning(f"Failed to add bearing arrow for fileid={fileid} at index {i} with lat={lat}, lon={lon}, bearing={bearing}: {e} i: {i}")
 		if self.args.debug:
 			if render_phase == "preview":
 				logger.debug(f"Preview map update: loaded={len(trip_data_list)}/{len(fileids)} trips,  bounds={bounds}, speed_data_ready={has_speed_data}")
@@ -2293,6 +2407,7 @@ class MainWindow(QMainWindow):
 				"lon": plot_data["lon"],
 				"speed": plot_data["speed"],
 				"time": plot_data.get("time", []),
+				"gpsbearing": plot_data.get("gpsbearing", []),
 			})
 			all_metric_values.extend(plot_data["speed"])
 
@@ -2355,7 +2470,7 @@ class MainWindow(QMainWindow):
 			total_distance = sum(row.get('trip_distance', 0) or 0 for row in trip_info.values())
 			total_duration = sum(row.get('trip_duration', 0) or 0 for row in trip_info.values())
 			start_dates = [str(row.get('trip_start', '')) for row in trip_info.values() if row.get('trip_start')]
-			end_dates   = [str(row.get('trip_end',   '')) for row in trip_info.values() if row.get('trip_end')]
+			end_dates = [str(row.get('trip_end', '')) for row in trip_info.values() if row.get('trip_end')]
 			if start_dates:
 				lines.append(f"Date:     {start_dates[0]}")
 			if end_dates and end_dates != start_dates:
@@ -2486,8 +2601,7 @@ class MainWindow(QMainWindow):
 				use_time = bool(time_vals) and any(t is not None and not pd.isna(t) for t in time_vals[:10])
 				if use_progress_axis:
 					if use_time:
-						pairs = [(t, v) for t, v in zip(time_vals, metric_vals)
-								 if t is not None and not pd.isna(t)]
+						pairs = [(t, v) for t, v in zip(time_vals, metric_vals) if t is not None and not pd.isna(t)]
 						metric_clean = [v for _, v in pairs]
 					else:
 						metric_clean = metric_vals
@@ -2499,8 +2613,7 @@ class MainWindow(QMainWindow):
 					metric_vals = metric_clean
 				else:
 					if use_time:
-						pairs = [(t, v) for t, v in zip(time_vals, metric_vals)
-								 if t is not None and not pd.isna(t)]
+						pairs = [(t, v) for t, v in zip(time_vals, metric_vals) if t is not None and not pd.isna(t)]
 						if pairs:
 							x_vals, metric_vals = zip(*pairs)
 							has_datetime_x = True

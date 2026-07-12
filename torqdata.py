@@ -3,7 +3,7 @@ from sqlalchemy import text, inspect
 from sqlalchemy.exc import OperationalError
 from converter import get_args
 from utils import get_engine_session
-from torqcols import allcols
+from schemas import dataschema
 
 
 def _normalize_col_name(value: str) -> str:
@@ -33,7 +33,7 @@ def get_trip_data(trip, session):
 	normalized_actual = {_normalize_col_name(col): col for col in actual_columns}
 	requested_columns = []
 	logger.info(f'[get_trip_data] trip={trip} actual_columns={len(actual_columns)} normalized_actual={len(normalized_actual)}')
-	for c in allcols:
+	for c in dataschema:
 		actual_col = normalized_actual.get(_normalize_col_name(c))
 		if not actual_col:
 			continue

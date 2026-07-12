@@ -5,6 +5,7 @@ import argparse
 
 from loguru import logger
 
+# todo check openstreetmaps fore more info
 
 def get_args(appname: str):
 	parser = argparse.ArgumentParser(description=appname)

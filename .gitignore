@@ -1,3 +1,5 @@
+*,db*
+*,db.*
 *.db-shm
 *.db-wal
 plotutils.py
@@ -374,3 +376,4 @@ Untitled-1.ipynb
 torqfiskur.db.bak.0
 torqfiskur1.db-shm
 torqfiskur1.db-wal
+torqdata.db.0

@@ -3,6 +3,7 @@ import time
 from typing import Any, cast
 
 import folium
+from folium.utilities import JsCode
 import pandas as pd
 from loguru import logger
 from sqlalchemy import text
@@ -49,11 +50,14 @@ class PositionManagerWindow(QMainWindow):
         self._restore_after_reload: dict[str, Any] | None = None
         self._min_count_filter = 0
         self._current_sort_column: int = -1
-        self._current_sort_order: Qt.SortOrder = Qt.SortOrder.AscendingOrder
+        self._current_sort_order: Qt.SortOrder = Qt.SortOrder.DescendingOrder
         self._applying_sort: bool = False
         self._label_filter_active: bool = False
         self._label_filter_text: str = ""
         self._hide_labeled_active: bool = False
+        self._visible_on_map_filter_active: bool = False
+        self._visible_map_bounds: tuple[float, float, float, float] | None = None
+        self._show_selected_only_on_map: bool = False
         self._updating_selection: bool = False
         self._pending_pick_call: tuple[list[int], bool] | None = None
         self._group_mode: str = "label"
@@ -91,6 +95,12 @@ class PositionManagerWindow(QMainWindow):
         self.positions_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.positions_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.positions_table.setFont(QFont("Monospace", self._table_font_size))
+        self.positions_table.setStyleSheet(
+            "QTableView::item:selected {"
+            "  background-color: #c6f6c6;"
+            "  color: #1f1f1f;"
+            "}"
+        )
 
         grouped_tab = QWidget()
         grouped_layout = QVBoxLayout(grouped_tab)
@@ -112,6 +122,12 @@ class PositionManagerWindow(QMainWindow):
         self.grouped_positions_table.setSortingEnabled(True)
         self.grouped_positions_table.verticalHeader().setVisible(False)
         self.grouped_positions_table.setFont(QFont("Monospace", self._table_font_size))
+        self.grouped_positions_table.setStyleSheet(
+            "QTableView::item:selected {"
+            "  background-color: #c6f6c6;"
+            "  color: #1f1f1f;"
+            "}"
+        )
         grouped_layout.addWidget(grouped_toolbar)
         grouped_layout.addWidget(self.grouped_positions_table)
 
@@ -169,8 +185,10 @@ class PositionManagerWindow(QMainWindow):
         self.label_filter_edit.setEnabled(False)
         self.label_filter_edit.setFixedWidth(180)
         self.hide_labeled_chk = QCheckBox("Hide labeled")
-        self.show_labeled_points_chk = QCheckBox("Show points with labels")
-        self.show_labeled_points_chk.setChecked(True)
+        self.show_labeled_points_chk = QCheckBox("Hide labeled points")
+        self.show_labeled_points_chk.setChecked(False)
+        self.visible_on_map_chk = QCheckBox("Table: only points visible on map")
+        self.visible_on_map_chk.setChecked(False)
         form.addRow("Type", self.pos_type_combo)
         form.addRow("ID", self.pos_id_spin)
         form.addRow("Latitude", self.lat_spin)
@@ -198,6 +216,10 @@ class PositionManagerWindow(QMainWindow):
         self.zoom_out_btn = QPushButton("Full")
         for btn in (self.zoom_in_btn, self.zoom_out_step_btn, self.zoom_out_btn):
             btn.setFixedSize(64, 24)
+        self.selected_only_map_btn = QPushButton("Map: selected only")
+        self.selected_only_map_btn.setCheckable(True)
+        self.selected_only_map_btn.setChecked(False)
+        self.selected_only_map_btn.setFixedHeight(24)
         self.sort_similar_btn = QPushButton("Sort by similar lat/lon")
         self.sort_similar_btn.setFixedHeight(24)
         self.reload_map_btn = QPushButton("Reload map")
@@ -205,18 +227,22 @@ class PositionManagerWindow(QMainWindow):
         map_btn_row = QHBoxLayout()
         map_btn_row.setSpacing(4)
         map_btn_row.addWidget(self.toggle_labels_btn)
+        map_btn_row.addWidget(self.selected_only_map_btn)
         map_btn_row.addWidget(self.zoom_in_btn)
         map_btn_row.addWidget(self.zoom_out_step_btn)
         map_btn_row.addWidget(self.zoom_out_btn)
         map_btn_row.addWidget(self.reload_map_btn)
         map_btn_row.addStretch()
         editor_layout.addLayout(map_btn_row)
+        self.deselect_all_btn = QPushButton("Deselect all")
+        self.deselect_all_btn.setFixedHeight(24)
         button_row.addWidget(self.refresh_btn)
         button_row.addWidget(self.new_btn)
         button_row.addWidget(self.save_btn)
         button_row.addWidget(self.apply_label_btn)
         button_row.addWidget(self.delete_btn)
         button_row.addWidget(self.sort_similar_btn)
+        button_row.addWidget(self.deselect_all_btn)
         button_row.addStretch()
         editor_layout.addLayout(button_row)
 
@@ -224,6 +250,7 @@ class PositionManagerWindow(QMainWindow):
         filter_row.setSpacing(6)
         filter_row.addWidget(self.hide_labeled_chk)
         filter_row.addWidget(self.show_labeled_points_chk)
+        filter_row.addWidget(self.visible_on_map_chk)
         filter_row.addWidget(self.label_filter_chk)
         filter_row.addWidget(self.label_filter_edit)
         filter_row.addStretch()
@@ -245,6 +272,7 @@ class PositionManagerWindow(QMainWindow):
         self.setCentralWidget(central)
 
         self.map_canvas.bridge.point_clicked.connect(self._on_map_point_clicked)
+        self.map_canvas.bridge.map_view_changed.connect(self._on_map_view_changed)
         self.refresh_btn.clicked.connect(self.load_positions)
         self.new_btn.clicked.connect(self._start_new_entry)
         self.save_btn.clicked.connect(self.save_entry)
@@ -256,15 +284,21 @@ class PositionManagerWindow(QMainWindow):
         self.zoom_out_step_btn.clicked.connect(self._zoom_out)
         self.zoom_out_btn.clicked.connect(self._zoom_full)
         self.toggle_labels_btn.toggled.connect(self._on_toggle_labels)
+        self.selected_only_map_btn.toggled.connect(self._on_toggle_selected_only_map)
         self.sort_similar_btn.clicked.connect(self._sort_table_by_similar_latlon)
         self.reload_map_btn.clicked.connect(self._force_reload_basemap)
         self.positions_table.horizontalHeader().sortIndicatorChanged.connect(self._on_sort_indicator_changed)
         self.hide_labeled_chk.toggled.connect(self._on_label_filter_changed)
+        self.visible_on_map_chk.toggled.connect(self._on_visible_on_map_filter_changed)
         self.label_filter_chk.toggled.connect(self._on_label_filter_changed)
         self.label_filter_edit.textChanged.connect(self._on_label_filter_changed)
         self.label_edit.returnPressed.connect(self._on_label_return_pressed)
+        self.deselect_all_btn.clicked.connect(self._deselect_all)
 
         self.load_positions()
+
+    def __repr__(self):
+        return f"<PositionManagerWindow active_threads: {len(self._active_threads)}>"
 
     def set_table_font_size(self, value: int):
         self._table_font_size = max(6, min(14, int(value)))
@@ -318,7 +352,7 @@ class PositionManagerWindow(QMainWindow):
         if self._min_count_filter > 0 and not filtered_df.empty:
             filtered_df = filtered_df[filtered_df["count"] >= self._min_count_filter]
         if self._hide_labeled_active and not filtered_df.empty:
-            filtered_df = filtered_df[filtered_df["label"].astype(str).str.strip() == ""]
+            filtered_df = filtered_df[self._unlabeled_mask(filtered_df["label"])]
         if self._label_filter_active and not filtered_df.empty:
             if self._label_filter_text:
                 mask = filtered_df["label"].astype(str).str.contains(
@@ -327,7 +361,17 @@ class PositionManagerWindow(QMainWindow):
                 filtered_df = filtered_df[mask]
             else:
                 filtered_df = filtered_df[filtered_df["label"].astype(str).str.strip() != ""]
+        if self._visible_on_map_filter_active and self._visible_map_bounds is not None and not filtered_df.empty:
+            south, west, north, east = self._visible_map_bounds
+            lat = pd.to_numeric(filtered_df["latitude"], errors="coerce")
+            lon = pd.to_numeric(filtered_df["longitude"], errors="coerce")
+            filtered_df = filtered_df[lat.between(south, north, inclusive="both") & lon.between(west, east, inclusive="both")]
         return filtered_df
+
+    @staticmethod
+    def _unlabeled_mask(series: pd.Series) -> pd.Series:
+        stripped = series.fillna("").astype(str).str.strip()
+        return series.isna() | stripped.eq("") | stripped.str.casefold().eq("none")
 
     def _on_group_mode_changed(self, index: int):
         mode = str(self.group_mode_combo.currentData() or "label")
@@ -449,6 +493,56 @@ class PositionManagerWindow(QMainWindow):
         if self._selected_row_indices:
             self._select_rows_by_indices(self._selected_row_indices, select_table=True, zoom_to_points=False)
 
+    def _on_visible_on_map_filter_changed(self, checked: bool) -> None:
+        self._visible_on_map_filter_active = bool(checked)
+        if not self._visible_on_map_filter_active:
+            self._visible_map_bounds = None
+            self._set_table_model()
+            if self._selected_row_indices:
+                self._select_rows_by_indices(self._selected_row_indices, select_table=True, zoom_to_points=False)
+            return
+
+        self.map_canvas.get_visible_bounds(self._on_visible_bounds_received)
+
+    def _on_visible_bounds_received(self, bounds) -> None:
+        self._visible_map_bounds = self._parse_bounds(bounds)
+        self._set_table_model()
+        if self._selected_row_indices:
+            self._select_rows_by_indices(self._selected_row_indices, select_table=True, zoom_to_points=False)
+
+    @staticmethod
+    def _parse_bounds(bounds) -> tuple[float, float, float, float] | None:
+        if not isinstance(bounds, dict):
+            return None
+        try:
+            south_raw = bounds.get("south")
+            west_raw = bounds.get("west")
+            north_raw = bounds.get("north")
+            east_raw = bounds.get("east")
+            if south_raw is None or west_raw is None or north_raw is None or east_raw is None:
+                return None
+            south = float(south_raw)
+            west = float(west_raw)
+            north = float(north_raw)
+            east = float(east_raw)
+            return (south, west, north, east)
+        except Exception as e:
+            logger.debug(f"Unable to parse map bounds: {e} ({type(e)})")
+            return None
+
+    def _on_map_view_changed(self, data_str: str) -> None:
+        if not self._visible_on_map_filter_active:
+            return
+        try:
+            payload = json.loads(data_str)
+        except Exception as e:
+            logger.debug(f"Unable to parse map view changed payload: {e} ({type(e)})")
+            return
+        self._visible_map_bounds = self._parse_bounds(payload)
+        self._set_table_model()
+        if self._selected_row_indices:
+            self._select_rows_by_indices(self._selected_row_indices, select_table=True, zoom_to_points=False)
+
     def _update_label_completer(self) -> None:
         labels = sorted(set(
             str(v) for v in self.df_positions["label"].dropna()
@@ -462,9 +556,24 @@ class PositionManagerWindow(QMainWindow):
         elif self._selected_row_index is not None:
             self.save_entry()
 
+    def _deselect_all(self) -> None:
+        self._selected_row_index = None
+        self._selected_row_indices = []
+        self._clear_selection_markers()
+        if self._show_selected_only_on_map:
+            self._plot_positions(preserve_view=True)
+        if self.positions_table.selectionModel() is not None:
+            self._updating_selection = True
+            try:
+                self.positions_table.selectionModel().clearSelection()
+            finally:
+                self._updating_selection = False
+        self.selected_info.setText("Select a start/end point from the map or table")
+
     def _on_toggle_labeled_points(self, checked: bool):
-        self._show_labeled_points = bool(checked)
-        self._plot_positions()
+        # Checkbox meaning: checked => hide labeled points.
+        self._show_labeled_points = not bool(checked)
+        self._plot_positions(preserve_view=True)
         if self._selected_row_indices:
             QTimer.singleShot(500, lambda: self._draw_selection_markers(self._selected_row_indices))
 
@@ -490,13 +599,7 @@ class PositionManagerWindow(QMainWindow):
         self._load_thread = thread
         self._load_worker = worker
         self._active_threads.add(thread)
-        self._register_thread(
-            thread,
-            owner_name="PositionManagerWindow",
-            task_name="Positions load",
-            launched_by="load_positions",
-            worker=worker,
-        )
+        self._register_thread(thread, owner_name="PositionManagerWindow", task_name="Positions load", launched_by="load_positions", worker=worker,)
         if self.args.debug:
             logger.debug(f"Started position load worker thread {thread}. active threads: {len(self._active_threads)}")
         thread.start()
@@ -581,7 +684,7 @@ class PositionManagerWindow(QMainWindow):
         self._clear_selection_markers()
         self._set_table_model()
         self._update_label_completer()
-        self._plot_positions()
+        self._plot_positions(preserve_view=True)
 
         restore_state = self._restore_after_reload
         self._restore_after_reload = None
@@ -595,10 +698,7 @@ class PositionManagerWindow(QMainWindow):
                     k_id = int(key.get("pos_id", 0))
                     if not k_type or k_id <= 0:
                         continue
-                    matched = self.df_positions[
-                        (self.df_positions["pos_type"] == k_type) &
-                        (self.df_positions["pos_id"] == k_id)
-                    ]
+                    matched = self.df_positions[(self.df_positions["pos_type"] == k_type) & (self.df_positions["pos_id"] == k_id)]
                     if not matched.empty:
                         matched_indices.append(int(matched.index[0]))
                 if matched_indices:
@@ -612,20 +712,36 @@ class PositionManagerWindow(QMainWindow):
         QMessageBox.warning(self, "Load Failed", error_message)
         self.selected_info.setText("Failed to load positions")
 
-    def _plot_positions(self):
+    def _plot_positions(self, preserve_view: bool = False):
         if self.df_positions.empty:
             self._full_bounds_latlon = None
             self.map_canvas.show_empty("No start/end points available")
+            if self.args.debug:
+                logger.warning("Plotting positions: no start/end points available")
             return
 
         plot_df = self.df_positions
-        if not self._show_labeled_points:
-            plot_df = plot_df[plot_df["label"].astype(str).str.strip() == ""]
-
+        if self._show_selected_only_on_map:
+            if self._selected_row_indices:
+                plot_df = plot_df.loc[plot_df.index.isin(self._selected_row_indices)]
+            else:
+                plot_df = plot_df.iloc[0:0]
         if plot_df.empty:
             self._full_bounds_latlon = None
-            self.map_canvas.show_empty("No points for current filter")
+            if self._show_selected_only_on_map:
+                self.map_canvas.show_empty("No selected points")
+            else:
+                self.map_canvas.show_empty("No points for current filter")
+            if self.args.debug:
+                logger.warning("Plotting positions: no points to plot after filtering")
             return
+
+        if not self._show_labeled_points:
+            plot_df = plot_df[self._unlabeled_mask(plot_df["label"])]
+            if self.args.debug and len(plot_df) == 0:
+                logger.warning(f"Plotting positions: show_labeled_points is {self._show_labeled_points}, filtered out labeled points, remaining count: {len(plot_df)}")
+            if self.args.debug and len(plot_df) > 0:
+                logger.debug(f"Plotting positions: show_labeled_points is {self._show_labeled_points}, filtered out labeled points, remaining count: {len(plot_df)}")
 
         self._visible_row_indices = set(int(i) for i in plot_df.index.tolist())
 
@@ -639,40 +755,69 @@ class PositionManagerWindow(QMainWindow):
 
         clat = (lat_min + lat_max) / 2
         clon = (lon_min + lon_max) / 2
-        m = folium.Map(location=[clat, clon], zoom_start=8)
+        try:
+            m = folium.Map(location=[clat, clon], zoom_start=8)
+        except ValueError as e:
+            logger.error(f"Error creating folium Map: {e} ({type(e)})")
+            m = folium.Map(location=[0, 0], zoom_start=2)
         m.fit_bounds([[lat_min - pad_lat, lon_min - pad_lon], [lat_max + pad_lat, lon_max + pad_lon]])
 
         # Build GeoJSON features
+        selected_row_set = set(int(v) for v in self._selected_row_indices)
         features = []
         for idx, row in plot_df.iterrows():
             pos_type = str(row["pos_type"])
             pos_id = int(row["pos_id"])
             lat = float(row["latitude"])
             lon = float(row["longitude"])
+            selected_label = False
+            if isinstance(idx, int):
+                selected_label = idx in selected_row_set
+            elif isinstance(idx, str):
+                idx_stripped = idx.strip()
+                if idx_stripped.startswith("-"):
+                    idx_digits = idx_stripped[1:]
+                else:
+                    idx_digits = idx_stripped
+                if idx_digits.isdigit():
+                    selected_label = int(idx_stripped) in selected_row_set
             count = max(1, int(row.get("count", 1)))
-            label = str(row.get("label", "")).strip()
+            label_raw = row.get("label", None)
+            label_txt = "" if pd.isna(label_raw) else str(label_raw).strip()
+            missing_label = (not label_txt) or label_txt.casefold() == "none"
             color = "blue" if pos_type == "start" else "red"
             radius = max(4.0, min(12.0, count * 0.5 + 4.0))
-            tooltip_str = f"{pos_id}: {label}" if label else str(pos_id)
+            tooltip_str = f"{pos_id}: {label_txt}" if not missing_label else f"{pos_id}: (no label)"
             if not self._show_point_labels:
                 tooltip_str = str(pos_id)
             features.append({
                 "type": "Feature",
                 "geometry": {"type": "Point", "coordinates": [lon, lat]},
                 "properties": {
-                    "row_index": int(idx),
+                    "row_index": int(idx),  # type: ignore
                     "pos_id": pos_id,
                     "pos_type": pos_type,
                     "color": color,
                     "radius": radius,
                     "tt": tooltip_str,
+                    "always_label": bool(self._show_point_labels),
+                    "missing_label": bool(missing_label),
+                    "selected_label": bool(selected_label),
                 },
             })
 
-        on_each_feature = (
+        on_each_feature = JsCode(
             "function(feature, layer) {"
+            "  var p = feature.properties;"
+            "  var cls = p.selected_label ? 'selected-label-tip' : (p.missing_label ? 'missing-label-tip' : '');"
+            "  layer.bindTooltip(String(p.tt), {"
+            "    permanent: !!p.always_label,"
+            "    sticky: !p.always_label,"
+            "    direction: 'top',"
+            "    className: cls,"
+            "    opacity: 0.92"
+            "  });"
             "  layer.on('click', function(e) {"
-            "    var p = feature.properties;"
             "    var d = JSON.stringify({row_index: p.row_index, pos_id: p.pos_id, pos_type: p.pos_type});"
             "    new QWebChannel(qt.webChannelTransport, function(ch) {"
             "      ch.objects.bridge.on_point_clicked(d);"
@@ -691,13 +836,29 @@ class PositionManagerWindow(QMainWindow):
                 "fill": True,
                 "fillOpacity": 0.75,
             },
-            tooltip=folium.GeoJsonTooltip(fields=["tt"], aliases=[""]),
             name="positions",
             on_each_feature=on_each_feature,
         )
         geojson_layer.add_to(m)
 
-        self.map_canvas.display_map(m)
+        cast(Any, m.get_root()).header.add_child(folium.Element(
+            "<style>"
+            ".missing-label-tip {"
+            "  background: #ffe770 !important;"
+            "  border: 1px solid #c1a400 !important;"
+            "  color: #1f1f1f !important;"
+            "  font-weight: 600;"
+            "}"
+            ".selected-label-tip {"
+            "  background: #add8e6 !important;"
+            "  border: 1px solid #4a90c1 !important;"
+            "  color: #1f1f1f !important;"
+            "  font-weight: 600;"
+            "}"
+            "</style>"
+        ))
+
+        self.map_canvas.display_map(m, preserve_view=preserve_view)
 
     def _on_map_point_clicked(self, data_str: str) -> None:
         try:
@@ -754,7 +915,13 @@ class PositionManagerWindow(QMainWindow):
     def _on_toggle_labels(self, checked: bool) -> None:
         self._show_point_labels = bool(checked)
         self.toggle_labels_btn.setText("Labels on" if checked else "Labels off")
-        self._plot_positions()
+        self._plot_positions(preserve_view=True)
+
+    def _on_toggle_selected_only_map(self, checked: bool) -> None:
+        self._show_selected_only_on_map = bool(checked)
+        self._plot_positions(preserve_view=True)
+        if self._selected_row_indices:
+            self._draw_selection_markers(self._selected_row_indices)
 
     def _sort_table_by_similar_latlon(self):
         if self._table_model is None:
@@ -787,10 +954,6 @@ class PositionManagerWindow(QMainWindow):
         if pairs:
             self.map_canvas.add_selection_markers(pairs)
 
-    def _draw_selection_marker(self, x: float, y: float) -> None:
-        # Backward compat wrapper
-        self._draw_selection_markers(self._selected_row_indices or ([self._selected_row_index] if self._selected_row_index is not None else []))
-
     def _select_rows_by_indices(self, row_indices: list[int], select_table: bool, zoom_to_points: bool):
         clean_rows = [int(i) for i in row_indices if i in self.df_positions.index]
         if not clean_rows:
@@ -798,6 +961,9 @@ class PositionManagerWindow(QMainWindow):
         clean_rows = list(dict.fromkeys(clean_rows))
         self._selected_row_indices = clean_rows
         self._selected_row_index = clean_rows[0]
+
+        if self._show_selected_only_on_map:
+            self._plot_positions(preserve_view=True)
 
         if select_table and self.positions_table.selectionModel() is not None and self._table_model is not None:
             selection_model = self.positions_table.selectionModel()
@@ -847,9 +1013,6 @@ class PositionManagerWindow(QMainWindow):
 
         self._draw_selection_markers(clean_rows)
 
-    def _select_row_by_index(self, row_index: int, select_table: bool, zoom_to_point: bool):
-        self._select_rows_by_indices([row_index], select_table=select_table, zoom_to_points=zoom_to_point)
-
     def _zoom_to_point(self, lat: float, lon: float) -> None:
         self.map_canvas.set_view(lat, lon, 14)
 
@@ -864,7 +1027,7 @@ class PositionManagerWindow(QMainWindow):
             self.map_canvas.zoom_full(*self._full_bounds_latlon)
 
     def _force_reload_basemap(self) -> None:
-        self._plot_positions()
+        self._plot_positions(preserve_view=True)
 
     def _start_new_entry(self):
         self._selected_row_index = None
