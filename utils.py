@@ -643,6 +643,7 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs') -> None:
 	if not csv_files:
 		logger.warning("No CSV files found")
 		return None
+	csv_files = sorted(csv_files, key=lambda x: x["filename"])
 	if args.debug:
 		logger.debug(f"Found {len(csv_files)} CSV files in {args.logpath}")
 
