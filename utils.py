@@ -607,12 +607,12 @@ def read_csv_data(csvfile: dict, conn, normalized_actual_columns, allowed_cols, 
 			if duration_check > 300:
 				logger.warning(f'trip duration too long in file: {csvfile["filename"]} size:{csvfile["size"]}  duration_check: {duration_check}')
 				df = df.iloc[:-1]  # drop last row if trip duration is too long
-	fileid = get_file_id(df, conn, csvfile)
-	df.insert(0, 'fileid', fileid)
-	df = df.copy()
+	df, fileid = get_file_id(df, conn, csvfile)
+	# df.insert(0, 'fileid', fileid)
+	# df = df.copy()
 	return df, fileid
 
-def get_file_id(df: pd.DataFrame, conn, csvfile) -> int:
+def get_file_id(df: pd.DataFrame, conn, csvfile) -> tuple[pd.DataFrame, int]:
 	trip_start_candidate = _extract_trip_start_from_dataframe(df)
 	if trip_start_candidate is not None:
 		date_sql = text("SELECT fileid FROM torqfiles WHERE trip_start IS NOT NULL AND trip_start = :ts_dt")
@@ -623,7 +623,9 @@ def get_file_id(df: pd.DataFrame, conn, csvfile) -> int:
 	# Pre-send duplicate check from full file content (uses minimum trip timestamp).
 	result = conn.execute(text("INSERT INTO torqfiles (csvfile, csvhash, import_date) VALUES (:csvfile, :csvhash, :import_date) RETURNING fileid"), {"csvfile": str(csvfile['filename']), "csvhash": csvfile['hash'], "import_date": datetime.now()})
 	fileid = result.scalar()
-	return fileid
+	df = df.copy()
+	df['fileid'] = fileid
+	return df, fileid
 
 def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs') -> None:
 	"""
