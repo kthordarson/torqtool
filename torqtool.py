@@ -49,68 +49,7 @@ def _resolve_col_name(columns: list[str], candidates: list[str]) -> str | None:
 
 	return None
 
-async def read_csv_file(logfile:str, args:argparse.Namespace):
-	"""
-	Optimized version that combines filtering operations and reduces conversions
-	"""
-	nullvals = ['-','∞','340282346638528860000000000000000000000','-3402823618710077500000000000000000000']
-	try:
-		# Use lazy evaluation to improve performance
-		data = pl.scan_csv(logfile, ignore_errors=True, try_parse_dates=True, truncate_ragged_lines=True, null_values=nullvals)
-		columns = data.columns
 
-		time_col = _resolve_col_name(columns, ['gpstime', 'GPS_Time', 'GPS Time'])
-		if not time_col:
-			logger.warning(f"Skipping {logfile} - missing GPS time column")
-			return pd.DataFrame()
-
-		# Apply all filters in one operation
-		data = data.filter((pl.col(time_col) != '-') & (pl.col(time_col) != 'GPS Time'))
-
-		# Collect the data only once
-		data = data.collect()
-
-		# Early check for empty dataframe
-		if data.is_empty():
-			logger.warning(f'Empty dataset after filtering {logfile}')
-			return pd.DataFrame()
-
-		# Check trip duration more efficiently
-		first_time = convert_string_to_datetime(data[time_col][0])
-		last_time = convert_string_to_datetime(data[time_col][-1])
-		if first_time and last_time:
-			trip_duration = (last_time - first_time).total_seconds()
-		else:
-			trip_duration = 0
-
-		if trip_duration > 86400//2:
-			logger.warning(f'{logfile} - trip duration too long: {trip_duration}')
-			# return pd.DataFrame()
-
-		# Check for duplicate trips in one database call
-		session = get_engine_session(args)
-		try:
-			ts_temp = session.query(TorqFile).filter(TorqFile.trip_start == first_time).all()
-			if ts_temp:
-				logger.warning(f"Skipping {logfile} - already in db with trip_start: {first_time}")
-				return pd.DataFrame()
-
-			df = data.to_pandas()
-			df = df.rename(columns=canonicalize_columns(list(df.columns)))
-
-			return df
-		finally:
-			session.close()
-
-	except (pl.exceptions.ShapeError,
-			pl.exceptions.ComputeError,
-			pl.exceptions.DuplicateError) as e:
-		logger.error(f"{type(e)} {e} {logfile}")
-		raise e
-	except pl.exceptions.NoDataError as e:
-		msg = f"NoDataError {type(e)} {e} {logfile}"
-		logger.error(msg)
-		raise Polarsreaderror(msg)
 
 async def send_data_to_db(args: argparse.Namespace, data: pd.DataFrame, csvfilename: str, insertid: bool = True, readtime: float | None = None):
 	"""
