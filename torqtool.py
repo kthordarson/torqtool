@@ -49,59 +49,6 @@ def _resolve_col_name(columns: list[str], candidates: list[str]) -> str | None:
 
 	return None
 
-
-
-async def send_data_to_db(args: argparse.Namespace, data: pd.DataFrame, csvfilename: str, insertid: bool = True, readtime: float | None = None):
-	"""
-	send this csvdata to database, catch all exceptions in here
-	return dict {'fileid': fileid, 'rows': len(data)}
-	"""
-	session = get_engine_session(args)
-	csvhash = md5(open(csvfilename, "rb").read()).hexdigest()
-	stable_fileid = stable_fileid_from_csvhash(csvhash)
-	try:
-		t = session.query(TorqFile).filter(TorqFile.csvhash == csvhash).first()
-		if t is None:
-			existing_by_id = session.query(TorqFile).filter(TorqFile.fileid == stable_fileid).first()
-			if existing_by_id and existing_by_id.csvhash != csvhash:
-				logger.error(
-					f"stable fileid collision for {csvfilename}: fileid={stable_fileid} "
-					f"existing_hash={existing_by_id.csvhash} new_hash={csvhash}"
-				)
-				return None
-			t = TorqFile(csvfile=Path(csvfilename).parts[-1], csvhash=csvhash, fileid=stable_fileid)
-			session.add(t)
-			session.commit()
-	except IntegrityError as e:
-		# session.close()
-		logger.error(f"{type(e)} {e} from {csvfilename}")
-		return None
-	# todropcols = []
-	send_results = {'fileid': t.fileid, 'sent_rows': 0, 'readtime': readtime, 'sendtime': None}
-	fileidcol = pd.DataFrame([t.fileid for k in range(len(data))], columns=["fileid",],)
-	data = pd.concat((data, fileidcol), axis=1)
-
-	try:
-		send_started = time.perf_counter()
-		_ = data.to_sql("torqlogs", con=session.get_bind(), if_exists="append", index=False, method='multi', chunksize=args.sqlchunksize)
-		send_results["sent_rows"] = session.execute(text(f"select count(*) from torqlogs where fileid={t.fileid} ; ")).one()[0]
-		send_results["sendtime"] = float(time.perf_counter() - send_started)
-		t.sent_rows = send_results["sent_rows"]
-		t.readtime = readtime
-		t.sendtime = send_results["sendtime"]
-		session.add(t)
-		session.commit()
-		# logger.debug(f'fileid {t.fileid} sent {len(data)} rows to db  sent_rows: {send_results["sent_rows"]}')
-	except DataError as e:
-		logger.warning(f"{type(e)} {e.args[0]} {csvfilename=}")
-	except (OperationalError, sqlite3.OperationalError,) as e:
-		logger.error(f"{type(e)} {e} {csvfilename=}")
-	except Exception as e:
-		logger.error(f"unhandled {type(e)} {e} ")
-	finally:
-		session.close()
-	return send_results
-
 async def cli_main(args):
 	if args.dbinfo:
 		tables = ['columnstats', 'filestats', 'speeds', 'torqfiles', 'torqtrips', 'endpos', 'startpos', 'mapimagecache', 'torqlogs']
