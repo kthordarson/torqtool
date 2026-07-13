@@ -31,24 +31,6 @@ class Polarsreaderror(Exception):
 def _normalized_col_name(value: str) -> str:
 	return "".join(ch.lower() for ch in str(value) if ch.isalnum())
 
-def _resolve_col_name(columns: list[str], candidates: list[str]) -> str | None:
-	if not columns:
-		return None
-
-	# Exact match first.
-	for candidate in candidates:
-		if candidate in columns:
-			return candidate
-
-	# Fallback to normalized matching for odd encodings/spaces/symbols.
-	norm_map = {_normalized_col_name(col): col for col in columns}
-	for candidate in candidates:
-		resolved = norm_map.get(_normalized_col_name(candidate))
-		if resolved:
-			return resolved
-
-	return None
-
 async def cli_main(args):
 	if args.dbinfo:
 		tables = ['columnstats', 'filestats', 'speeds', 'torqfiles', 'torqtrips', 'endpos', 'startpos', 'mapimagecache', 'torqlogs']
