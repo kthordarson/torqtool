@@ -38,6 +38,7 @@ def get_parser(appname):
 	parser.add_argument("--sqlchunksize", nargs="?", default=1000, type=int, help="sql chunk", action="store")
 	parser.add_argument("-i", "--info", "--dbinfo", default=False, help="show dbinfo", action="store_true", dest="dbinfo", )
 	parser.add_argument("-d", "--debug", default=False, help="debugmode", action="store_true", dest="debug", )
+	parser.add_argument("--debug_limit", default=0, type=int, help="debug limit", action="store", dest="debug_limit", )
 	if appname == "guitest2":
 		parser.add_argument('--main-window', help="start main window", action="store_true", dest='main_window', default=True)
 		parser.add_argument('--pos-manager', help="start position manager window", action="store_true", dest='pos_manager', default=False)
@@ -343,13 +344,14 @@ def update_trip_and_file_for_fileid(conn, fileid, csvfile):
 	"""
 	Update TorqFile and Torqtrips for a single fileid after inserting its data.
 	"""
-	resolved = _resolve_torqlogs_columns(conn, ['gpstime', 'latitude', 'longitude', *TRIP_METRIC_COLUMNS])
-	time_col = resolved.get('gpstime')
+	resolved = _resolve_torqlogs_columns(conn, ['gpstime', 'devicetime','latitude', 'longitude', *TRIP_METRIC_COLUMNS])
+	gpstime_time_col = resolved.get('gpstime')
+	device_time_col = resolved.get('devicetime')
 	lat_col = resolved.get('latitude')
 	lon_col = resolved.get('longitude')
-	if not (time_col and lat_col and lon_col):
+	if not (gpstime_time_col and device_time_col and lat_col and lon_col):
 		logger.error(f'Missing required torqlogs columns for fileid {fileid}: {resolved}')
-		return
+		# return
 
 	resolved_metric_pairs = [(metric, resolved[metric]) for metric in TRIP_METRIC_COLUMNS if metric in resolved]
 	_ensure_torqtrips_metric_columns(conn, [metric for metric, _ in resolved_metric_pairs])
@@ -369,8 +371,8 @@ def update_trip_and_file_for_fileid(conn, fileid, csvfile):
 	sql = f"""
 	SELECT
 		fileid,
-		MIN("{time_col}") AS trip_start,
-		MAX("{time_col}") AS trip_end,
+		MIN("{gpstime_time_col}") AS trip_start,
+		MAX("{gpstime_time_col}") AS trip_end,
 		MIN("{lat_col}") AS startlat,
 		MIN("{lon_col}") AS startlon,
 		MAX("{lat_col}") AS endlat,
@@ -436,8 +438,8 @@ def update_trip_and_file_for_fileid(conn, fileid, csvfile):
 					SELECT
 						"{lat_col}"::double precision AS lat,
 						"{lon_col}"::double precision AS lon,
-						LAG("{lat_col}"::double precision) OVER (ORDER BY "{time_col}" ASC) AS prev_lat,
-						LAG("{lon_col}"::double precision) OVER (ORDER BY "{time_col}" ASC) AS prev_lon
+						LAG("{lat_col}"::double precision) OVER (ORDER BY "{gpstime_time_col}" ASC) AS prev_lat,
+						LAG("{lon_col}"::double precision) OVER (ORDER BY "{gpstime_time_col}" ASC) AS prev_lon
 					FROM torqlogs
 					WHERE fileid = :fileid
 				)
@@ -466,7 +468,7 @@ def update_trip_and_file_for_fileid(conn, fileid, csvfile):
 			trip_distance = float(conn.execute(distance_sql, {"fileid": fileid}).scalar() or 0.0)
 		else:
 			df_gps = pd.read_sql(
-				text(f'SELECT "{lat_col}" AS latitude, "{lon_col}" AS longitude FROM torqlogs WHERE fileid = :fileid ORDER BY "{time_col}" ASC'),
+				text(f'SELECT "{lat_col}" AS latitude, "{lon_col}" AS longitude FROM torqlogs WHERE fileid = :fileid ORDER BY "{gpstime_time_col}" ASC'),
 				conn,
 				params={"fileid": fileid}
 			)
@@ -563,7 +565,7 @@ def read_csv_data(csvfile: dict, conn, normalized_actual_columns, allowed_cols, 
 	"""
 	df = pd.read_csv(csvfile['filename'], dtype=str)
 	if args.debug:
-		logger.debug(f"Read {len(df)} rows from {csvfile['filename']} with columns: {list(df.columns)}")
+		logger.debug(f"Read {len(df)} rows from {csvfile['filename']} with columns: {len(list(df.columns))}")
 
 	# Normalize columns using shared Torq header mapping.
 	# original_columns = df.columns.to_list()
@@ -582,7 +584,7 @@ def read_csv_data(csvfile: dict, conn, normalized_actual_columns, allowed_cols, 
 	df = _collapse_duplicate_dataframe_columns(df, csvfile)
 	df = df.replace(['-', '∞', 'inf', '-inf'], pd.NA)
 	if args.debug:
-		logger.debug(f"After normalization and duplicate collapse, {len(df)} rows remain with columns: {list(df.columns)}")
+		logger.debug(f"After normalization and duplicate collapse, {len(df)} rows remain with columns: {len(list(df.columns))}")
 	# Torque writes the float32 sentinel (~+/-3.4028235e38) for PIDs the vehicle doesn't
 	# support, sometimes scaled by a unit conversion (e.g. kpa->bar divides it by 100).
 	# Scrub any such huge value everywhere (not just COLUMN_TYPES-known columns) since
@@ -591,8 +593,6 @@ def read_csv_data(csvfile: dict, conn, normalized_actual_columns, allowed_cols, 
 		coerced = pd.to_numeric(df[col], errors='coerce')
 		sentinel_mask = coerced.abs() > 1e15
 		if sentinel_mask.any():
-			if args.debug:
-				logger.debug(f"Scrubbing {sentinel_mask.sum()} sentinel values in column {col} of {csvfile['filename']}")
 			df.loc[sentinel_mask, col] = pd.NA
 
 	# Convert numeric columns
@@ -667,19 +667,19 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs') -> None:
 
 	# The Torqlogs ORM model only declares a handful of columns; grow the actual
 	# table to cover every canonical Torque metric so CSV data isn't silently dropped.
-	# all_canonical_columns = sorted(set(column_mapping.values()))
-	# column_types = COLUMN_TYPES.copy()
-	# invalid_cols = []
-	# for col in all_canonical_columns:
-	# 	if col not in column_types:
-	# 		column_types[col] = String
-	# 		invalid_cols.append(col)
-	# 		# if args.debug:
-	# 		# 	logger.warning(f"Column {col} not in COLUMN_TYPES, defaulting to String")
-	# if args.debug:
-	# 	if invalid_cols:
-	# 		logger.warning(f"Columns not in COLUMN_TYPES, defaulting to String: {invalid_cols}")
-	# create_or_update_table(session, table_name='torqlogs', columns=all_canonical_columns, column_types=column_types)
+	all_canonical_columns = sorted(set(column_mapping.values()))
+	column_types = COLUMN_TYPES.copy()
+	invalid_cols = []
+	for col in all_canonical_columns:
+		if col not in column_types:
+			column_types[col] = String
+			invalid_cols.append(col)
+			# if args.debug:
+			# 	logger.warning(f"Column {col} not in COLUMN_TYPES, defaulting to String")
+	if args.debug:
+		if invalid_cols:
+			logger.warning(f"Columns not in COLUMN_TYPES, defaulting to String: {invalid_cols}")
+	create_or_update_table(session, table_name='torqlogs', columns=all_canonical_columns, column_types=column_types)
 
 	with session.get_bind().connect() as conn:  # type: ignore[union-attr]
 		hash_list = conn.execute(text("SELECT fileid,csvhash FROM torqfiles")).all()
@@ -708,8 +708,8 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs') -> None:
 		valid_files.append((csvfile['filename'], [], csvhash))
 		csvfile['valid'] = 1
 	csv_files = [f for f in csv_files if f['valid'] == 1]
-	if args.debug:
-		# csv_files = csv_files[:10]  # limit to first 10 for debug
+	if args.debug and args.debug_limit > 0:
+		csv_files = csv_files[:args.debug_limit]  # limit to first N for debug
 		logger.debug(f"Processing {len(csv_files)} valid CSV files")
 	for idx,csvfile in enumerate(csv_files):
 		read_started = time.perf_counter()
@@ -722,9 +722,8 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs') -> None:
 			insert_df = df.copy()
 			for col in insert_df.columns:
 				if pd.api.types.is_datetime64_any_dtype(insert_df[col]):
-					insert_df[col] = insert_df[col].dt.strftime('%Y-%m-%d %H:%M:%S.%f')
-					if args.debug:
-						logger.debug(f"Converted datetime column {col} to string for insertion")
+					notna = insert_df[col].notna()
+					insert_df[col] = insert_df[col].astype(object).where(notna, None)
 			records = insert_df.to_dict(orient='records')
 			none_records = []
 			for record in records:
@@ -734,7 +733,7 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs') -> None:
 						none_records.append((col, record))
 			if args.debug and none_records:
 				none_columns = list(set([k[0] for k in none_records]))
-				logger.debug(f"Prepared {len(records)} records for insertion, with {len(none_records)} None values. columns with None: {none_columns}")
+				logger.debug(f"Prepared {len(records)} records for insertion, with none_records: {len(none_records)} none_columns: {none_columns}")
 			conn.execute(torqlogs_table.insert(), records)  # type: ignore[arg-type]
 		except Exception as e:
 			import traceback

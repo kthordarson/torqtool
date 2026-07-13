@@ -524,6 +524,8 @@ class Torqlogs(Base):
     __tablename__ = "torqlogs"
     id: Mapped[int] = mapped_column(primary_key=True)
     fileid: Mapped[int] = mapped_column(ForeignKey("torqfiles.fileid"))
+    gpstime = Column("gpstime", DateTime)
+    devicetime = Column("devicetime", DateTime)
 
     # if DB column is "Longitude", map it to python attr "longitude"
     longitude: Mapped[float | None] = mapped_column("Longitude", Float, nullable=True)

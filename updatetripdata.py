@@ -522,14 +522,12 @@ def collect_db_speeds(args):
         logger.error(f"{type(e)} {e}")
         session.rollback()
         return -1
-    resolved = _resolve_schema_columns(
-        session, ["gpstime", "gpsspeedkmh", "speedgpskmh", "speedobdkmh"]
-    )
+    resolved = _resolve_schema_columns(session, ["gpstime", "gpsspeedkmh", "speedgpskmh", "speedobdkmh"])
     time_col = resolved.get("gpstime")
     obd_col = resolved.get("speedobdkmh")
     gps_col = resolved.get("speedgpskmh") or resolved.get("gpsspeedkmh")
     if not (time_col and obd_col and gps_col):
-        logger.error("Missing required columns for speed aggregation")
+        logger.error(f"Missing required columns for speed aggregation. resolved={resolved} time_col={time_col} obd_col={obd_col} gps_col={gps_col}")
         return -1
 
     q = (
