@@ -734,7 +734,7 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs') -> None:
 						none_records.append((col, record))
 			if args.debug and none_records:
 				none_columns = list(set([k[0] for k in none_records]))
-				logger.debug(f"Prepared {len(records)} records for insertion, with none_records: {len(none_records)} none_columns: {none_columns}")
+				logger.debug(f"Prepared {len(records)} records for insertion, with none_records: {len(none_records)} none_columns: {len(none_columns)}")
 			conn.execute(torqlogs_table.insert(), records)  # type: ignore[arg-type]
 		except Exception as e:
 			import traceback
