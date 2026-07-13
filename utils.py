@@ -299,6 +299,24 @@ def _ensure_torqtrips_metric_columns(conn, metric_names: list[str]) -> None:
 			conn.execute(text(f'ALTER TABLE torqtrips ADD COLUMN "{col_name}" {numeric_sql_type}'))
 			existing.add(col_name.lower())
 
+PROFILE_COLUMNS = [
+	'profile_fuelused',
+	'profile_fuelcost',
+	'profile_time',
+	'profile_distanceWhilstConnectedToOBD',
+	'profile_distance',
+	'profile_date',
+]
+
+def _ensure_torqtrips_profile_columns(conn) -> None:
+	inspector = inspect(conn)
+	existing = {str(col["name"]).lower() for col in inspector.get_columns("torqtrips")}
+	for col_name in PROFILE_COLUMNS:
+		if col_name.lower() in existing:
+			continue
+		conn.execute(text(f'ALTER TABLE torqtrips ADD COLUMN "{col_name}" TEXT'))
+		existing.add(col_name.lower())
+
 def _read_trip_profile(csvfile: dict) -> dict:
 	"""
 	Read the vehicle profile name from the trip folder's profile.properties file.
@@ -341,23 +359,98 @@ def _read_trip_profile(csvfile: dict) -> dict:
 		logger.error(f"Could not read profile from {profile_path}: {e} {type(e)}")
 	return profile_data
 
-def update_trip_and_file_for_fileid(conn, fileid, csvfile):
+def _compute_trip_distances_batch(conn, fileids: list[int], lat_col: str, lon_col: str, time_col: str) -> dict[int, float]:
 	"""
-	Update TorqFile and Torqtrips for a single fileid after inserting its data.
+	Compute the full point-to-point GPS path distance per fileid, for a batch of fileids at once.
 	"""
-	resolved = _resolve_torqlogs_columns(conn, ['gpstime', 'devicetime','latitude', 'longitude', *TRIP_METRIC_COLUMNS])
-	gpstime_time_col = resolved.get('gpstime')
-	device_time_col = resolved.get('devicetime')
-	lat_col = resolved.get('latitude')
-	lon_col = resolved.get('longitude')
-	if not (gpstime_time_col and device_time_col and lat_col and lon_col):
-		logger.error(f'Missing required torqlogs columns for fileid {fileid}: {resolved}')
-		# return
+	distances: dict[int, float] = {fid: 0.0 for fid in fileids}
+	if not fileids:
+		return distances
+	placeholders = ", ".join(f":fid{i}" for i in range(len(fileids)))
+	params = {f"fid{i}": int(fid) for i, fid in enumerate(fileids)}
 
-	resolved_metric_pairs = [(metric, resolved[metric]) for metric in TRIP_METRIC_COLUMNS if metric in resolved]
-	_ensure_torqtrips_metric_columns(conn, [metric for metric, _ in resolved_metric_pairs])
+	if conn.dialect.name == "postgresql":
+		# Compute the full path distance per fileid in SQL to avoid pulling thousands of rows to Python.
+		distance_sql = text(f'''
+			WITH ordered AS (
+				SELECT
+					fileid,
+					"{lat_col}"::double precision AS lat,
+					"{lon_col}"::double precision AS lon,
+					LAG("{lat_col}"::double precision) OVER (PARTITION BY fileid ORDER BY "{time_col}" ASC) AS prev_lat,
+					LAG("{lon_col}"::double precision) OVER (PARTITION BY fileid ORDER BY "{time_col}" ASC) AS prev_lon
+				FROM torqlogs
+				WHERE fileid IN ({placeholders})
+			)
+			SELECT fileid, COALESCE(SUM(
+				6371000.0 * 2.0 * atan2(
+					sqrt(
+						pow(sin(radians((lat - prev_lat) / 2.0)), 2)
+						+ cos(radians(prev_lat)) * cos(radians(lat))
+						* pow(sin(radians((lon - prev_lon) / 2.0)), 2)
+					),
+					sqrt(
+						GREATEST(
+							0.0,
+							1.0 - (
+								pow(sin(radians((lat - prev_lat) / 2.0)), 2)
+								+ cos(radians(prev_lat)) * cos(radians(lat))
+								* pow(sin(radians((lon - prev_lon) / 2.0)), 2)
+							)
+						)
+					)
+				)
+			), 0.0) AS trip_distance
+			FROM ordered
+			WHERE prev_lat IS NOT NULL AND prev_lon IS NOT NULL
+			GROUP BY fileid
+		''')
+		try:
+			for fid, dist in conn.execute(distance_sql, params).all():
+				distances[int(fid)] = float(dist or 0.0)
+		except Exception as e:
+			logger.error(f"Error calculating trip_distance for fileids {fileids}: {e} {type(e)}")
+	else:
+		try:
+			df_gps = pd.read_sql(text(f'SELECT fileid, "{lat_col}" AS latitude, "{lon_col}" AS longitude FROM torqlogs WHERE fileid IN ({placeholders}) ORDER BY fileid, "{time_col}" ASC'),conn, params=params,)
+			for fid, group in df_gps.groupby('fileid'):
+				if len(group) <= 1:
+					continue
+				# Vectorized haversine over the whole trip at once (same formula/radius as
+				# haversine() above) - a Python per-row loop here was the dominant cost
+				# (~1.4s of ~1.5s) for large files.
+				lat = np.radians(group['latitude'].to_numpy(dtype=float))
+				lon = np.radians(group['longitude'].to_numpy(dtype=float))
+				dlat = lat[1:] - lat[:-1]
+				dlon = lon[1:] - lon[:-1]
+				a = np.sin(dlat / 2.0) ** 2 + np.cos(lat[:-1]) * np.cos(lat[1:]) * np.sin(dlon / 2.0) ** 2
+				c = 2.0 * np.arctan2(np.sqrt(a), np.sqrt(1.0 - a))
+				# A single missing/NaN GPS fix must not zero out the whole trip's distance
+				# via NaN propagation - skip only the bad step(s), keep the rest.
+				distances[int(fid)] = float(np.nansum(6371000.0 * c))  # type: ignore
+		except TypeError as e:
+			logger.warning(f"Error calculating trip_distance for fileids {fileids}: {e} {type(e)}")
+		except Exception as e:
+			logger.error(f"Error calculating trip_distance for fileids {fileids}: {e} {type(e)}")
+	return distances
 
-	# Aggregate trip info for this fileid
+
+def _fetch_existing_torqtrips_profiles(conn, fileids: list[int]) -> dict[int, dict]:
+	if not fileids:
+		return {}
+	placeholders = ", ".join(f":fid{i}" for i in range(len(fileids)))
+	params = {f"fid{i}": int(fid) for i, fid in enumerate(fileids)}
+	cols = ", ".join(f'"{col}"' for col in ['profile', *PROFILE_COLUMNS])
+	rows = conn.execute(
+		text(f"SELECT fileid, {cols} FROM torqtrips WHERE fileid IN ({placeholders})"), params
+	).mappings().all()
+	return {int(row["fileid"]): dict(row) for row in rows}
+
+
+def _update_trip_and_file_batch(conn, batch: list[int], args, time_col: str, lat_col: str, lon_col: str, resolved_metric_pairs, csvfiles: dict) -> int:
+	placeholders = ", ".join(f":fid{i}" for i in range(len(batch)))
+	params = {f"fid{i}": int(fid) for i, fid in enumerate(batch)}
+
 	metric_select_parts: list[str] = []
 	for idx, (_, actual_col) in enumerate(resolved_metric_pairs):
 		metric_select_parts.extend([
@@ -369,208 +462,187 @@ def update_trip_and_file_for_fileid(conn, fileid, csvfile):
 		])
 	metric_sql = (",\n\t\t" + ",\n\t\t".join(metric_select_parts)) if metric_select_parts else ""
 
-	sql = f"""
-	SELECT
-		fileid,
-		MIN("{gpstime_time_col}") AS trip_start,
-		MAX("{gpstime_time_col}") AS trip_end,
-		MIN("{lat_col}") AS startlat,
-		MIN("{lon_col}") AS startlon,
-		MAX("{lat_col}") AS endlat,
-		MAX("{lon_col}") AS endlon,
-		COUNT(*) AS row_count
-		{metric_sql}
-	FROM torqlogs
-	WHERE fileid = :fileid
-	GROUP BY fileid
-	"""
-	row = conn.execute(text(sql), {"fileid": fileid}).mappings().first()
-	if not row:
-		return
-
-	trip_start = row["trip_start"]
-	trip_end = row["trip_end"]
-	startlat = row["startlat"]
-	startlon = row["startlon"]
-	endlat = row["endlat"]
-	endlon = row["endlon"]
-	row_count = row["row_count"]
-
-	metric_values: dict[str, float | None] = {}
-	for idx, (metric_name, _) in enumerate(resolved_metric_pairs):
-		min_val = row.get(f"m_{idx}_min")
-		max_val = row.get(f"m_{idx}_max")
-		avg_val = row.get(f"m_{idx}_avg")
-		count_val = int(row.get(f"m_{idx}_count") or 0)
-		avg_sq_val = row.get(f"m_{idx}_avg_sq")
-
-		metric_values[f"{metric_name}_min"] = float(min_val) if min_val is not None else None
-		metric_values[f"{metric_name}_max"] = float(max_val) if max_val is not None else None
-		metric_values[f"{metric_name}_avg"] = float(avg_val) if avg_val is not None else None
-		if count_val > 1 and avg_val is not None and avg_sq_val is not None:
-			variance = max(0.0, float(avg_sq_val) - (float(avg_val) ** 2))
-			metric_values[f"{metric_name}_stdev"] = variance ** 0.5
-		else:
-			metric_values[f"{metric_name}_stdev"] = None
-
-	# Calculate trip duration
-	trip_duration = 0
-	if trip_start and trip_end:
-		try:
-			trip_start_dt = convert_string_to_datetime(str(trip_start))
-			trip_end_dt = convert_string_to_datetime(str(trip_end))
-			if isinstance(trip_start_dt, datetime) and isinstance(trip_end_dt, datetime):
-				trip_duration = (trip_end_dt - trip_start_dt).total_seconds()
-			else:
-				logger.warning(f"Could not parse trip_start or trip_end as datetime for fileid {fileid}: {trip_start} ({type(trip_start)}), {trip_end} ({type(trip_end)})")
-				trip_duration = 0
-		except Exception as e:
-			logger.error(f'{e} {type(e)} {trip_start=} {trip_end=}')
-			trip_duration = 0
-		if trip_duration > 86400//2:
-			logger.warning(f'fileid: {fileid} - trip duration too long: {trip_duration}')
-	# Calculate trip distance (sum of point-to-point GPS distances for this fileid)
-	trip_distance = 0.0
+	agg_sql = text(f"""
+		SELECT
+			fileid,
+			MIN("{time_col}") AS trip_start,
+			MAX("{time_col}") AS trip_end,
+			MIN("{lat_col}") AS startlat,
+			MIN("{lon_col}") AS startlon,
+			MAX("{lat_col}") AS endlat,
+			MAX("{lon_col}") AS endlon,
+			COUNT(*) AS row_count
+			{metric_sql}
+		FROM torqlogs
+		WHERE fileid IN ({placeholders})
+		GROUP BY fileid
+	""")
 	try:
-		if conn.dialect.name == "postgresql":
-			# Compute the full path distance in SQL to avoid pulling thousands of rows to Python.
-			distance_sql = text(f'''
-				WITH ordered AS (
-					SELECT
-						"{lat_col}"::double precision AS lat,
-						"{lon_col}"::double precision AS lon,
-						LAG("{lat_col}"::double precision) OVER (ORDER BY "{gpstime_time_col}" ASC) AS prev_lat,
-						LAG("{lon_col}"::double precision) OVER (ORDER BY "{gpstime_time_col}" ASC) AS prev_lon
-					FROM torqlogs
-					WHERE fileid = :fileid
-				)
-				SELECT COALESCE(SUM(
-					6371000.0 * 2.0 * atan2(
-						sqrt(
-							pow(sin(radians((lat - prev_lat) / 2.0)), 2)
-							+ cos(radians(prev_lat)) * cos(radians(lat))
-							* pow(sin(radians((lon - prev_lon) / 2.0)), 2)
-						),
-						sqrt(
-							GREATEST(
-								0.0,
-								1.0 - (
-									pow(sin(radians((lat - prev_lat) / 2.0)), 2)
-									+ cos(radians(prev_lat)) * cos(radians(lat))
-									* pow(sin(radians((lon - prev_lon) / 2.0)), 2)
-								)
-							)
-						)
-					)
-				), 0.0) AS trip_distance
-				FROM ordered
-				WHERE prev_lat IS NOT NULL AND prev_lon IS NOT NULL
-			''')
-			trip_distance = float(conn.execute(distance_sql, {"fileid": fileid}).scalar() or 0.0)
-		else:
-			df_gps = pd.read_sql(text(f'SELECT "{lat_col}" AS latitude, "{lon_col}" AS longitude FROM torqlogs WHERE fileid = :fileid ORDER BY "{gpstime_time_col}" ASC'), conn, params={"fileid": fileid})
-			if len(df_gps) > 1:
-				# Vectorized haversine over the whole trip at once (same formula/radius as
-				# haversine() above) - a Python per-row loop here was the dominant cost
-				# (~1.4s of ~1.5s) for large files.
-				lat = np.radians(df_gps['latitude'].to_numpy(dtype=float))
-				lon = np.radians(df_gps['longitude'].to_numpy(dtype=float))
-				dlat = lat[1:] - lat[:-1]
-				dlon = lon[1:] - lon[:-1]
-				a = np.sin(dlat / 2.0) ** 2 + np.cos(lat[:-1]) * np.cos(lat[1:]) * np.sin(dlon / 2.0) ** 2
-				c = 2.0 * np.arctan2(np.sqrt(a), np.sqrt(1.0 - a))
-				# A single missing/NaN GPS fix must not zero out the whole trip's distance
-				# via NaN propagation - skip only the bad step(s), keep the rest.
-				trip_distance = float(np.nansum(6371000.0 * c))
-			else:
-				trip_distance = 0.0
-	except TypeError as e:
-		logger.warning(f"Error calculating trip_distance for fileid {fileid}: {e} {type(e)}")
-		trip_distance = 0.0
-
+		rows = conn.execute(agg_sql, params).mappings().all()
 	except Exception as e:
-		logger.error(f"Error calculating trip_distance for fileid {fileid}: {e} {type(e)}")
-		trip_distance = 0.0
+		logger.error(f"Error aggregating trip data for fileids {batch}: {e} {type(e)}")
+		return 0
+	if not rows:
+		return 0
 
-	profile = _read_trip_profile(csvfile)
-	# Insert if missing, then update all calculated fields.
-	conn.execute(text("""
-		INSERT INTO torqtrips (fileid, tripdate, time, trip_distance, profile)
-		SELECT :fileid, :trip_start, :trip_duration, :trip_distance, :profile
-		WHERE NOT EXISTS (SELECT 1 FROM torqtrips WHERE fileid = :fileid)
-	"""), {
-		"fileid": fileid,
-		"trip_start": trip_start,
-		"trip_duration": trip_duration,
-		"trip_distance": trip_distance,
-		"profile": profile['profile_name'],
-		"profile_fuelused": profile['profile_fuelused'],
-		"profile_fuelcost": profile['profile_fuelcost'],
-		"profile_time": profile['profile_time'],
-		"profile_distanceWhilstConnectedToOBD": profile['profile_distanceWhilstConnectedToOBD'],
-		"profile_distance": profile['profile_distance'],
-		"profile_date": profile['profile_date'],
-	})
+	distances = _compute_trip_distances_batch(conn, batch, lat_col, lon_col, time_col)
+	existing_profiles = _fetch_existing_torqtrips_profiles(conn, batch)
 
-	set_parts = [
-		"tripdate = :trip_start",
-		"time = :trip_duration",
-		"trip_distance = :trip_distance",
-		"profile = :profile",
-		"profile_fuelused = :profile_fuelused",
-		"profile_fuelcost = :profile_fuelcost",
-		"profile_time = :profile_time",
-		"profile_distanceWhilstConnectedToOBD = :profile_distanceWhilstConnectedToOBD",
-		"profile_distance = :profile_distance",
-		"profile_date = :profile_date",
-	]
-	for key in metric_values:
-		set_parts.append(f'"{key}" = :{key}')
-	update_sql = text(
-		"UPDATE torqtrips SET " + ", ".join(set_parts) + " WHERE fileid = :fileid"
-	)
-	update_params = {
-		"fileid": fileid,
-		"trip_start": trip_start,
-		"trip_duration": trip_duration,
-		"trip_distance": trip_distance,
-		"profile": profile['profile_name'],
-		"profile_fuelused": profile['profile_fuelused'],
-		"profile_fuelcost": profile['profile_fuelcost'],
-		"profile_time": profile['profile_time'],
-		"profile_distanceWhilstConnectedToOBD": profile['profile_distanceWhilstConnectedToOBD'],
-		"profile_distance": profile['profile_distance'],
-		"profile_date": profile['profile_date'],
-		**metric_values,
-	}
-	conn.execute(update_sql, update_params)
+	torqtrips_records: list[dict] = []
+	torqfiles_updates: list[dict] = []
+	for row in rows:
+		fileid = int(row["fileid"])
+		trip_start = row["trip_start"]
+		trip_end = row["trip_end"]
 
-	# Update TorqFile
-	conn.execute(text("""
-		UPDATE torqfiles
-		SET trip_start = :trip_start,
-			trip_end = :trip_end,
-			trip_duration = :trip_duration,
-			startlat = :startlat,
-			startlon = :startlon,
-			endlat = :endlat,
-			endlon = :endlon,
-			sent_rows = :row_count,
-			trip_distance = :trip_distance
-		WHERE fileid = :fileid
-	"""), {
-		"fileid": fileid,
-		"trip_start": trip_start,
-		"trip_end": trip_end,
-		"trip_duration": trip_duration,
-		"startlat": startlat,
-		"startlon": startlon,
-		"endlat": endlat,
-		"endlon": endlon,
-		"row_count": row_count,
-		"trip_distance": trip_distance
-	})
-	logger.debug(f'Updated fileid {fileid}: trip_start={trip_start}, trip_end={trip_end}, duration={trip_duration}, distance={trip_distance}, rows={row_count}')
+		trip_duration = 0
+		if trip_start and trip_end:
+			try:
+				trip_start_dt = convert_string_to_datetime(str(trip_start))
+				trip_end_dt = convert_string_to_datetime(str(trip_end))
+				if isinstance(trip_start_dt, datetime) and isinstance(trip_end_dt, datetime):
+					trip_duration = (trip_end_dt - trip_start_dt).total_seconds()
+				else:
+					logger.warning(f"Could not parse trip_start or trip_end as datetime for fileid {fileid}: {trip_start} ({type(trip_start)}), {trip_end} ({type(trip_end)})")
+			except Exception as e:
+				logger.error(f'{e} {type(e)} {trip_start=} {trip_end=}')
+			if trip_duration > 86400 // 2:
+				logger.warning(f'fileid: {fileid} - trip duration too long: {trip_duration}')
+
+		# torqtrips.trip_distance, torqfiles.trip_distance and torqtrips.time are all
+		# Integer columns; Postgres (unlike sqlite) rejects a float bound to them.
+		trip_distance = int(round(distances.get(fileid, 0.0)))
+		trip_duration_int = int(round(trip_duration))
+
+		metric_values: dict[str, float | None] = {}
+		for idx, (metric_name, _) in enumerate(resolved_metric_pairs):
+			min_val = row.get(f"m_{idx}_min")
+			max_val = row.get(f"m_{idx}_max")
+			avg_val = row.get(f"m_{idx}_avg")
+			count_val = int(row.get(f"m_{idx}_count") or 0)
+			avg_sq_val = row.get(f"m_{idx}_avg_sq")
+
+			metric_values[f"{metric_name}_min"] = float(min_val) if min_val is not None else None
+			metric_values[f"{metric_name}_max"] = float(max_val) if max_val is not None else None
+			metric_values[f"{metric_name}_avg"] = float(avg_val) if avg_val is not None else None
+			if count_val > 1 and avg_val is not None and avg_sq_val is not None:
+				variance = max(0.0, float(avg_sq_val) - (float(avg_val) ** 2))
+				metric_values[f"{metric_name}_stdev"] = variance ** 0.5
+			else:
+				metric_values[f"{metric_name}_stdev"] = None
+
+		if fileid in csvfiles:
+			profile = _read_trip_profile(csvfiles[fileid])
+		else:
+			existing = existing_profiles.get(fileid, {})
+			profile = {
+				'profile_name': existing.get('profile') or '',
+				'profile_fuelused': existing.get('profile_fuelused') or '',
+				'profile_fuelcost': existing.get('profile_fuelcost') or '',
+				'profile_time': existing.get('profile_time') or '',
+				'profile_distanceWhilstConnectedToOBD': existing.get('profile_distanceWhilstConnectedToOBD') or '',
+				'profile_distance': existing.get('profile_distance') or '',
+				'profile_date': existing.get('profile_date') or '',
+			}
+
+		torqtrips_records.append({
+			"fileid": fileid,
+			"tripdate": trip_start,
+			"time": trip_duration_int,
+			"trip_distance": trip_distance,
+			"profile": profile['profile_name'],
+			"profile_fuelused": profile['profile_fuelused'],
+			"profile_fuelcost": profile['profile_fuelcost'],
+			"profile_time": profile['profile_time'],
+			"profile_distanceWhilstConnectedToOBD": profile['profile_distanceWhilstConnectedToOBD'],
+			"profile_distance": profile['profile_distance'],
+			"profile_date": profile['profile_date'],
+			**metric_values,
+		})
+
+		torqfiles_updates.append({
+			"fileid": fileid,
+			"trip_start": trip_start,
+			"trip_end": trip_end,
+			"trip_duration": trip_duration,
+			"startlat": row["startlat"],
+			"startlon": row["startlon"],
+			"endlat": row["endlat"],
+			"endlon": row["endlon"],
+			"row_count": row["row_count"],
+			"trip_distance": trip_distance,
+		})
+
+	# Recalculation deletes and rebuilds each row (profile fields are preserved above
+	# when no fresh csvfile is available), so this cannot create duplicates.
+	try:
+		conn.execute(text(f"DELETE FROM torqtrips WHERE fileid IN ({placeholders})"), params)
+		if torqtrips_records:
+			ncols = len(torqtrips_records[0])
+			max_params = 999 if args.dbmode == "sqlite" else 65535
+			safe_chunksize = max(1, min(args.sqlchunksize, max_params // ncols))
+			pd.DataFrame(torqtrips_records).to_sql(name="torqtrips", con=conn, if_exists="append", index=False, method="multi", chunksize=safe_chunksize)
+	except Exception as e:
+		logger.error(f"Error updating torqtrips for fileids {batch}: {e}")
+		return 0
+	try:
+		conn.execute(text("""
+			UPDATE torqfiles
+			SET trip_start = :trip_start,
+				trip_end = :trip_end,
+				trip_duration = :trip_duration,
+				startlat = :startlat,
+				startlon = :startlon,
+				endlat = :endlat,
+				endlon = :endlon,
+				sent_rows = :row_count,
+				trip_distance = :trip_distance
+			WHERE fileid = :fileid
+		"""), torqfiles_updates)
+	except Exception as e:
+		logger.error(f"Error updating torqfiles for fileids {batch}: {e}")
+		return 0
+
+	logger.debug(f"Updated torqtrips/torqfiles for {len(torqtrips_records)} fileids (batch starting fileid {batch[0]})")
+	return len(torqtrips_records)
+
+
+def update_trip_and_file_for_fileids(conn, fileids: list[int], args, csvfiles: dict | None = None) -> int:
+	"""
+	Recompute torqfiles and torqtrips rows for the given fileids from torqlogs data.
+	Used both right after inserting a single new fileid (scanpath) and for bulk
+	recalculation across every fileid in torqfiles (updatetripdata.py --db_torqtrips/--db_allstats).
+
+	csvfiles, when given, maps fileid -> csvfile dict so the trip profile can be read from
+	profile.properties; without it, existing profile_* values in torqtrips are preserved.
+	"""
+	fileids = sorted({int(f) for f in fileids})
+	if not fileids:
+		return 0
+	csvfiles = csvfiles or {}
+
+	resolved = _resolve_torqlogs_columns(conn, ['gpstime', 'devicetime', 'latitude', 'longitude', *TRIP_METRIC_COLUMNS])
+	gpstime_time_col = resolved.get('gpstime')
+	device_time_col = resolved.get('devicetime')
+	lat_col = resolved.get('latitude')
+	lon_col = resolved.get('longitude')
+	if not (gpstime_time_col and device_time_col and lat_col and lon_col):
+		logger.error(f'Missing required torqlogs columns for fileids {fileids}: {resolved}')
+		return 0
+
+	resolved_metric_pairs = [(metric, resolved[metric]) for metric in TRIP_METRIC_COLUMNS if metric in resolved]
+	_ensure_torqtrips_metric_columns(conn, [metric for metric, _ in resolved_metric_pairs])
+	_ensure_torqtrips_profile_columns(conn)
+
+	batch_size = 300 if args.dbmode == "sqlite" else 1000
+	updated = 0
+	for batch_start in range(0, len(fileids), batch_size):
+		batch = fileids[batch_start:batch_start + batch_size]
+		try:
+			updated += _update_trip_and_file_batch(conn, batch, args, gpstime_time_col, lat_col, lon_col, resolved_metric_pairs, csvfiles)
+		except Exception as e:
+			logger.error(f"Error updating trip and file batch for fileids {batch}: {e}")
+	return updated
 
 def read_csv_data(csvfile: dict, conn, normalized_actual_columns, allowed_cols, args) -> tuple[pd.DataFrame, int]:
 	"""
@@ -741,7 +813,7 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs') -> None:
 		# Update trip and file info for this fileid
 		send_elapsed = float(time.perf_counter() - send_started)
 
-		update_trip_and_file_for_fileid(conn, fileid, csvfile)
+		update_trip_and_file_for_fileids(conn, [fileid], args, csvfiles={fileid: csvfile})
 		read_elapsed = float(time.perf_counter() - read_started)
 		# Update TorqFile import timings and row count
 		conn.execute(text(""" UPDATE torqfiles SET sent_rows = :rows, readtime = :readtime, sendtime = :sendtime WHERE fileid = :fileid """),{"rows": len(df), "readtime": read_elapsed, "sendtime": send_elapsed, "fileid": fileid})
