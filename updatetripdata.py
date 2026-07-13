@@ -7,10 +7,9 @@ from pathlib import Path
 from loguru import logger
 import sys
 from sqlalchemy import text, inspect
-from utils import get_parser, get_engine_session, convert_string_to_datetime, haversine
+from utils import get_parser, get_engine_session, convert_string_to_datetime, haversine, update_trip_and_file_for_fileids
 from schemas import dataschema
 from datamodels import TorqFile, Startpos, Endpos
-from schemas import TRIP_METRIC_COLUMNS
 from numbers import Real
 
 
@@ -776,201 +775,28 @@ def collect_db_startends(args, update_start=True, update_end=True, force_refresh
 
 
 def collect_db_torqtrips(args):
-    # populate torqtrips table with one row per trip, using start/end info from torqfiles and torqlogs
+    # recompute torqtrips (and torqfiles trip stats) for every fileid, using
+    # the same aggregation logic scanpath uses for newly-ingested files
     session = get_engine_session(args)
     logger.info("Starting torqtrips aggregation")
 
-    def _ensure_torqtrips_metric_columns(metric_names: list[str]) -> None:
-        inspector = inspect(session.get_bind())
-        existing = {
-            str(col["name"]).lower() for col in inspector.get_columns("torqtrips")
-        }
-        numeric_sql_type = (
-            "DOUBLE PRECISION"
-            if args.dbmode in ("psql", "postgres", "postgresql")
-            else "REAL"
-        )
-        for metric in metric_names:
-            for suffix in ("min", "max", "avg", "stdev"):
-                col_name = f"{metric}_{suffix}"
-                if col_name.lower() in existing:
-                    continue
-                session.execute(text(f'ALTER TABLE torqtrips ADD COLUMN "{col_name}" {numeric_sql_type}'))
-                existing.add(col_name.lower())
-                # logger.debug(f"Added column {col_name} to torqtrips for metric {metric}")
-
-    resolved = _resolve_schema_columns(session, ["gpstime", *TRIP_METRIC_COLUMNS])
-    time_col = resolved.get("gpstime")
-    if not time_col:
-        logger.error("Missing required gpstime column for torqtrips aggregation")
-        return -1
-
-    resolved_metric_pairs = [
-        (metric, resolved[metric])
-        for metric in TRIP_METRIC_COLUMNS
-        if metric in resolved
-    ]
-    if not resolved_metric_pairs:
-        logger.warning(
-            "No requested torqtrips metric columns found in torqlogs; updating base trip fields only"
-        )
-    _ensure_torqtrips_metric_columns([metric for metric, _ in resolved_metric_pairs])
-    session.commit()
-
-    q_fileids = "SELECT fileid FROM torqfiles"
-    fileid_rows = session.execute(text(q_fileids)).all()
+    fileid_rows = session.execute(text("SELECT fileid FROM torqfiles")).all()
     fileids = [int(row[0]) for row in fileid_rows if row and row[0] is not None]
     if not fileids:
         logger.info("No torqfiles found for torqtrips aggregation")
         return 0
 
-    batch_size = 300 if args.dbmode == "sqlite" else 1000
-    inserted_rows = 0
-    logger.debug(
-        f"candidate fileids for torqtrips={len(fileids)}, processing in batches of {batch_size}"
-    )
-    for batch_start in range(0, len(fileids), batch_size):
-        batch = fileids[batch_start:batch_start + batch_size]
-        placeholders = ", ".join(f":fid{i}" for i in range(len(batch)))
-        params = {f"fid{i}": int(fid) for i, fid in enumerate(batch)}
+    conn = session.connection()
+    try:
+        updated_rows = update_trip_and_file_for_fileids(conn, fileids, args)
+    except Exception as e:
+        session.rollback()
+        logger.error(f"torqtrips aggregation failed: {e} ({type(e)})")
+        return -1
+    session.commit()
 
-        try:
-            # Recalculation deletes and rebuilds each row, so preserve the existing
-            # profile (set separately by converter.py from the source CSV) across that cycle.
-            existing_profiles = {
-                int(row[0]): row[1]
-                for row in session.execute(
-                    text(f"SELECT fileid, profile FROM torqtrips WHERE fileid IN ({placeholders})"), params
-                ).all()
-            }
-
-            # Remove prior rows for this batch so recalculation does not create duplicates.
-            logger.debug(
-                f"Clearing existing torqtrips rows for batch {batch_start // batch_size + 1} placeholders: {len(placeholders)}, params: {len(params)}"
-            )
-            session.execute(
-                text(f"DELETE FROM torqtrips WHERE fileid IN ({placeholders})"), params
-            )
-            logger.info(
-                f"Cleared existing torqtrips rows for batch {batch_start // batch_size + 1}"
-            )
-
-            metric_select_parts: list[str] = []
-            for idx, (_, actual_col) in enumerate(resolved_metric_pairs):
-                # Filter out float32 sentinel/overflow values (e.g. 3.4028235e+38 = FLT_MAX)
-                # by NULLing any value whose absolute magnitude exceeds 1e30.
-                valid = f'CASE WHEN ABS(tl."{actual_col}") < 1e30 THEN tl."{actual_col}" ELSE NULL END'
-                metric_select_parts.extend(
-                    [
-                        f'MIN({valid}) AS "m_{idx}_min"',
-                        f'MAX({valid}) AS "m_{idx}_max"',
-                        f'AVG({valid}) AS "m_{idx}_avg"',
-                        f'COUNT({valid}) AS "m_{idx}_count"',
-                        f'AVG(CASE WHEN ABS(tl."{actual_col}") < 1e30 THEN tl."{actual_col}" * tl."{actual_col}" ELSE NULL END) AS "m_{idx}_avg_sq"',
-                    ]
-                )
-            metric_sql = (
-                (",\n\t\t" + ",\n\t\t".join(metric_select_parts))
-                if metric_select_parts
-                else ""
-            )
-            logger.debug(f"Constructed metric SQL for torqtrips {len(metric_sql)}")
-            agg_sql = text(f"""
-                SELECT
-                    tl.fileid AS fileid,
-                    MIN(tl."{time_col}") AS tripdate,
-                    MAX(tl."{time_col}") AS trip_end,
-                    MAX(tf.trip_distance) AS trip_distance
-                    {metric_sql}
-                FROM torqlogs tl
-                LEFT JOIN torqfiles tf ON tf.fileid = tl.fileid
-                WHERE tl.fileid IN ({placeholders})
-                GROUP BY tl.fileid
-                """)
-            rows = session.execute(agg_sql, params).mappings().all()
-            if not rows:
-                session.commit()
-                continue
-
-            records: list[dict[str, object]] = []
-            logger.debug(
-                f"Processing {len(rows)} aggregated rows for torqtrips batch {batch_start // batch_size + 1}"
-            )
-            for row_idx, row in enumerate(rows):
-                trip_start = row.get("tripdate")
-                trip_end = row.get("trip_end")
-                trip_duration = None
-                if trip_start and trip_end:
-                    try:
-                        trip_start_dt = convert_string_to_datetime(str(trip_start))
-                        trip_end_dt = convert_string_to_datetime(str(trip_end))
-                        if trip_start_dt and trip_end_dt:
-                            trip_duration = float(
-                                (trip_end_dt - trip_start_dt).total_seconds()
-                            )
-                    except Exception as e:
-                        logger.warning(
-                            f"Could not compute trip duration for fileid {row.get('fileid')}: {e} ({type(e)})"
-                        )
-
-                rec_fileid = int(row.get("fileid") or 0)
-                rec: dict[str, object] = {
-                    "fileid": rec_fileid,
-                    "tripdate": trip_start,
-                    "time": trip_duration,
-                    "trip_distance": row.get("trip_distance"),
-                    "profile": existing_profiles.get(rec_fileid),
-                }
-
-                for idx, (metric_name, _) in enumerate(resolved_metric_pairs):
-                    min_val = row.get(f"m_{idx}_min")
-                    max_val = row.get(f"m_{idx}_max")
-                    avg_val = row.get(f"m_{idx}_avg")
-                    count_val = int(row.get(f"m_{idx}_count") or 0)
-                    avg_sq_val = row.get(f"m_{idx}_avg_sq")
-
-                    rec[f"{metric_name}_min"] = (
-                        float(min_val) if min_val is not None else None
-                    )
-                    rec[f"{metric_name}_max"] = (
-                        float(max_val) if max_val is not None else None
-                    )
-                    rec[f"{metric_name}_avg"] = (
-                        float(avg_val) if avg_val is not None else None
-                    )
-                    if count_val > 1 and avg_val is not None and avg_sq_val is not None:
-                        variance = max(0.0, float(avg_sq_val) - (float(avg_val) ** 2))
-                        rec[f"{metric_name}_stdev"] = variance**0.5
-                    else:
-                        rec[f"{metric_name}_stdev"] = None
-                records.append(rec)
-                # logger.debug(f"[{row_idx}/{len(rows)}] Prepared record for fileid {rec['fileid']} records: {len(records)}")
-
-            if records:
-                logger.debug(f"Writing {len(records)} torqtrips records for batch {batch_start // batch_size + 1} inserted_rows: {inserted_rows}")
-                try:
-                    # method="multi" builds one INSERT with all rows in the chunk, so the
-                    # bound-parameter count is ncols * chunksize; cap chunksize to stay under
-                    # each dialect's per-statement parameter limit (sqlite ~999, postgres 65535).
-                    ncols = len(records[0])
-                    max_params = 999 if args.dbmode == "sqlite" else 65535
-                    safe_chunksize = max(1, min(args.sqlchunksize, max_params // ncols))
-                    pd.DataFrame(records).to_sql(name="torqtrips", con=session.connection(), if_exists="append", index=False, method="multi", chunksize=safe_chunksize,)
-                except Exception as e:
-                    logger.error(f"Failed to write torqtrips records for batch {batch_start // batch_size + 1}: {e} ({type(e)})")
-                    session.rollback()
-                    return -1
-                inserted_rows += len(records)
-
-            session.commit()
-            logger.info(f"torqtrips batch {batch_start // batch_size + 1}: {min(batch_start + len(batch), len(fileids))}/{len(fileids)} fileids")
-        except Exception as e:
-            session.rollback()
-            logger.error(f"torqtrips batch  ({type(e)}) {batch_start // batch_size + 1} failed: {e}")
-            return -1
-
-    logger.info(f"collect_db_torqtrips completed, wrote {inserted_rows} rows")
-    return inserted_rows
+    logger.info(f"collect_db_torqtrips completed, wrote {updated_rows} rows")
+    return updated_rows
 
 def update_indexes(args):
     session = get_engine_session(args)
