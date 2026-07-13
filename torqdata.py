@@ -10,7 +10,7 @@ def _normalize_col_name(value: str) -> str:
 	return "".join(ch.lower() for ch in str(value) if ch.isalnum())
 
 
-def _get_torqlogs_columns(session) -> list[str]:
+def _get_torqlogs_data_columns(session) -> list[str]:
 	cache_key = "torqlogs_columns"
 	if cache_key not in session.info:
 		inspector = inspect(session.get_bind())
@@ -29,7 +29,7 @@ def _build_trip_data_query(actual_columns_by_requested: list[tuple[str, str]]):
 
 def get_trip_data(trip, session):
 	resdata = {'trip': trip, 'data': []}
-	actual_columns = _get_torqlogs_columns(session)
+	actual_columns = _get_torqlogs_data_columns(session)
 	normalized_actual = {_normalize_col_name(col): col for col in actual_columns}
 	requested_columns = []
 	logger.info(f'[get_trip_data] trip={trip} actual_columns={len(actual_columns)} normalized_actual={len(normalized_actual)}')
