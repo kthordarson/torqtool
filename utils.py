@@ -94,12 +94,13 @@ def create_or_update_table(session, table_name, columns, column_types):
 						alter_sql = text(f'ALTER TABLE {table_name} ADD COLUMN "{orig_col}" {sql_type}')
 						conn.execute(alter_sql)
 					except Exception as e:
+						conn.rollback()
 						if "duplicate column" in str(e).lower() or "already exists" in str(e).lower():
 							logger.debug(f"Column {orig_col} already exists, skipping")
 							continue
 						else:
-							logger.warning(f"Could not add column {orig_col}: {e}")
-			conn.commit()
+							logger.warning(f"Could not add column {orig_col}: {e} {type(e)}")
+				conn.commit()
 
 	# Verify final column structure
 	final_columns = [col.lower() for col in get_table_columns(session, table_name)]
