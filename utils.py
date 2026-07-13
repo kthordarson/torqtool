@@ -468,11 +468,7 @@ def update_trip_and_file_for_fileid(conn, fileid, csvfile):
 			''')
 			trip_distance = float(conn.execute(distance_sql, {"fileid": fileid}).scalar() or 0.0)
 		else:
-			df_gps = pd.read_sql(
-				text(f'SELECT "{lat_col}" AS latitude, "{lon_col}" AS longitude FROM torqlogs WHERE fileid = :fileid ORDER BY "{gpstime_time_col}" ASC'),
-				conn,
-				params={"fileid": fileid}
-			)
+			df_gps = pd.read_sql(text(f'SELECT "{lat_col}" AS latitude, "{lon_col}" AS longitude FROM torqlogs WHERE fileid = :fileid ORDER BY "{gpstime_time_col}" ASC'), conn, params={"fileid": fileid})
 			if len(df_gps) > 1:
 				# Vectorized haversine over the whole trip at once (same formula/radius as
 				# haversine() above) - a Python per-row loop here was the dominant cost
@@ -496,8 +492,6 @@ def update_trip_and_file_for_fileid(conn, fileid, csvfile):
 		logger.error(f"Error calculating trip_distance for fileid {fileid}: {e} {type(e)}")
 		trip_distance = 0.0
 
-	# csvfile_path = conn.execute(text("SELECT csvfile FROM torqfiles WHERE fileid = :fileid"), {"fileid": fileid}).scalar()
-	# csvfile_path = conn.execute(text("SELECT csvfile FROM torqfiles WHERE fileid = :fileid"), {"fileid": fileid}).scalar()
 	profile = _read_trip_profile(csvfile)
 	# Insert if missing, then update all calculated fields.
 	conn.execute(text("""
@@ -509,7 +503,13 @@ def update_trip_and_file_for_fileid(conn, fileid, csvfile):
 		"trip_start": trip_start,
 		"trip_duration": trip_duration,
 		"trip_distance": trip_distance,
-		"profile": profile['profile_name']
+		"profile": profile['profile_name'],
+		"profile_fuelused": profile['profile_fuelused'],
+		"profile_fuelcost": profile['profile_fuelcost'],
+		"profile_time": profile['profile_time'],
+		"profile_distanceWhilstConnectedToOBD": profile['profile_distanceWhilstConnectedToOBD'],
+		"profile_distance": profile['profile_distance'],
+		"profile_date": profile['profile_date'],
 	})
 
 	set_parts = [
@@ -517,6 +517,12 @@ def update_trip_and_file_for_fileid(conn, fileid, csvfile):
 		"time = :trip_duration",
 		"trip_distance = :trip_distance",
 		"profile = :profile",
+		"profile_fuelused = :profile_fuelused",
+		"profile_fuelcost = :profile_fuelcost",
+		"profile_time = :profile_time",
+		"profile_distanceWhilstConnectedToOBD = :profile_distanceWhilstConnectedToOBD",
+		"profile_distance = :profile_distance",
+		"profile_date = :profile_date",
 	]
 	for key in metric_values:
 		set_parts.append(f'"{key}" = :{key}')
@@ -529,6 +535,12 @@ def update_trip_and_file_for_fileid(conn, fileid, csvfile):
 		"trip_duration": trip_duration,
 		"trip_distance": trip_distance,
 		"profile": profile['profile_name'],
+		"profile_fuelused": profile['profile_fuelused'],
+		"profile_fuelcost": profile['profile_fuelcost'],
+		"profile_time": profile['profile_time'],
+		"profile_distanceWhilstConnectedToOBD": profile['profile_distanceWhilstConnectedToOBD'],
+		"profile_distance": profile['profile_distance'],
+		"profile_date": profile['profile_date'],
 		**metric_values,
 	}
 	conn.execute(update_sql, update_params)
@@ -736,11 +748,6 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs') -> None:
 		logger.info(f"[{idx}/{len(csv_files)}] Sent {len(df)} rows from {csvfile['filename']} ")
 		session.commit()
 
-def get_csv_files(searchpath: Path, args):
-	# scan searchpath for csv files
-	torqcsvfiles = [({"csvfile": k, "csvhash": md5(open(k, "rb").read()).hexdigest(), "size": os.stat(k).st_size, "dbmode": args.dbmode, }) for k in searchpath.glob("**/*.csv") if k.stat().st_size >= MIN_FILESIZE]  # and not os.path.exists(f'{k}.fixed.csv')]
-	return torqcsvfiles
-
 def get_engine_session(args: argparse.Namespace) -> Session:
 	dburl = None
 	engine = None
@@ -766,45 +773,6 @@ def get_engine_session(args: argparse.Namespace) -> Session:
 		sys.exit(-1)
 	SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 	return SessionLocal()
-
-def get_time_stats(time_cols):
-	stats = {}
-	for c in time_cols:
-		stats[c.name] = {
-			"name": c.name, f"{c.name}.min": c.min(), f"{c.name}.mean": c.mean(), f"{c.name}.max": c.max(), f"{c.name}.tdelta": c.max() - c.min(), }
-	return stats
-
-
-def get_speed_stats(speed_cols):
-	stats = {}
-	for c in speed_cols:
-		stats[c.name] = {
-			"name": c.name, f"{c.name}.mean": c.mean(), f"{c.name}.max": c.max(), }
-	return stats
-
-
-def get_gps_stats(gpscols):
-	stats = {}
-	for c in gpscols:
-		stats[c.name] = {
-			"name": c.name, f"{c.name}.min": c.min(), f"{c.name}.mean": c.mean(), f"{c.name}.max": c.max(), }
-	return stats
-
-
-def get_cost_stats(cost_cols):
-	stats = {}
-	for c in cost_cols:
-		stats[c.name] = {
-			"name": c.name, f"{c.name}.min": c.min(), f"{c.name}.mean": c.mean(), f"{c.name}.max": c.max(), }
-	return stats
-
-
-def get_temp_stats(temp_cols):
-	stats = {}
-	for c in temp_cols:
-		stats[c.name] = {
-			"name": c.name, f"{c.name}.min": c.min(), f"{c.name}.mean": c.mean(), f"{c.name}.max": c.max(), }
-	return stats
 
 def convert_string_to_datetime(s: str) -> datetime | None:
 	"""
