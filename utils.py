@@ -78,12 +78,12 @@ def create_or_update_table(session, table_name, columns, column_types):
 		metadata.create_all(bind=session.get_bind())
 	else:
 		# Add only new columns to existing table
-		with session.get_bind().connect() as conn:
-			# Convert all column names to lowercase for comparison
-			new_columns = set(col.lower() for col in columns) - set(existing_columns)
-			orig_col = ''
-			if new_columns:
-				logger.info(f"Adding {len(new_columns)} new columns to {table_name}")
+		# Convert all column names to lowercase for comparison
+		new_columns = set(col.lower() for col in columns) - set(existing_columns)
+		if new_columns:
+			logger.info(f"Adding {len(new_columns)} new columns to {table_name}")
+			with session.get_bind().connect() as conn:
+				orig_col = ''
 				for col in new_columns:
 					try:
 						# Get original case version of column name
@@ -92,7 +92,6 @@ def create_or_update_table(session, table_name, columns, column_types):
 						sql_type = sqlalchemy_type().compile(dialect=conn.dialect)
 						alter_sql = text(f'ALTER TABLE {table_name} ADD COLUMN "{orig_col}" {sql_type}')
 						conn.execute(alter_sql)
-
 					except Exception as e:
 						if "duplicate column" in str(e).lower() or "already exists" in str(e).lower():
 							logger.debug(f"Column {orig_col} already exists, skipping")
@@ -298,25 +297,47 @@ def _ensure_torqtrips_metric_columns(conn, metric_names: list[str]) -> None:
 			conn.execute(text(f'ALTER TABLE torqtrips ADD COLUMN "{col_name}" {numeric_sql_type}'))
 			existing.add(col_name.lower())
 
-def _read_trip_profile(csvfile_path: str) -> str | None:
+def _read_trip_profile(csvfile: dict) -> dict:
 	"""
 	Read the vehicle profile name from the trip folder's profile.properties file.
 	Torque writes one alongside each trackLog.csv (e.g. "profile=c4").
 	"""
-	if not csvfile_path:
-		logger.warning(f"Could not read profile from {csvfile_path}")
-		return None
-	profile_path = Path(csvfile_path).parent / 'profile.properties'
+	profile_path = Path(csvfile['filename']).parent / 'profile.properties'
+	profile_data = {
+		'profile_name': '',
+		'profile_date': '',
+		'profile_fuelcost': '',
+		'profile_fuelused': '',
+		'profile_time': '',
+		'profile_distanceWhilstConnectedToOBD': '',
+		'profile_distance': ''
+	}
 	try:
 		for line in profile_path.read_text().splitlines():
 			line = line.strip()
 			if line.startswith('profile='):
 				value = line.split('=', 1)[1].strip()
-				return value
-	except (OSError, UnicodeDecodeError) as e:
+				profile_data['profile_name'] = value
+			if line.startswith('fuelUsed'):
+				value = line.split('=', 1)[1].strip()
+				profile_data['profile_fuelused'] = value
+			if line.startswith('fuelCost'):
+				value = line.split('=', 1)[1].strip()
+				profile_data['profile_fuelcost'] = value
+			if line.startswith('time'):
+				value = line.split('=', 1)[1].strip()
+				profile_data['profile_time'] = value
+			if line.startswith('distanceWhilstConnectedToOBD'):
+				value = line.split('=', 1)[1].strip()
+				profile_data['profile_distanceWhilstConnectedToOBD'] = value
+			if line.startswith('distance'):
+				value = line.split('=', 1)[1].strip()
+				profile_data['profile_distance'] = value
+			if line.startswith('#') and len(line) == 35:
+				profile_data['profile_date'] = line[1:35].strip()
+	except Exception as e:
 		logger.error(f"Could not read profile from {profile_path}: {e} {type(e)}")
-	logger.warning(f"Could not read profile from {profile_path}")
-	return None
+	return profile_data
 
 def update_trip_and_file_for_fileid(conn, fileid, csvfile):
 	"""
@@ -474,7 +495,7 @@ def update_trip_and_file_for_fileid(conn, fileid, csvfile):
 
 	# csvfile_path = conn.execute(text("SELECT csvfile FROM torqfiles WHERE fileid = :fileid"), {"fileid": fileid}).scalar()
 	# csvfile_path = conn.execute(text("SELECT csvfile FROM torqfiles WHERE fileid = :fileid"), {"fileid": fileid}).scalar()
-	profile = _read_trip_profile(csvfile['filename'])
+	profile = _read_trip_profile(csvfile)
 	# Insert if missing, then update all calculated fields.
 	conn.execute(text("""
 		INSERT INTO torqtrips (fileid, tripdate, time, trip_distance, profile)
@@ -485,7 +506,7 @@ def update_trip_and_file_for_fileid(conn, fileid, csvfile):
 		"trip_start": trip_start,
 		"trip_duration": trip_duration,
 		"trip_distance": trip_distance,
-		"profile": profile
+		"profile": profile['profile_name']
 	})
 
 	set_parts = [
@@ -504,7 +525,7 @@ def update_trip_and_file_for_fileid(conn, fileid, csvfile):
 		"trip_start": trip_start,
 		"trip_duration": trip_duration,
 		"trip_distance": trip_distance,
-		"profile": profile,
+		"profile": profile['profile_name'],
 		**metric_values,
 	}
 	conn.execute(update_sql, update_params)
@@ -541,6 +562,8 @@ def read_csv_data(csvfile: dict, conn, normalized_actual_columns, allowed_cols, 
 	Read a CSV file into a DataFrame, normalize column names, and collapse duplicates.
 	"""
 	df = pd.read_csv(csvfile['filename'], dtype=str)
+	if args.debug:
+		logger.debug(f"Read {len(df)} rows from {csvfile['filename']} with columns: {list(df.columns)}")
 
 	# Normalize columns using shared Torq header mapping.
 	# original_columns = df.columns.to_list()
@@ -558,7 +581,8 @@ def read_csv_data(csvfile: dict, conn, normalized_actual_columns, allowed_cols, 
 		df = df.rename(columns=db_col_rename_map)
 	df = _collapse_duplicate_dataframe_columns(df, csvfile)
 	df = df.replace(['-', '∞', 'inf', '-inf'], pd.NA)
-
+	if args.debug:
+		logger.debug(f"After normalization and duplicate collapse, {len(df)} rows remain with columns: {list(df.columns)}")
 	# Torque writes the float32 sentinel (~+/-3.4028235e38) for PIDs the vehicle doesn't
 	# support, sometimes scaled by a unit conversion (e.g. kpa->bar divides it by 100).
 	# Scrub any such huge value everywhere (not just COLUMN_TYPES-known columns) since
@@ -567,6 +591,8 @@ def read_csv_data(csvfile: dict, conn, normalized_actual_columns, allowed_cols, 
 		coerced = pd.to_numeric(df[col], errors='coerce')
 		sentinel_mask = coerced.abs() > 1e15
 		if sentinel_mask.any():
+			if args.debug:
+				logger.debug(f"Scrubbing {sentinel_mask.sum()} sentinel values in column {col} of {csvfile['filename']}")
 			df.loc[sentinel_mask, col] = pd.NA
 
 	# Convert numeric columns
@@ -574,40 +600,26 @@ def read_csv_data(csvfile: dict, conn, normalized_actual_columns, allowed_cols, 
 		if col in COLUMN_TYPES and COLUMN_TYPES[col] in [Float, Integer]:
 			df[col] = pd.to_numeric(df[col], errors='coerce')
 
-	# Remove rows that are identical to the header (possible repeated headers).
-	# Vectorized: row-wise .apply() here was the dominant cost on large files
-	# (~70% of read_csv_data's time on a 24k-row file) since it re-materializes
-	# each row as a Python object; column-wise comparison does the same check
-	# without ever leaving pandas' vectorized C paths.
-	header_row = list(df.columns)
-	is_header_row = (df.astype(str) == header_row).all(axis=1)
-	device_time_mask = pd.Series(False, index=df.index)
-	for col in df.columns:
-		device_time_mask |= df[col].astype(str).str.contains(' Device Time', na=False)
-	df = df[~(is_header_row | device_time_mask)]
+	# header_row = list(df.columns)
+	# is_header_row = (df.astype(str) == header_row).all(axis=1)
+	# device_time_mask = pd.Series(False, index=df.index)
+	# for col in df.columns:
+	# 	device_time_mask |= df[col].astype(str).str.contains(' Device Time', na=False)
+	# df = df[~(is_header_row | device_time_mask)]
 
-	ordered_cols = [col for col in ['fileid'] if col in df.columns and col in allowed_cols]
-	ordered_cols.extend(sorted([col for col in df.columns if col != 'fileid' and col in allowed_cols]))
-	df = df[ordered_cols]
-	for col in df.columns:
+	# ordered_cols = [col for col in ['fileid'] if col in df.columns and col in allowed_cols]
+	# ordered_cols.extend(sorted([col for col in df.columns if col != 'fileid' and col in allowed_cols]))
+	# df = df[ordered_cols]
+	for col in ['gpstime', 'devicetime']:
 		duration_check = 0
 		if _is_datetime_column_name(col):
 			df[col] = df[col].apply(lambda x: convert_string_to_datetime(x))  # type: ignore
-			if col == 'gpstime':
-				try:
-					duration_check = (df.iloc[-1]['gpstime'] - df.iloc[-2]['gpstime']).total_seconds()
-					# logger.warning(f'{csvfile} - trip duration too long: {duration_check}')
-					# df = df.iloc[:-1]  # drop last row if trip duration is too long
-				except Exception as e:
-					logger.warning(f"{e} {type(e)} col: {col} Error calculating trip duration for {csvfile['filename']}: {e} {type(e)} df shape: {df.shape} columns: {list(df.columns)}\ndfiloc: {df.iloc[-1]}")
-			if col == 'GPS Time':
-				try:
-					duration_check = (df.iloc[-1]['GPS Time'] - df.iloc[-2]['GPS Time']).total_seconds()
-					# logger.warning(f'{csvfile} - trip duration too long: {duration_check}')
-				except Exception as e:
-					logger.warning(f"{e} {type(e)} Error calculating trip duration for {csvfile['filename']}: {e} {type(e)} df shape: {df.shape} columns: {list(df.columns)}\ndfiloc: {df.iloc[-1]}")
+			try:
+				duration_check = (df.iloc[-1][col] - df.iloc[-2][col]).total_seconds()
+			except Exception as e:
+				logger.warning(f"{e} {type(e)} col: {col} Error calculating trip duration for {csvfile['filename']}: {e} {type(e)} df shape: {df.shape} columns: {list(df.columns)}\ndfiloc: {df.iloc[-1]}")
 			if duration_check > 300:
-				logger.warning(f'trip duration too long in file: {csvfile["filename"]} size:{csvfile["size"]}  duration_check: {duration_check}')
+				logger.warning(f'trip duration too long in file: {csvfile["filename"]} size:{csvfile["size"]}  duration_check: {duration_check} col: {col} last two rows:\n{df.iloc[-2:]}\n')
 				df = df.iloc[:-1]  # drop last row if trip duration is too long
 	df, fileid = get_file_id(df, conn, csvfile)
 	# df.insert(0, 'fileid', fileid)
@@ -655,30 +667,27 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs') -> None:
 
 	# The Torqlogs ORM model only declares a handful of columns; grow the actual
 	# table to cover every canonical Torque metric so CSV data isn't silently dropped.
-	all_canonical_columns = sorted(set(column_mapping.values()))
-	column_types = COLUMN_TYPES.copy()
-	invalid_cols = []
-	for col in all_canonical_columns:
-		if col not in column_types:
-			column_types[col] = String
-			invalid_cols.append(col)
-			# if args.debug:
-			# 	logger.warning(f"Column {col} not in COLUMN_TYPES, defaulting to String")
-	if args.debug:
-		if invalid_cols:
-			logger.warning(f"Columns not in COLUMN_TYPES, defaulting to String: {invalid_cols}")
-	create_or_update_table(session, table_name, all_canonical_columns, column_types=column_types)
+	# all_canonical_columns = sorted(set(column_mapping.values()))
+	# column_types = COLUMN_TYPES.copy()
+	# invalid_cols = []
+	# for col in all_canonical_columns:
+	# 	if col not in column_types:
+	# 		column_types[col] = String
+	# 		invalid_cols.append(col)
+	# 		# if args.debug:
+	# 		# 	logger.warning(f"Column {col} not in COLUMN_TYPES, defaulting to String")
+	# if args.debug:
+	# 	if invalid_cols:
+	# 		logger.warning(f"Columns not in COLUMN_TYPES, defaulting to String: {invalid_cols}")
+	# create_or_update_table(session, table_name='torqlogs', columns=all_canonical_columns, column_types=column_types)
 
 	with session.get_bind().connect() as conn:  # type: ignore[union-attr]
 		hash_list = conn.execute(text("SELECT fileid,csvhash FROM torqfiles")).all()
 		if conn.dialect.name == "sqlite":
 			conn.execute(text("PRAGMA journal_mode = WAL"))  # Use Write-Ahead Logging
 			conn.execute(text("PRAGMA synchronous = NORMAL"))  # Reduce synchronization
-		# else:
-		# 	_repair_postgres_column_type_mismatches(conn, table_name, column_types)
 		inspector = inspect(conn)
-		actual_table_columns = [str(col["name"]) for col in inspector.get_columns(table_name)]
-		# pre_filter_columns = list(df.columns)
+		actual_table_columns = [str(col["name"]) for col in inspector.get_columns('torqlogs')]
 		allowed_cols = set(actual_table_columns)
 		normalized_actual_columns = {_normalize_col_name(col_name): col_name for col_name in actual_table_columns}
 
@@ -689,7 +698,7 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs') -> None:
 	# reuses one compiled statement per file (DBAPI-native executemany), instead of
 	# pandas.to_sql's method='multi', which builds one giant literal-VALUES statement
 	# per chunk and was ~40x slower on wide/large files.
-	torqlogs_table = Table(table_name, MetaData(), autoload_with=session.get_bind())
+	torqlogs_table = Table('torqlogs', MetaData(), autoload_with=session.get_bind())
 	for csvfile in csv_files:
 		csvhash = csvfile['hash']
 		if any(csvhash == existing_hash for _, existing_hash in hash_list):
@@ -714,11 +723,18 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs') -> None:
 			for col in insert_df.columns:
 				if pd.api.types.is_datetime64_any_dtype(insert_df[col]):
 					insert_df[col] = insert_df[col].dt.strftime('%Y-%m-%d %H:%M:%S.%f')
+					if args.debug:
+						logger.debug(f"Converted datetime column {col} to string for insertion")
 			records = insert_df.to_dict(orient='records')
+			none_records = []
 			for record in records:
 				for col, value in record.items():
 					if isinstance(value, float) and pd.isna(value):
 						record[col] = None
+						none_records.append((col, record))
+			if args.debug and none_records:
+				none_columns = list(set([k[0] for k in none_records]))
+				logger.debug(f"Prepared {len(records)} records for insertion, with {len(none_records)} None values. columns with None: {none_columns}")
 			conn.execute(torqlogs_table.insert(), records)  # type: ignore[arg-type]
 		except Exception as e:
 			import traceback
