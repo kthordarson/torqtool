@@ -11,7 +11,7 @@ import argparse
 import pandas as pd
 import pytz
 from loguru import logger
-from sqlalchemy import create_engine, text, MetaData, Table, Column, Float, String, Integer
+from sqlalchemy import create_engine, text, MetaData, Table, Column, Float, String, Integer, DateTime
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy import inspect
 from commonformats import fmt_20, fmt_24, fmt_26, fmt_28, fmt_30, fmt_34, fmt_36
@@ -299,13 +299,24 @@ def _ensure_torqtrips_metric_columns(conn, metric_names: list[str]) -> None:
 			conn.execute(text(f'ALTER TABLE torqtrips ADD COLUMN "{col_name}" {numeric_sql_type}'))
 			existing.add(col_name.lower())
 
+PROFILE_COLUMN_TYPES = {
+	"profile_fuelused": Float,
+	"profile_fuelcost": Float,
+	"profile_time": Integer,
+	"profile_distanceWhilstConnectedToOBD": Integer,
+	"profile_distance": Integer,
+	"profile_date": DateTime,
+}
+
 def _ensure_torqtrips_profile_columns(conn) -> None:
 	inspector = inspect(conn)
 	existing = {str(col["name"]).lower() for col in inspector.get_columns("torqtrips")}
 	for col_name in PROFILE_COLUMNS:
 		if col_name.lower() in existing:
 			continue
-		# conn.execute(text(f'ALTER TABLE torqtrips ADD COLUMN "{col_name}" TEXT'))
+		sqlalchemy_type = PROFILE_COLUMN_TYPES.get(col_name, String)
+		sql_type = sqlalchemy_type().compile(dialect=conn.dialect)
+		conn.execute(text(f'ALTER TABLE torqtrips ADD COLUMN "{col_name}" {sql_type}'))
 		existing.add(col_name.lower())
 
 def _read_trip_profile(csv_filename: str) -> dict:
@@ -316,7 +327,7 @@ def _read_trip_profile(csv_filename: str) -> dict:
 	profile_path = Path(csv_filename).parent / 'profile.properties'
 	profile_data = {
 		'profile_name': '',
-		'profile_date': '',
+		'profile_date': None,
 		'profile_fuelcost': 0.0,
 		'profile_fuelused': 0.0,
 		'profile_time': 0.0,
@@ -621,7 +632,7 @@ def update_trip_and_file_for_fileids(conn, fileids: list[int], args) -> int:
 
 	resolved_metric_pairs = [(metric, resolved[metric]) for metric in TRIP_METRIC_COLUMNS if metric in resolved]
 	_ensure_torqtrips_metric_columns(conn, [metric for metric, _ in resolved_metric_pairs])
-	# _ensure_torqtrips_profile_columns(conn)
+	_ensure_torqtrips_profile_columns(conn)
 
 	batch_size = 300 if args.dbmode == "sqlite" else 500
 	updated = 0

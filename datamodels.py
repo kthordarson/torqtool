@@ -515,6 +515,12 @@ class Torqtrips(Base):
     tripdate = Column("tripdate", DateTime)
     profile = Column("profile", Text)
     time = Column("time", Integer)
+    profile_fuelused = Column("profile_fuelused", Float)
+    profile_fuelcost = Column("profile_fuelcost", Float)
+    profile_time = Column("profile_time", Float)
+    profile_distanceWhilstConnectedToOBD = Column("profile_distanceWhilstConnectedToOBD", Float)
+    profile_distance = Column("profile_distance", Float)
+    profile_date = Column("profile_date", DateTime)
 
     def __init__(self, fileid):
         self.fileid = fileid
