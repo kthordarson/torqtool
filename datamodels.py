@@ -22,8 +22,8 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 COLUMN_TYPES = {
     "GPS_Time": String,
     "Device_Time": String,
-    "Longitude": Float,
-    "Latitude": Float,
+    "longitude": Float,
+    "latitude": Float,
     "GPS_Speed_Meterssecond": Float,
     "Horizontal_Dilution_of_Precision": Float,
     "Altitude": Float,
@@ -534,8 +534,8 @@ class Torqlogs(Base):
     devicetime = Column("devicetime", DateTime)
 
     # if DB column is "Longitude", map it to python attr "longitude"
-    longitude: Mapped[float | None] = mapped_column("Longitude", Float, nullable=True)
-    latitude: Mapped[float | None] = mapped_column("Latitude", Float, nullable=True)
+    longitude: Mapped[float | None] = mapped_column("longitude", Float, nullable=True)
+    latitude: Mapped[float | None] = mapped_column("latitude", Float, nullable=True)
     speedgpskmh: Mapped[float | None] = mapped_column(
         "speedgpskmh", Float, nullable=True
     )
