@@ -786,7 +786,6 @@ def collect_db_torqtrips(args):
         return 0
 
     conn = session.connection()
-    # csv_files = [{"csvfilename": k, 'size': k.stat().st_size, 'hash': md5(k.read_bytes()).hexdigest(),'valid': -1} for k in Path(args.logpath).glob("**/trackLog*.csv") if k.stat().st_size > MIN_FILESIZE]
     try:
         updated_rows = update_trip_and_file_for_fileids(conn, fileids, args)
     except Exception as e:

@@ -16,10 +16,10 @@ from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy import inspect
 from commonformats import fmt_20, fmt_24, fmt_26, fmt_28, fmt_30, fmt_34, fmt_36
 from datamodels import database_init, COLUMN_TYPES
-from schemas import canonicalize_columns
+from schemas import canonicalize_columns, PROFILE_COLUMNS
 from schemas import TRIP_METRIC_COLUMNS, column_mapping
 
-MIN_FILESIZE = 100000
+MIN_FILESIZE = 100000//2
 
 def get_parser(appname):
 	parser = argparse.ArgumentParser(description=appname)
@@ -299,22 +299,13 @@ def _ensure_torqtrips_metric_columns(conn, metric_names: list[str]) -> None:
 			conn.execute(text(f'ALTER TABLE torqtrips ADD COLUMN "{col_name}" {numeric_sql_type}'))
 			existing.add(col_name.lower())
 
-PROFILE_COLUMNS = [
-	'profile_fuelused',
-	'profile_fuelcost',
-	'profile_time',
-	'profile_distanceWhilstConnectedToOBD',
-	'profile_distance',
-	'profile_date',
-]
-
 def _ensure_torqtrips_profile_columns(conn) -> None:
 	inspector = inspect(conn)
 	existing = {str(col["name"]).lower() for col in inspector.get_columns("torqtrips")}
 	for col_name in PROFILE_COLUMNS:
 		if col_name.lower() in existing:
 			continue
-		conn.execute(text(f'ALTER TABLE torqtrips ADD COLUMN "{col_name}" TEXT'))
+		# conn.execute(text(f'ALTER TABLE torqtrips ADD COLUMN "{col_name}" TEXT'))
 		existing.add(col_name.lower())
 
 def _read_trip_profile(csv_filename: str) -> dict:
@@ -541,20 +532,6 @@ def _update_trip_and_file_batch(conn, batch: list[int], args, time_col: str, lat
 			else:
 				metric_values[f"{metric_name}_stdev"] = None
 
-		# if fileid in csvfiles:
-		# 	profile = _read_trip_profile(csvfiles[fileid])
-		# else:
-		# 	existing = existing_profiles.get(fileid, {})
-		# 	profile = {
-		# 		'profile_name': existing.get('profile') or '',
-		# 		'profile_fuelused': existing.get('profile_fuelused') or '',
-		# 		'profile_fuelcost': existing.get('profile_fuelcost') or '',
-		# 		'profile_time': existing.get('profile_time') or '',
-		# 		'profile_distanceWhilstConnectedToOBD': existing.get('profile_distanceWhilstConnectedToOBD') or '',
-		# 		'profile_distance': existing.get('profile_distance') or '',
-		# 		'profile_date': existing.get('profile_date') or '',
-		# 	}
-
 		profile = _read_trip_profile(csv_files[fileid])
 		torqtrips_records.append({
 			"fileid": fileid,
@@ -591,10 +568,10 @@ def _update_trip_and_file_batch(conn, batch: list[int], args, time_col: str, lat
 		if torqtrips_records:
 			ncols = len(torqtrips_records[0])
 			max_params = 999 if args.dbmode == "sqlite" else 65535
-			safe_chunksize = 10  # max(1, min(args.sqlchunksize, max_params // ncols))
+			safe_chunksize = max(1, min(args.sqlchunksize, max_params // ncols))
 			pd.DataFrame(torqtrips_records).to_sql(name="torqtrips", con=conn, if_exists="append", index=False, method="multi", chunksize=safe_chunksize)
 			if len(torqtrips_records) > 1 and args.debug:
-				logger.debug(f"Updated torqtrips/torqfiles for {len(torqtrips_records)} fileids (batch starting fileid {batch[0]})")
+				logger.debug(f"Updated torqtrips/torqfiles for {len(torqtrips_records)} fileids (batch starting fileid {batch[0]}) with {ncols} columns and chunksize {safe_chunksize}, max params {max_params}")
 	except Exception as e:
 		logger.error(f"Error updating torqtrips for fileids {batch}: {e}")
 		return 0
@@ -644,7 +621,7 @@ def update_trip_and_file_for_fileids(conn, fileids: list[int], args) -> int:
 
 	resolved_metric_pairs = [(metric, resolved[metric]) for metric in TRIP_METRIC_COLUMNS if metric in resolved]
 	_ensure_torqtrips_metric_columns(conn, [metric for metric, _ in resolved_metric_pairs])
-	_ensure_torqtrips_profile_columns(conn)
+	# _ensure_torqtrips_profile_columns(conn)
 
 	batch_size = 300 if args.dbmode == "sqlite" else 500
 	updated = 0
