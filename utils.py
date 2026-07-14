@@ -795,6 +795,15 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs') -> int:
 		conn = session.connection()
 		try:
 			insert_df = df.copy()
+			if 'gpstime' in insert_df.columns:
+				missing_gpstime = insert_df['gpstime'].isna()
+				if missing_gpstime.any():
+					logger.warning(f"[{idx}/{len(csv_files)}] Dropping {missing_gpstime.sum()} row(s) with NULL gpstime from {csvfile["csvfilename"]} (fileid {fileid}); gpstime is the partitioning column and cannot be NULL")
+					insert_df = insert_df.loc[~missing_gpstime]
+			if insert_df.empty:
+				logger.warning(f"[{idx}/{len(csv_files)}] No rows with valid gpstime remain for {csvfile["csvfilename"]} (fileid {fileid}), skipping insert")
+				session.commit()
+				continue
 			for col in insert_df.columns:
 				if pd.api.types.is_datetime64_any_dtype(insert_df[col]):
 					notna = insert_df[col].notna()
@@ -813,7 +822,8 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs') -> int:
 		except Exception as e:
 			import traceback
 			logger.error(f"[{idx}/{len(csv_files)}] Error inserting data for file {csvfile["csvfilename"]} (fileid {fileid}): {e} {type(e)}\n{traceback.format_exc()}")
-			break
+			session.rollback()
+			continue
 
 		# Update trip and file info for this fileid
 		send_elapsed = float(time.perf_counter() - send_started)

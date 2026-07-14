@@ -16,8 +16,8 @@ PROFILE_COLUMNS = [
 ]
 
 dataschema = {
-	"gpstime": pl.String,
-	"devicetime": pl.String,
+	"gpstime": pl.Float64,
+	"devicetime": pl.Float64,
 	"longitude": pl.Float64,
 	"latitude": pl.Float64,
 	"gpsspeedkmh": pl.Float64,
