@@ -1,5 +1,6 @@
 #!/usr/bin/python3
 # todo fix only create tripdata for new trips
+from hashlib import md5
 import pandas as pd
 import argparse
 from datetime import datetime
@@ -7,7 +8,7 @@ from pathlib import Path
 from loguru import logger
 import sys
 from sqlalchemy import text, inspect
-from utils import get_parser, get_engine_session, convert_string_to_datetime, haversine, update_trip_and_file_for_fileids
+from utils import get_parser, get_engine_session, convert_string_to_datetime, haversine, update_trip_and_file_for_fileids, MIN_FILESIZE
 from schemas import dataschema
 from datamodels import TorqFile, Startpos, Endpos
 from numbers import Real
@@ -264,11 +265,12 @@ def collect_db_filestats(args, todatabase=True, droptable=False):
         batch = pending_fileids[batch_start:batch_start + batch_size]
         placeholders = ", ".join(f":fid{i}" for i in range(len(batch)))
         params = {f"fid{i}": int(fid) for i, fid in enumerate(batch)}
-        agg_sql = text(
-            f'SELECT {", ".join(select_parts)} '
-            f"FROM torqlogs WHERE fileid IN ({placeholders}) GROUP BY fileid"
-        )
-        batch_rows = session.execute(agg_sql, params).mappings().all()
+        agg_sql = text(f'SELECT {", ".join(select_parts)} FROM torqlogs WHERE fileid IN ({placeholders}) GROUP BY fileid')
+        try:
+            batch_rows = session.execute(agg_sql, params).mappings().all()
+        except Exception as e:
+            logger.error(f"Error executing batch query for fileids {batch}: {e}")
+            continue
         for row in batch_rows:
             fileid = int(row.get("fileid", 0) or 0)
             total_rows = int(row.get("total_rows", 0) or 0)
@@ -285,10 +287,7 @@ def collect_db_filestats(args, todatabase=True, droptable=False):
                     }
                 )
             total_processed += 1
-        logger.info(
-            f"processed batch {batch_start // batch_size + 1} "
-            f"({min(batch_start + len(batch), len(pending_fileids))}/{len(pending_fileids)} files)"
-        )
+        logger.info(f"processed batch {batch_start // batch_size + 1} ({min(batch_start + len(batch), len(pending_fileids))}/{len(pending_fileids)} files)")
 
     if todatabase and results:
         try:
@@ -787,6 +786,7 @@ def collect_db_torqtrips(args):
         return 0
 
     conn = session.connection()
+    # csv_files = [{"csvfilename": k, 'size': k.stat().st_size, 'hash': md5(k.read_bytes()).hexdigest(),'valid': -1} for k in Path(args.logpath).glob("**/trackLog*.csv") if k.stat().st_size > MIN_FILESIZE]
     try:
         updated_rows = update_trip_and_file_for_fileids(conn, fileids, args)
     except Exception as e:

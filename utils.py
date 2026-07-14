@@ -217,7 +217,7 @@ def _collapse_duplicate_dataframe_columns(df: pd.DataFrame, csvfile: dict) -> pd
 		return df
 
 	resolved_duplicates = [str(col) for col in pd.unique(df.columns[df.columns.duplicated()])]
-	logger.warning(f"Resolved duplicate canonical columns for {csvfile['filename']}: {resolved_duplicates}")
+	logger.warning(f"Resolved duplicate canonical columns for {csvfile["csvfilename"]}: {resolved_duplicates}")
 
 	ordered_unique_cols: list[str] = []
 	seen = set()
@@ -317,20 +317,20 @@ def _ensure_torqtrips_profile_columns(conn) -> None:
 		conn.execute(text(f'ALTER TABLE torqtrips ADD COLUMN "{col_name}" TEXT'))
 		existing.add(col_name.lower())
 
-def _read_trip_profile(csvfile: dict) -> dict:
+def _read_trip_profile(csv_filename: str) -> dict:
 	"""
 	Read the vehicle profile name from the trip folder's profile.properties file.
 	Torque writes one alongside each trackLog.csv (e.g. "profile=c4").
 	"""
-	profile_path = Path(csvfile['filename']).parent / 'profile.properties'
+	profile_path = Path(csv_filename).parent / 'profile.properties'
 	profile_data = {
 		'profile_name': '',
 		'profile_date': '',
-		'profile_fuelcost': '',
-		'profile_fuelused': '',
-		'profile_time': '',
-		'profile_distanceWhilstConnectedToOBD': '',
-		'profile_distance': ''
+		'profile_fuelcost': 0.0,
+		'profile_fuelused': 0.0,
+		'profile_time': 0.0,
+		'profile_distanceWhilstConnectedToOBD': 0.0,
+		'profile_distance': 0.0
 	}
 	try:
 		for line in profile_path.read_text().splitlines():
@@ -353,10 +353,14 @@ def _read_trip_profile(csvfile: dict) -> dict:
 			if line.startswith('distance'):
 				value = line.split('=', 1)[1].strip()
 				profile_data['profile_distance'] = value
-			if line.startswith('#') and len(line) == 35:
-				profile_data['profile_date'] = line[1:35].strip()
+			if line.startswith('#') and (len(line) == 29 or len(line) == 35):
+				profile_data['profile_date'] = convert_string_to_datetime(line[1::].strip())
+				# profile_data['profile_date'] = line[1:35].strip()
+				# convert_string_to_datetime
 	except Exception as e:
 		logger.error(f"Could not read profile from {profile_path}: {e} {type(e)}")
+	if not profile_data['profile_date'] or profile_data['profile_date'] == '':
+		logger.warning(f"Could not find profile date in {profile_path}, setting to empty string")
 	return profile_data
 
 def _compute_trip_distances_batch(conn, fileids: list[int], lat_col: str, lon_col: str, time_col: str) -> dict[int, float]:
@@ -441,13 +445,19 @@ def _fetch_existing_torqtrips_profiles(conn, fileids: list[int]) -> dict[int, di
 	placeholders = ", ".join(f":fid{i}" for i in range(len(fileids)))
 	params = {f"fid{i}": int(fid) for i, fid in enumerate(fileids)}
 	cols = ", ".join(f'"{col}"' for col in ['profile', *PROFILE_COLUMNS])
-	rows = conn.execute(
-		text(f"SELECT fileid, {cols} FROM torqtrips WHERE fileid IN ({placeholders})"), params
-	).mappings().all()
+	rows = conn.execute(text(f"SELECT fileid, {cols} FROM torqtrips WHERE fileid IN ({placeholders})"), params).mappings().all()
 	return {int(row["fileid"]): dict(row) for row in rows}
 
 
-def _update_trip_and_file_batch(conn, batch: list[int], args, time_col: str, lat_col: str, lon_col: str, resolved_metric_pairs, csvfiles: dict) -> int:
+def _update_trip_and_file_batch(conn, batch: list[int], args, time_col: str, lat_col: str, lon_col: str, resolved_metric_pairs) -> int:
+	csvfiles = conn.execute(text(f"SELECT fileid, csvfile as csvfilename FROM torqfiles WHERE fileid IN ({', '.join(str(fid) for fid in batch)})")).mappings().all()
+	csv_files = {}
+	for c in csvfiles:
+		key = int(c["fileid"])
+		# csv_files[key] = c
+		value = str(c["csvfilename"])
+		csv_files[key] = value
+
 	placeholders = ", ".join(f":fid{i}" for i in range(len(batch)))
 	params = {f"fid{i}": int(fid) for i, fid in enumerate(batch)}
 
@@ -486,7 +496,7 @@ def _update_trip_and_file_batch(conn, batch: list[int], args, time_col: str, lat
 		return 0
 
 	distances = _compute_trip_distances_batch(conn, batch, lat_col, lon_col, time_col)
-	existing_profiles = _fetch_existing_torqtrips_profiles(conn, batch)
+	# existing_profiles = _fetch_existing_torqtrips_profiles(conn, batch)
 
 	torqtrips_records: list[dict] = []
 	torqfiles_updates: list[dict] = []
@@ -531,20 +541,21 @@ def _update_trip_and_file_batch(conn, batch: list[int], args, time_col: str, lat
 			else:
 				metric_values[f"{metric_name}_stdev"] = None
 
-		if fileid in csvfiles:
-			profile = _read_trip_profile(csvfiles[fileid])
-		else:
-			existing = existing_profiles.get(fileid, {})
-			profile = {
-				'profile_name': existing.get('profile') or '',
-				'profile_fuelused': existing.get('profile_fuelused') or '',
-				'profile_fuelcost': existing.get('profile_fuelcost') or '',
-				'profile_time': existing.get('profile_time') or '',
-				'profile_distanceWhilstConnectedToOBD': existing.get('profile_distanceWhilstConnectedToOBD') or '',
-				'profile_distance': existing.get('profile_distance') or '',
-				'profile_date': existing.get('profile_date') or '',
-			}
+		# if fileid in csvfiles:
+		# 	profile = _read_trip_profile(csvfiles[fileid])
+		# else:
+		# 	existing = existing_profiles.get(fileid, {})
+		# 	profile = {
+		# 		'profile_name': existing.get('profile') or '',
+		# 		'profile_fuelused': existing.get('profile_fuelused') or '',
+		# 		'profile_fuelcost': existing.get('profile_fuelcost') or '',
+		# 		'profile_time': existing.get('profile_time') or '',
+		# 		'profile_distanceWhilstConnectedToOBD': existing.get('profile_distanceWhilstConnectedToOBD') or '',
+		# 		'profile_distance': existing.get('profile_distance') or '',
+		# 		'profile_date': existing.get('profile_date') or '',
+		# 	}
 
+		profile = _read_trip_profile(csv_files[fileid])
 		torqtrips_records.append({
 			"fileid": fileid,
 			"tripdate": trip_start,
@@ -580,8 +591,10 @@ def _update_trip_and_file_batch(conn, batch: list[int], args, time_col: str, lat
 		if torqtrips_records:
 			ncols = len(torqtrips_records[0])
 			max_params = 999 if args.dbmode == "sqlite" else 65535
-			safe_chunksize = max(1, min(args.sqlchunksize, max_params // ncols))
+			safe_chunksize = 10  # max(1, min(args.sqlchunksize, max_params // ncols))
 			pd.DataFrame(torqtrips_records).to_sql(name="torqtrips", con=conn, if_exists="append", index=False, method="multi", chunksize=safe_chunksize)
+			if len(torqtrips_records) > 1 and args.debug:
+				logger.debug(f"Updated torqtrips/torqfiles for {len(torqtrips_records)} fileids (batch starting fileid {batch[0]})")
 	except Exception as e:
 		logger.error(f"Error updating torqtrips for fileids {batch}: {e}")
 		return 0
@@ -602,12 +615,12 @@ def _update_trip_and_file_batch(conn, batch: list[int], args, time_col: str, lat
 	except Exception as e:
 		logger.error(f"Error updating torqfiles for fileids {batch}: {e}")
 		return 0
-
-	logger.debug(f"Updated torqtrips/torqfiles for {len(torqtrips_records)} fileids (batch starting fileid {batch[0]})")
+	if args.debug and len(torqtrips_records) > 1:
+		logger.debug(f"Updated torqtrips/torqfiles for {len(torqtrips_records)} fileids (batch starting fileid {batch[0]})")
 	return len(torqtrips_records)
 
 
-def update_trip_and_file_for_fileids(conn, fileids: list[int], args, csvfiles: dict | None = None) -> int:
+def update_trip_and_file_for_fileids(conn, fileids: list[int], args) -> int:
 	"""
 	Recompute torqfiles and torqtrips rows for the given fileids from torqlogs data.
 	Used both right after inserting a single new fileid (scanpath) and for bulk
@@ -619,7 +632,6 @@ def update_trip_and_file_for_fileids(conn, fileids: list[int], args, csvfiles: d
 	fileids = sorted({int(f) for f in fileids})
 	if not fileids:
 		return 0
-	csvfiles = csvfiles or {}
 
 	resolved = _resolve_torqlogs_columns(conn, ['gpstime', 'devicetime', 'latitude', 'longitude', *TRIP_METRIC_COLUMNS])
 	gpstime_time_col = resolved.get('gpstime')
@@ -634,25 +646,29 @@ def update_trip_and_file_for_fileids(conn, fileids: list[int], args, csvfiles: d
 	_ensure_torqtrips_metric_columns(conn, [metric for metric, _ in resolved_metric_pairs])
 	_ensure_torqtrips_profile_columns(conn)
 
-	batch_size = 300 if args.dbmode == "sqlite" else 1000
+	batch_size = 300 if args.dbmode == "sqlite" else 500
 	updated = 0
 	for batch_start in range(0, len(fileids), batch_size):
 		batch = fileids[batch_start:batch_start + batch_size]
 		try:
-			updated += _update_trip_and_file_batch(conn, batch, args, gpstime_time_col, lat_col, lon_col, resolved_metric_pairs, csvfiles)
+			updated += _update_trip_and_file_batch(conn, batch, args, gpstime_time_col, lat_col, lon_col, resolved_metric_pairs)
+		except (IndexError, KeyError) as e:
+			import traceback
+			logger.warning(f"Error updating trip and file batch for fileids {batch[:10]}: {e} {type(e)} updated={updated} ")
+			logger.warning(f'{traceback.format_exc()}')
 		except Exception as e:
-			logger.error(f"Error updating trip and file batch for fileids {batch}: {e}")
+			logger.error(f"Error updating trip and file batch for fileids {batch[:10]}: {e} {type(e)} updated={updated} ")
+	if args.debug and updated > 1:
+		logger.debug(f"Updated torqtrips/torqfiles for {updated} fileids (total of {len(fileids)} requested)")
 	return updated
 
 def read_csv_data(csvfile: dict, conn, normalized_actual_columns, allowed_cols, args) -> tuple[pd.DataFrame, int]:
 	"""
 	Read a CSV file into a DataFrame, normalize column names, and collapse duplicates.
 	"""
-	df = pd.read_csv(csvfile['filename'], dtype=str)
+	df = pd.read_csv(csvfile["csvfilename"], dtype=str)
 	df_old_len = len(df)
 	df_old_cols = list(df.columns)
-	if args.debug:
-		logger.debug(f"Read {len(df)} rows from {csvfile['filename']} with columns: {len(list(df.columns))}")
 
 	# Normalize columns using shared Torq header mapping.
 	# original_columns = df.columns.to_list()
@@ -670,7 +686,7 @@ def read_csv_data(csvfile: dict, conn, normalized_actual_columns, allowed_cols, 
 		df = df.rename(columns=db_col_rename_map)
 	df = _collapse_duplicate_dataframe_columns(df, csvfile)
 	df = df.replace(['-', '∞', 'inf', '-inf'], pd.NA)
-	if args.debug and (len(df) != df_old_len or list(df.columns) != df_old_cols):
+	if args.debug and (len(df) != df_old_len or len(list(df.columns)) != len(df_old_cols)):
 		logger.debug(f"After normalization and duplicate collapse, {len(df)} (was {df_old_len}) rows remain with columns: {len(list(df.columns))} (was {len(df_old_cols)})")
 
 	for col in df.columns:
@@ -691,9 +707,9 @@ def read_csv_data(csvfile: dict, conn, normalized_actual_columns, allowed_cols, 
 			try:
 				duration_check = (df.iloc[-1][col] - df.iloc[-2][col]).total_seconds()
 			except Exception as e:
-				logger.warning(f"{e} {type(e)} col: {col} Error calculating trip duration for {csvfile['filename']}: {e} {type(e)} df shape: {df.shape} columns: {list(df.columns)}\ndfiloc: {df.iloc[-1]}")
+				logger.warning(f"{e} {type(e)} col: {col} Error calculating trip duration for {csvfile["csvfilename"]}: {e} {type(e)} df shape: {df.shape} columns: {list(df.columns)}\ndfiloc: {df.iloc[-1]}")
 			if duration_check > 300:
-				logger.warning(f'trip duration too long in file: {csvfile["filename"]} size:{csvfile["size"]}  duration_check: {duration_check} col: {col} last two rows:\n{df.iloc[-2:]}\n')
+				logger.warning(f'trip duration too long in file: {csvfile["csvfilename"]} size:{csvfile["size"]}  duration_check: {duration_check} col: {col} last two rows:\n{df.iloc[-2:]}\n')
 				df = df.iloc[:-1]  # drop last row if trip duration is too long
 	df, fileid = get_file_id(df, conn, csvfile)
 	# df.insert(0, 'fileid', fileid)
@@ -709,23 +725,23 @@ def get_file_id(df: pd.DataFrame, conn, csvfile) -> tuple[pd.DataFrame, int]:
 			logger.warning(f"duplicate trip_start  {trip_start_candidate} already exists (fileid {existing_trip[0]})")
 
 	# Pre-send duplicate check from full file content (uses minimum trip timestamp).
-	result = conn.execute(text("INSERT INTO torqfiles (csvfile, csvhash, import_date) VALUES (:csvfile, :csvhash, :import_date) RETURNING fileid"), {"csvfile": str(csvfile['filename']), "csvhash": csvfile['hash'], "import_date": datetime.now()})
+	result = conn.execute(text("INSERT INTO torqfiles (csvfile, csvhash, import_date) VALUES (:csvfile, :csvhash, :import_date) RETURNING fileid"), {"csvfile": str(csvfile["csvfilename"]), "csvhash": csvfile['hash'], "import_date": datetime.now()})
 	fileid = result.scalar()
 	df = df.copy()
 	df['fileid'] = fileid
 	return df, fileid
 
-def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs') -> None:
+def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs') -> int:
 	"""
 	Read all CSV files into a DataFrame, normalize column names, and insert into SQLite table.
 	Handles varying columns, missing data, and extra spaces in column names.
 	Returns the concatenated DataFrame and a dictionary of column stats.
 	"""
-	csv_files = [{'filename': k, 'size': k.stat().st_size, 'hash': md5(k.read_bytes()).hexdigest(),'valid': -1} for k in Path(args.logpath).glob("**/trackLog*.csv") if k.stat().st_size > MIN_FILESIZE]
+	csv_files = [{"csvfilename": k, 'size': k.stat().st_size, 'hash': md5(k.read_bytes()).hexdigest(),'valid': -1} for k in Path(args.logpath).glob("**/trackLog*.csv") if k.stat().st_size > MIN_FILESIZE]
 	if not csv_files:
 		logger.warning("No CSV files found")
-		return None
-	csv_files = sorted(csv_files, key=lambda x: x["filename"])
+		return 0
+	csv_files = sorted(csv_files, key=lambda x: x["csvfilename"])
 	if args.debug:
 		logger.debug(f"Found {len(csv_files)} CSV files in {args.logpath}")
 
@@ -737,7 +753,7 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs') -> None:
 		database_init(session.get_bind())
 	except Exception as e:
 		logger.error(f"Error initializing database: {e} {type(e)}")
-		return None
+		return 0
 
 	# The Torqlogs ORM model only declares a handful of columns; grow the actual
 	# table to cover every canonical Torque metric so CSV data isn't silently dropped.
@@ -773,14 +789,15 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs') -> None:
 		csvhash = csvfile['hash']
 		if any(csvhash == existing_hash for _, existing_hash in hash_list):
 			csvfile['valid'] = 0
-			logger.info(f"File {csvfile['filename']} already processed, skipping")
+			logger.info(f"File {csvfile["csvfilename"]} already processed, skipping")
 			continue
-		valid_files.append((csvfile['filename'], [], csvhash))
+		valid_files.append((csvfile["csvfilename"], [], csvhash))
 		csvfile['valid'] = 1
 	csv_files = [f for f in csv_files if f['valid'] == 1]
 	if args.debug and args.debug_limit > 0:
 		csv_files = csv_files[:args.debug_limit]  # limit to first N for debug
 		logger.debug(f"Processing {len(csv_files)} valid CSV files")
+	total_updated_rows = 0
 	for idx,csvfile in enumerate(csv_files):
 		read_started = time.perf_counter()
 		# Read CSV file
@@ -807,18 +824,20 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs') -> None:
 			conn.execute(torqlogs_table.insert(), records)  # type: ignore[arg-type]
 		except Exception as e:
 			import traceback
-			logger.error(f"[{idx}/{len(csv_files)}] Error inserting data for file {csvfile['filename']} (fileid {fileid}): {e} {type(e)}\n{traceback.format_exc()}")
+			logger.error(f"[{idx}/{len(csv_files)}] Error inserting data for file {csvfile["csvfilename"]} (fileid {fileid}): {e} {type(e)}\n{traceback.format_exc()}")
 			break
 
 		# Update trip and file info for this fileid
 		send_elapsed = float(time.perf_counter() - send_started)
 
-		update_trip_and_file_for_fileids(conn, [fileid], args, csvfiles={fileid: csvfile})
+		updated_rows = update_trip_and_file_for_fileids(conn, [fileid], args)  # , csvfiles={fileid: csvfile}
+		total_updated_rows += updated_rows
 		read_elapsed = float(time.perf_counter() - read_started)
 		# Update TorqFile import timings and row count
 		conn.execute(text(""" UPDATE torqfiles SET sent_rows = :rows, readtime = :readtime, sendtime = :sendtime WHERE fileid = :fileid """),{"rows": len(df), "readtime": read_elapsed, "sendtime": send_elapsed, "fileid": fileid})
-		logger.info(f"[{idx}/{len(csv_files)}] Sent {len(df)} rows from {csvfile['filename']} ")
+		logger.info(f"[{idx}/{len(csv_files)}] Sent {len(df)} rows from {csvfile["csvfilename"]} updated_rows:{updated_rows} total_updated_rows: {total_updated_rows} readtime: {read_elapsed:.3f}s sendtime: {send_elapsed:.3f}s")
 		session.commit()
+	return total_updated_rows
 
 def get_engine_session(args: argparse.Namespace) -> Session:
 	dburl = None
