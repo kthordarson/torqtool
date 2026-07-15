@@ -1,7 +1,6 @@
 # utils and db things here
 from math import radians, cos, sin, sqrt, atan2
 import numpy as np
-import os
 import sys
 import time
 from datetime import datetime

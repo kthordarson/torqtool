@@ -2,7 +2,6 @@ import sys
 import re
 import hashlib
 from datetime import datetime
-import pandas as pd
 from loguru import logger
 from sqlalchemy import (
     Column,

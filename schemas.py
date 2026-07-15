@@ -3,16 +3,9 @@ import unicodedata
 from enum import Enum
 from typing import TypedDict
 from sqlalchemy import (
-	Column,
-	DateTime,
 	Float,
-	ForeignKey,
 	Integer,
-	Text,
-	text,
 	String,
-	LargeBinary,
-	UniqueConstraint,
 )
 
 PROFILE_COLUMNS = [
