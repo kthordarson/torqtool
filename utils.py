@@ -1,7 +1,6 @@
 # utils and db things here
 from math import radians, cos, sin, sqrt, atan2
 import numpy as np
-import os
 import sys
 import time
 from datetime import datetime
@@ -719,7 +718,7 @@ def get_file_id(df: pd.DataFrame, conn, csvfile) -> tuple[pd.DataFrame, int]:
 	df['fileid'] = fileid
 	return df, fileid
 
-def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs') -> int:
+def read_csvs_to_dataframe_and_insert(args) -> int:
 	"""
 	Read all CSV files into a DataFrame, normalize column names, and insert into SQLite table.
 	Handles varying columns, missing data, and extra spaces in column names.
@@ -735,7 +734,6 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs') -> int:
 
 	valid_files = []
 	csvhash = ''
-	table_name = 'torqlogs'
 	session = get_engine_session(args)
 	try:
 		database_init(session.get_bind())

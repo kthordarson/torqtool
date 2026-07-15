@@ -1,6 +1,5 @@
 #!/usr/bin/python3
 # todo fix only create tripdata for new trips
-from hashlib import md5
 import pandas as pd
 import argparse
 from datetime import datetime
@@ -8,7 +7,7 @@ from pathlib import Path
 from loguru import logger
 import sys
 from sqlalchemy import text, inspect
-from utils import get_parser, get_engine_session, convert_string_to_datetime, haversine, update_trip_and_file_for_fileids, MIN_FILESIZE
+from utils import get_parser, get_engine_session, convert_string_to_datetime, haversine, update_trip_and_file_for_fileids
 from schemas import dataschema
 from datamodels import TorqFile, Startpos, Endpos
 from numbers import Real

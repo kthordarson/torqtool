@@ -1,20 +1,11 @@
 #!/usr/bin/python3
 import asyncio
-import argparse
 import sys
-import time
-from hashlib import md5
-from pathlib import Path
-import pandas as pd
-import polars as pl
 from loguru import logger
 from sqlalchemy import text
-from sqlalchemy.exc import DataError, IntegrityError, OperationalError
 from sqlalchemy.orm import sessionmaker
-import sqlite3
-from datamodels import TorqFile, database_init, stable_fileid_from_csvhash,Position, Label
-from utils import get_parser, get_engine_session, convert_string_to_datetime, read_csvs_to_dataframe_and_insert
-from schemas import canonicalize_columns
+from datamodels import database_init
+from utils import get_parser, get_engine_session, read_csvs_to_dataframe_and_insert
 
 # tool to rename and import tripLogs from older versions of the app
 # get tripdate from profile.properties file and rename the log file to the new format
