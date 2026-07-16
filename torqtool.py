@@ -16,12 +16,6 @@ from utils import get_parser, get_engine_session, read_csvs_to_dataframe_and_ins
 # new filenames are in the format: trackLog-2021-Dec-01_23-40-45.csv
 # datetime.fromtimestamp(1708245165793/1000).strftime("%Y-%b-%d_%H-%M-%S")
 
-class Polarsreaderror(Exception):
-	pass
-
-def _normalized_col_name(value: str) -> str:
-	return "".join(ch.lower() for ch in str(value) if ch.isalnum())
-
 async def cli_main(args):
 	if args.dbinfo:
 		tables = ['columnstats', 'filestats', 'speeds', 'torqfiles', 'torqtrips', 'endpos', 'startpos', 'mapimagecache', 'torqlogs']
