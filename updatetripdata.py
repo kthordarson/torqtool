@@ -8,7 +8,7 @@ from loguru import logger
 import sys
 from sqlalchemy import text, inspect
 from utils import get_parser, get_engine_session, convert_string_to_datetime, haversine, update_trip_and_file_for_fileids
-from schemas import dataschema
+from schemas import COLUMN_SCHEMA
 from datamodels import TorqFile, Startpos, Endpos
 from numbers import Real
 
@@ -198,7 +198,7 @@ def collect_db_filestats(args, todatabase=True, droptable=False):
     file_ids = [int(row[0]) for row in fileid_rows if row and row[0] is not None]
     logger.debug(f"candidate fileids={len(file_ids)}")
     results: list[dict[str, object]] = []
-    requested_columns = [k for k in dataschema if k not in ["gpstime", "devicetime"]]
+    requested_columns = [k for k, e in COLUMN_SCHEMA.items() if e["legacy_metric"] and k not in ("gpstime", "devicetime")]
     resolved_columns = _resolve_schema_columns(session, requested_columns)
     missing_count = len(requested_columns) - len(resolved_columns)
     if missing_count:
@@ -449,7 +449,7 @@ def collect_db_columnstats(args):
         session.rollback()
         return 0
     t0 = datetime.now()
-    requested_columns = [k for k in dataschema if k not in ["gpstime", "devicetime"]]
+    requested_columns = [k for k, e in COLUMN_SCHEMA.items() if e["legacy_metric"] and k not in ("gpstime", "devicetime")]
     resolved_columns = _resolve_schema_columns(session, requested_columns)
     column_pairs = [
         (req, resolved_columns[req])
@@ -798,8 +798,8 @@ def collect_db_torqtrips(args):
 
 def update_indexes(args):
     session = get_engine_session(args)
-    for column in dataschema:
-        if column in ["gpstime", "devicetime"]:
+    for column, entry in COLUMN_SCHEMA.items():
+        if not entry["legacy_metric"] or column in ("gpstime", "devicetime"):
             continue
         index_name = f"idx_torqlogs_{column}_fileid_notnulls"
         try:

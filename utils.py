@@ -14,9 +14,10 @@ from sqlalchemy import create_engine, text, MetaData, Table, Column, Float, Stri
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy import inspect
 from commonformats import fmt_20, fmt_24, fmt_26, fmt_28, fmt_30, fmt_34, fmt_36
-from datamodels import database_init, COLUMN_TYPES
-from schemas import canonicalize_columns, PROFILE_COLUMNS
-from schemas import TRIP_METRIC_COLUMNS, column_mapping
+from datamodels import database_init
+from schemas import canonicalize_columns, PROFILE_COLUMNS, COLUMN_SCHEMA
+
+TRIP_METRIC_COLUMNS = [name for name, entry in COLUMN_SCHEMA.items() if entry["trip_metric"]]
 
 MIN_FILESIZE = 100000//2
 
@@ -684,7 +685,7 @@ def read_csv_data(csvfile: dict, conn, normalized_actual_columns, allowed_cols, 
 
 	# Convert numeric columns
 	for col in df.columns:
-		if col in COLUMN_TYPES and COLUMN_TYPES[col] in [Float, Integer]:
+		if col in COLUMN_SCHEMA and COLUMN_SCHEMA[col]["type"] in [Float, Integer]:
 			df[col] = pd.to_numeric(df[col], errors='coerce')
 
 	for col in ['gpstime', 'devicetime']:
@@ -744,18 +745,8 @@ def read_csvs_to_dataframe_and_insert(args, table_name='torqlogs') -> int:
 
 	# The Torqlogs ORM model only declares a handful of columns; grow the actual
 	# table to cover every canonical Torque metric so CSV data isn't silently dropped.
-	all_canonical_columns = sorted(set(column_mapping.values()))
-	column_types = COLUMN_TYPES.copy()
-	invalid_cols = []
-	for col in all_canonical_columns:
-		if col not in column_types:
-			column_types[col] = String
-			invalid_cols.append(col)
-			# if args.debug:
-			# 	logger.warning(f"Column {col} not in COLUMN_TYPES, defaulting to String")
-	if args.debug:
-		if invalid_cols:
-			logger.warning(f"Columns not in COLUMN_TYPES, defaulting to String: {invalid_cols}")
+	all_canonical_columns = sorted(name for name, entry in COLUMN_SCHEMA.items() if entry["mapped_column"])
+	column_types = {name: entry["type"] for name, entry in COLUMN_SCHEMA.items()}
 	create_or_update_table(session, table_name='torqlogs', columns=all_canonical_columns, column_types=column_types)
 
 	with session.get_bind().connect() as conn:  # type: ignore[union-attr]

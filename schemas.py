@@ -17,25 +17,108 @@ PROFILE_COLUMNS = [
 	'profile_date',
 ]
 
-dataschema = {
-	"gpstime": Float,
-	"devicetime": Float,
+# --- Source data used to build COLUMN_SCHEMA below -------------------------
+#
+# _RAW_COLUMN_TYPES: every raw Torque CSV header variant ever seen (legacy
+# underscored headers like "GPS_Time" as well as their canonical lowercase
+# form like "gpstime") mapped to its SQLAlchemy column type. Where the same
+# canonical column is reachable through more than one raw spelling, the type
+# here is treated as authoritative (it drives the actual numeric coercion and
+# ALTER TABLE dtype decisions in utils.py).
+_RAW_COLUMN_TYPES = {
+	"GPS_Time": String,
+	"Device_Time": String,
 	"longitude": Float,
 	"latitude": Float,
-	"gpsspeedkmh": Float,
+	"GPS_Speed_Meterssecond": Float,
+	"Horizontal_Dilution_of_Precision": Float,
+	"Altitude": Float,
+	"Bearing": Float,
+	"Gx": Float,
+	"Gy": Float,
+	"Gz": Float,
+	"Gcalibrated": Float,
+	"Acceleration_SensorTotalg": Float,
+	"Acceleration_SensorX_axisg": Float,
+	"Acceleration_SensorY_axisg": Float,
+	"Acceleration_SensorZ_axisg": Float,
+	"Actual_engine_torque": Float,
+	"Air_Fuel_RatioMeasured1": Float,
+	"Android_device_Battery_Level": Integer,
+	"Average_trip_speedwhilst_moving_onlykmh": Float,
+	"Average_trip_speedwhilst_stopped_or_movingkmh": Float,
+	"Barometric_pressure_from_vehiclepsi": Float,
+	"CO_in_gkm_Averagegkm": Float,
+	"CO_in_gkm_Instantaneousgkm": Float,
+	"Distance_to_empty_Estimatedkm": Float,
+	"Distance_travelled_with_MILCEL_litkm": Float,
+	"Engine_Coolant_TemperatureC": Float,
+	"Engine_kW_At_the_wheelskW": Float,
+	"Engine_Load": Float,
+	"Engine_RPMrpm": Float,
+	"Fuel_cost_tripcost": Float,
+	"Fuel_flow_ratehourlhr": Float,
+	"Fuel_flow_rateminuteccmin": Float,
+	"Fuel_Rail_Pressurepsi": Float,
+	"Fuel_Remaining_Calculated_from_vehicle_profile": Float,
+	"Fuel_used_tripl": Float,
+	"GPS_Accuracym": Float,
+	"GPS_Altitudem": Float,
+	"GPS_Bearing": Float,
+	"GPS_Latitude": Float,
+	"GPS_Longitude": Float,
+	"GPS_Satellites": Integer,
+	"GPS_vs_OBD_Speed_differencekmh": Float,
+	"Horsepower_At_the_wheelshp": Float,
+	"Intake_Air_TemperatureC": Float,
+	"Intake_Manifold_Pressurepsi": Float,
+	"Kilometers_Per_LitreInstantkpl": Float,
+	"Kilometers_Per_LitreLong_Term_Averagekpl": Float,
+	"Litres_Per_100_KilometerInstantl100km": Float,
+	"Litres_Per_100_KilometerLong_Term_Averagel100km": Float,
+	"Mass_Air_Flow_Rategs": Float,
+	"Miles_Per_GallonInstantmpg": Float,
+	"Miles_Per_GallonLong_Term_Averagempg": Float,
+	"O2_Sensor1_Wide_Range_CurrentmA": Float,
+	"O2_Bank_1_Sensor_1_Wide_Range_Equivalence_Ratio": Float,
+	"O2_Bank_1_Sensor_1_Wide_Range_VoltageV": Float,
+	"Speed_GPSkmh": Float,
+	"Speed_OBDkmh": Float,
+	"TorqueNm": Float,
+	"Trip_average_KPLkpl": Float,
+	"Trip_average_Litres100_KMl100km": Float,
+	"Trip_average_MPGmpg": Float,
+	"Trip_Distancekm": Float,
+	"Trip_distance_stored_in_vehicle_profilekm": Float,
+	"Trip_TimeSince_journey_starts": Float,
+	"Trip_timewhilst_movings": Float,
+	"Trip_timewhilst_stationarys": Float,
+	"Turbo_Boost_Vacuum_Gaugepsi": Float,
+	"Voltage_OBD_AdapterV": Float,
+	"Volumetric_Efficiency_Calculated": Float,
+	"Ambient_air_tempC": Float,
+	"Cost_per_milekm_Instantkm": Float,
+	"Cost_per_milekm_Tripkm": Float,
+	"Positive_Kinetic_Energy_PKEkmhr": Float,
+	"Throttle_PositionManifold": Float,
+	"Voltage_Control_ModuleV": Float,
+	"O2_Sensor1_Wide_Range_Equivalence_Ratio": Float,
+	"O2_Sensor1_Wide_Range_VoltageV": Float,
+	"gpstime": String,
+	"devicetime": String,
+	"gpsspeedmeterssecond": Float,
 	"horizontaldilutionofprecision": Float,
 	"altitude": Float,
-	"altitudem": Float,
 	"bearing": Float,
-	"gravityxg": Float,
-	"gravityyg": Float,
-	"gravityzg": Float,
+	"gx": Float,
+	"gy": Float,
+	"gz": Float,
 	"gcalibrated": Float,
 	"accelerationsensortotalg": Float,
 	"accelerationsensorxaxisg": Float,
 	"accelerationsensoryaxisg": Float,
 	"accelerationsensorzaxisg": Float,
-	"actualenginetorque": String,
+	"actualenginetorque": Float,
 	"airfuelratiomeasured1": Float,
 	"androiddevicebatterylevel": Integer,
 	"averagetripspeedwhilstmovingonlykmh": Float,
@@ -43,10 +126,9 @@ dataschema = {
 	"barometricpressurefromvehiclepsi": Float,
 	"coingkmaveragegkm": Float,
 	"coingkminstantaneousgkm": Float,
-	"distancetoemptyestimatedkm": Integer,
-	"distancetravelledwithmilcellitkm": Integer,
-	"enginecoolanttemperaturec": Integer,
-	"enginecoolanttemperaturef": Integer,
+	"distancetoemptyestimatedkm": Float,
+	"distancetravelledwithmilcellitkm": Float,
+	"enginecoolanttemperaturec": Float,
 	"enginekwatthewheelskw": Float,
 	"engineload": Float,
 	"enginerpmrpm": Float,
@@ -54,19 +136,17 @@ dataschema = {
 	"fuelflowratehourlhr": Float,
 	"fuelflowrateminuteccmin": Float,
 	"fuelrailpressurepsi": Float,
-	"fuelremainingcalculatedfromvehicleprofile": Integer,
+	"fuelremainingcalculatedfromvehicleprofile": Float,
 	"fuelusedtripl": Float,
-	"fuelrailpressurekpa": Float,
 	"gpsaccuracym": Float,
 	"gpsaltitudem": Float,
 	"gpsbearing": Float,
 	"gpslatitude": Float,
 	"gpslongitude": Float,
 	"gpssatellites": Integer,
-	"gpsspeedmeterssecond": Float,
 	"gpsvsobdspeeddifferencekmh": Float,
 	"horsepoweratthewheelshp": Float,
-	"intakeairtemperaturec": Integer,
+	"intakeairtemperaturec": Float,
 	"intakemanifoldpressurepsi": Float,
 	"kilometersperlitreinstantkpl": Float,
 	"kilometersperlitrelongtermaveragekpl": Float,
@@ -79,9 +159,8 @@ dataschema = {
 	"o2bank1sensor1widerangeequivalenceratio": Float,
 	"o2bank1sensor1widerangevoltagev": Float,
 	"speedgpskmh": Float,
-	"speedobdkmh": Integer,
+	"speedobdkmh": Float,
 	"torquenm": Float,
-	"torqueftlb": Float,
 	"tripaveragekplkpl": Float,
 	"tripaveragelitres100kml100km": Float,
 	"tripaveragempgmpg": Float,
@@ -91,9 +170,8 @@ dataschema = {
 	"triptimewhilstmovings": Float,
 	"triptimewhilststationarys": Float,
 	"turboboostvacuumgaugepsi": Float,
-	"turboboostvacuumgaugebar": Float,
 	"voltageobdadapterv": Float,
-	"volumetricefficiencycalculated": Integer,
+	"volumetricefficiencycalculated": Float,
 	"ambientairtempc": Float,
 	"costpermilekminstantkm": Float,
 	"costpermilekmtripkm": Float,
@@ -102,9 +180,132 @@ dataschema = {
 	"voltagecontrolmodulev": Float,
 	"o2sensor1widerangeequivalenceratio": Float,
 	"o2sensor1widerangevoltagev": Float,
+	"barometer_on_android_devicemb": Float,
+	"barometricpressurefromvehiclekpa": Float,
+	"catalyst_temperature_bank_1_sensor_1c": Float,
+	"catalyst_temperature_bank_1_sensor_1f": Float,
+	"catalyst_temperature_bank_1_sensor_2c": Float,
+	"catalyst_temperature_bank_1_sensor_2f": Float,
+	"catalyst_temperature_bank_2_sensor_1c": Float,
+	"catalyst_temperature_bank_2_sensor_1f": Float,
+	"catalyst_temperature_bank_2_sensor_2c": Float,
+	"catalyst_temperature_bank_2_sensor_2f": Float,
+	"charge_air_cooler_temperature_cactc": Float,
+	"charge_air_cooler_temperature_cactf": Float,
+	"commanded_equivalence_ratiolambda": Float,
+	"cost_per_milekm_instantkm": Float,
+	"cost_per_milekm_tripkm": Float,
+	"distance_travelled_since_codes_clearedkm": Float,
+	"dpf_pressurebar": Float,
+	"dpf_pressurepsi": Float,
+	"dpf_temperaturec": Float,
+	"dpf_temperaturef": Float,
+	"drivers_demand_engine__torque": Float,
+	"egr_commanded": Float,
+	"egr_error": Float,
+	"eighthMileTime": Float,
+	"engine_loadabsolute": Float,
+	"engine_oil_temperaturec": Float,
+	"engine_oil_temperaturef": Float,
+	"engine_reference_torquenm": Float,
+	"enginecoolanttemperaturef": Float,
+	"ethanol_fuel_": Float,
+	"evap_system_vapour_pressurepa": Float,
+	"exhaust_gas_temp_bank_1_sensor_1c": Float,
+	"exhaust_gas_temp_bank_1_sensor_1f": Float,
+	"exhaust_gas_temp_bank_1_sensor_2c": Float,
+	"exhaust_gas_temp_bank_1_sensor_2f": Float,
+	"exhaust_gas_temp_bank_1_sensor_3c": Float,
+	"exhaust_gas_temp_bank_1_sensor_3f": Float,
+	"exhaust_gas_temp_bank_1_sensor_4c": Float,
+	"exhaust_gas_temp_bank_1_sensor_4f": Float,
+	"exhaust_gas_temp_bank_2_sensor_1c": Float,
+	"exhaust_gas_temp_bank_2_sensor_1f": Float,
+	"exhaust_gas_temp_bank_2_sensor_2c": Float,
+	"exhaust_gas_temp_bank_2_sensor_2f": Float,
+	"exhaust_gas_temp_bank_2_sensor_3c": Float,
+	"exhaust_gas_temp_bank_2_sensor_3f": Float,
+	"exhaust_gas_temp_bank_2_sensor_4c": Float,
+	"exhaust_gas_temp_bank_2_sensor_4f": Float,
+	"exhaust_pressurebar": Float,
+	"exhaust_pressurepsi": Float,
+	"fuel_level_from_engine_ecu": Float,
+	"fuel_pressurepsi": Float,
+	"fuel_rail_pressure_relative_to_manifold_vacuumkpa": Float,
+	"fuel_rail_pressure_relative_to_manifold_vacuumpsi": Float,
+	"fuel_rate_direct_from_eculm": Float,
+	"fuel_trim_bank_1_long_term": Float,
+	"fuel_trim_bank_1_sensor_1": Float,
+	"fuelpressurekpa": Float,
+	"fuelrailpressurekpa": Float,
+	"gpsspeedkmh": Float,
+	"gravityx": Float,
+	"gravityxg": Float,
+	"gravityy": Float,
+	"gravityyg": Float,
+	"gravityz": Float,
+	"gravityzg": Float,
+	"hybrid_battery_charge_": Float,
+	"intakeairtemperaturef": Float,
+	"intakemanifoldpressurekpa": Float,
+	"kphTime0-100": Float,
+	"kphTime0-200": Float,
+	"kphTime0200": Float,
+	"kphTime100-0": Float,
+	"kphTime100-200": Float,
+	"kphTime1000": Float,
+	"kphTime100200": Float,
+	"kphTime80-120": Float,
+	"miletimes14": Float,
+	"miletimes18": Float,
+	"mphTime0-100": Float,
+	"mphTime0-30": Float,
+	"mphTime0-60": Float,
+	"mphTime40-60": Float,
+	"mphTime60-0": Float,
+	"mphTime60-120": Float,
+	"mphTime60-130": Float,
+	"mphTime60-80": Float,
+	"mphTime80-100": Float,
+	"mphtimes01008": Float,
+	"mphtimes030": Float,
+	"mphtimes060": Float,
+	"mphtimes60120": Float,
+	"mphtimes60130": Float,
+	"mphtimes6080": Float,
+	"nox_post_scrppm": Float,
+	"nox_pre_scrppm": Float,
+	"o2_sensor1_equivalence_ratio": Float,
+	"o2_sensor1_equivalence_ratioalternate": Float,
+	"percentage_of_highway_driving": Float,
+	"percentageofcitydriving": Float,
+	"percentageofidledriving": Float,
+	"quarterMileTime": Float,
+	"relative_accelerator_pedal_position": Float,
+	"relative_throttle_position": Float,
+	"run_time_since_engine_starts": Float,
+	"timing_advance": Float,
+	"torqueftlb": Float,
+	"transmission_temperaturemethod_1c": Float,
+	"transmission_temperaturemethod_1f": Float,
+	"transmission_temperaturemethod_2c": Float,
+	"transmission_temperaturemethod_2f": Float,
+	"turbo_pressure_controlbar": Float,
+	"turbo_pressure_controlpsi": Float,
+	"turboboostvacuumgaugebar": Float,
+	"absolute_throttle_position_b": Float,
+	"accelerator_pedalposition_d": Float,
+	"accelerator_pedalposition_e": Float,
+	"accelerator_pedalposition_f": Float,
+	"air_fuel_ratiocommanded1": Float,
+	"altitudem": Float,
+	"ambientairtempf": Float,
 }
 
-column_mapping = {
+# _RAW_COLUMN_MAPPING: raw Torque CSV header strings (as they appear in
+# trackLog*.csv) mapped to the canonical column name used everywhere else
+# (DB columns, COLUMN_SCHEMA keys, etc).
+_RAW_COLUMN_MAPPING = {
 	"0-100kph Time(s)": "kphTime0-100",
 	"0-100mph Time(s)": "mphTime0-100",
 	"0-200kph Time(s)": "kphTime0-200",
@@ -302,7 +503,103 @@ column_mapping = {
 	"Turbo Pressure Control(bar)": "turbo_pressure_controlbar",
 }
 
-TRIP_METRIC_COLUMNS = [
+# _LEGACY_METRIC_NAMES: the curated subset of canonical metric names that made
+# up the original "dataschema" dict. Kept as a scope flag (`legacy_metric`)
+# rather than expanded to every known column, so index creation
+# (updatetripdata.update_indexes) and null-ratio stats collection
+# (updatetripdata.collect_db_columnstats) keep covering exactly the same
+# columns as before -- not every rare sensor Torque has ever emitted.
+_LEGACY_METRIC_NAMES = frozenset({
+	"gpstime",
+	"devicetime",
+	"longitude",
+	"latitude",
+	"gpsspeedkmh",
+	"horizontaldilutionofprecision",
+	"altitude",
+	"altitudem",
+	"bearing",
+	"gravityxg",
+	"gravityyg",
+	"gravityzg",
+	"gcalibrated",
+	"accelerationsensortotalg",
+	"accelerationsensorxaxisg",
+	"accelerationsensoryaxisg",
+	"accelerationsensorzaxisg",
+	"actualenginetorque",
+	"airfuelratiomeasured1",
+	"androiddevicebatterylevel",
+	"averagetripspeedwhilstmovingonlykmh",
+	"averagetripspeedwhilststoppedormovingkmh",
+	"barometricpressurefromvehiclepsi",
+	"coingkmaveragegkm",
+	"coingkminstantaneousgkm",
+	"distancetoemptyestimatedkm",
+	"distancetravelledwithmilcellitkm",
+	"enginecoolanttemperaturec",
+	"enginecoolanttemperaturef",
+	"enginekwatthewheelskw",
+	"engineload",
+	"enginerpmrpm",
+	"fuelcosttripcost",
+	"fuelflowratehourlhr",
+	"fuelflowrateminuteccmin",
+	"fuelrailpressurepsi",
+	"fuelremainingcalculatedfromvehicleprofile",
+	"fuelusedtripl",
+	"fuelrailpressurekpa",
+	"gpsaccuracym",
+	"gpsaltitudem",
+	"gpsbearing",
+	"gpslatitude",
+	"gpslongitude",
+	"gpssatellites",
+	"gpsspeedmeterssecond",
+	"gpsvsobdspeeddifferencekmh",
+	"horsepoweratthewheelshp",
+	"intakeairtemperaturec",
+	"intakemanifoldpressurepsi",
+	"kilometersperlitreinstantkpl",
+	"kilometersperlitrelongtermaveragekpl",
+	"litresper100kilometerinstantl100km",
+	"litresper100kilometerlongtermaveragel100km",
+	"massairflowrategs",
+	"milespergalloninstantmpg",
+	"milespergallonlongtermaveragempg",
+	"o2sensor1widerangecurrentma",
+	"o2bank1sensor1widerangeequivalenceratio",
+	"o2bank1sensor1widerangevoltagev",
+	"speedgpskmh",
+	"speedobdkmh",
+	"torquenm",
+	"torqueftlb",
+	"tripaveragekplkpl",
+	"tripaveragelitres100kml100km",
+	"tripaveragempgmpg",
+	"tripdistancekm",
+	"tripdistancestoredinvehicleprofilekm",
+	"triptimesincejourneystarts",
+	"triptimewhilstmovings",
+	"triptimewhilststationarys",
+	"turboboostvacuumgaugepsi",
+	"turboboostvacuumgaugebar",
+	"voltageobdadapterv",
+	"volumetricefficiencycalculated",
+	"ambientairtempc",
+	"costpermilekminstantkm",
+	"costpermilekmtripkm",
+	"positivekineticenergypkekmhr",
+	"throttlepositionmanifold",
+	"voltagecontrolmodulev",
+	"o2sensor1widerangeequivalenceratio",
+	"o2sensor1widerangevoltagev",
+})
+
+# _TRIP_METRIC_NAMES: canonical metric names selected (of the full set) to
+# aggregate per-trip into torqtrips. Alternatives considered but not enabled
+# are commented out.
+_TRIP_METRIC_NAMES = [
 	# "ambientairtempc",
 	"accelerationsensortotalg",
 	# "accelerationsensorxaxisg",
@@ -345,6 +642,56 @@ TRIP_METRIC_COLUMNS = [
 	# "voltageobdadapterv",
 	# "volumetricefficiencycalculated",
 ]
+
+
+class ColumnSchemaEntry(TypedDict):
+	"""Metadata for a single canonical Torque metric column."""
+
+	type: type  # SQLAlchemy column type class: Float, Integer, or String
+	aliases: tuple[str, ...]  # raw CSV header / legacy variants resolving to this column
+	mapped_column: bool  # grown into the torqlogs table when importing CSVs
+	legacy_metric: bool  # part of the original curated dataschema subset
+	trip_metric: bool  # aggregated per-trip into torqtrips
+
+
+def _normalize_col_key(value: str) -> str:
+	return re.sub(r"[^A-Za-z0-9]+", "", value).lower()
+
+
+def _build_column_schema() -> dict[str, ColumnSchemaEntry]:
+	# Canonical columns are every value column_mapping ever produces, plus a
+	# couple of legacy standalone headers ("Gx"/"Gy"/"Gz") that never got a
+	# column_mapping entry of their own.
+	mapped_names = set(_RAW_COLUMN_MAPPING.values())
+	canonical_names = mapped_names | {"gx", "gy", "gz"}
+
+	reverse_mapping: dict[str, set[str]] = {}
+	for header, canonical in _RAW_COLUMN_MAPPING.items():
+		reverse_mapping.setdefault(canonical, set()).add(header)
+
+	normalized_aliases: dict[str, set[str]] = {}
+	for raw_key in _RAW_COLUMN_TYPES:
+		normalized = _normalize_col_key(raw_key)
+		if normalized in canonical_names and raw_key != normalized:
+			normalized_aliases.setdefault(normalized, set()).add(raw_key)
+
+	schema: dict[str, ColumnSchemaEntry] = {}
+	for name in sorted(canonical_names):
+		aliases = reverse_mapping.get(name, set()) | normalized_aliases.get(name, set())
+		schema[name] = ColumnSchemaEntry(
+			type=_RAW_COLUMN_TYPES[name],
+			aliases=tuple(sorted(aliases)),
+			mapped_column=name in mapped_names,
+			legacy_metric=name in _LEGACY_METRIC_NAMES,
+			trip_metric=name in _TRIP_METRIC_NAMES,
+		)
+	return schema
+
+
+# Single unified source of truth for every canonical Torque metric column:
+# its SQL type, known raw header aliases, and which processing stages
+# (table growth / legacy indexing+stats / per-trip aggregation) include it.
+COLUMN_SCHEMA: dict[str, ColumnSchemaEntry] = _build_column_schema()
 
 
 class MetricCategory(Enum):
@@ -621,7 +968,7 @@ def _strip_accents(value: str) -> str:
 
 
 def _normalize_lookup_key(value: str) -> str:
-	value = str(value).strip().replace("\ufeff", "")
+	value = str(value).strip().replace("﻿", "")
 	value = value.replace("Â", "")
 	value = _strip_accents(value)
 	value = re.sub(r"\s+", " ", value)
@@ -633,7 +980,11 @@ def _fallback_column_name(value: str) -> str:
 	return re.sub(r"[^a-z0-9]+", "", key)
 
 
-COLUMN_MAP = {_normalize_lookup_key(k): v for k, v in column_mapping.items()}
+COLUMN_MAP = {
+	_normalize_lookup_key(alias): canonical
+	for canonical, entry in COLUMN_SCHEMA.items()
+	for alias in entry["aliases"]
+}
 
 
 def canonicalize_column_name(column_name: str) -> str:
